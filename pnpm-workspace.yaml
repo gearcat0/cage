@@ -1,0 +1,6 @@
+allowBuilds:
+  esbuild: true
+  electron: true
+onlyBuiltDependencies:
+  - electron
+  - esbuild

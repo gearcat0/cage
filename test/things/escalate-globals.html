@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: Node/global probing</title>
+<!-- ATTACK (escalation): probe for Node/Electron capabilities that sandbox +
+     contextIsolation + nodeIntegration:false must keep out of reach. Every one
+     of these must be 'undefined' in the page world. -->
+<script>
+  const t = (name) => {
+    try { return typeof window[name]; } catch (e) { return 'throw:' + e; }
+  };
+  const r = {
+    attack: 'escalate-globals',
+    require: t('require'),
+    process: t('process'),
+    global: t('global'),
+    Buffer: t('Buffer'),
+    module: t('module'),
+    exports: t('exports'),
+    __dirname: t('__dirname'),
+    __filename: t('__filename'),
+    // Some code tries the "require via constructor" trick.
+    constructorRequire: (function () {
+      try { return typeof (function(){}).constructor('return process')(); }
+      catch (e) { return 'blocked'; }
+    })()
+  };
+  window.bridge.emit('done', r);
+</script>

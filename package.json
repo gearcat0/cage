@@ -1,0 +1,27 @@
+{
+  "name": "cage",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Phase 1: a hardened Electron renderer that runs untrusted HTML/JS with no network access and no ambient authority, plus a suite of escape-attempt tests that prove the cage holds.",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "dev:nosandbox": "ELECTRON_DISABLE_SANDBOX=1 electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test:unit": "vitest run",
+    "test:cage": "pnpm build && xvfb-run -a playwright test",
+    "test:cage:headed": "pnpm build && playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^22.10.0",
+    "electron": "^43.1.1",
+    "electron-vite": "^5.0.0",
+    "playwright": "^1.61.1",
+    "typescript": "^5.7.3",
+    "vite": "^8.1.4",
+    "vitest": "^4.1.10"
+  }
+}

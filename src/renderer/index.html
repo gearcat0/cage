@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'" />
+    <title>cage chrome</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body { margin: 0; height: 100%; overflow: hidden; }
+      #strip {
+        height: 44px;
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 14px;
+        font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #e6e6e6;
+        background: linear-gradient(#1c1e22, #16181b);
+        border-bottom: 1px solid #000;
+        user-select: none;
+      }
+      .badge {
+        padding: 3px 8px;
+        border-radius: 5px;
+        font-weight: 700;
+        letter-spacing: .04em;
+        background: #6b2130;
+        color: #ffd9df;
+      }
+      .id { color: #9aa0a6; }
+      .hash { color: #7fd1ff; }
+      .label { color: #d7b46a; }
+      .spacer { flex: 1; }
+    </style>
+  </head>
+  <body>
+    <div id="strip">
+      <span class="badge">UNSIGNED</span>
+      <span class="label">test harness</span>
+      <span class="spacer"></span>
+      <span class="id">id <span id="thing-id">—</span></span>
+      <span class="hash">sha256 <span id="thing-hash">—</span></span>
+    </div>
+    <script type="module" src="./chrome.ts"></script>
+  </body>
+</html>

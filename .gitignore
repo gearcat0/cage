@@ -1,0 +1,10 @@
+node_modules/
+out/
+dist/
+.vite/
+test-results/
+playwright-report/
+*.log
+*.tsbuildinfo
+.DS_Store
+.claude/settings.local.json

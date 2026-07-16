@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: Service Worker / Cache</title>
+<!-- ATTACK (persistence): a Service Worker is a persistent, request-intercepting
+     tracking channel. The thing: scheme is registered with allowServiceWorkers
+     false, and CSP + the non-persistent partition close the Cache Storage path.
+     Registration must fail. -->
+<script>
+  const r = { attack: 'sw-cache' };
+  r.cachesType = typeof caches;
+  r.swSupported = 'serviceWorker' in navigator;
+
+  (async () => {
+    if (r.swSupported) {
+      try {
+        await navigator.serviceWorker.register('thing://main/sw.js');
+        r.swRegistered = true;
+      } catch (e) {
+        r.swError = String(e);
+      }
+    }
+    if (r.cachesType !== 'undefined') {
+      try {
+        const c = await caches.open('c');
+        await c.put('thing://main/index.html', new Response('x'));
+        r.cacheWrote = true;
+      } catch (e) {
+        r.cacheError = String(e);
+      }
+    }
+    window.bridge.emit('done', r);
+  })();
+</script>

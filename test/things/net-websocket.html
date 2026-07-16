@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: WebSocket</title>
+<!-- ATTACK: open a WebSocket to a canary. connect-src 'none' forbids the
+     handshake; even the TCP socket must never open. Canary must stay silent. -->
+<script>
+  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const r = { attack: 'websocket' };
+  try {
+    const ws = new WebSocket(canary.ws);
+    ws.onopen = () => { r.opened = true; window.bridge.emit('done', r); };
+    ws.onerror = () => { r.error = 'onerror'; window.bridge.emit('done', r); };
+    setTimeout(() => window.bridge.emit('done', { ...r, viaTimeout: true }), 1500);
+  } catch (e) {
+    r.threw = String(e);
+    window.bridge.emit('done', r);
+  }
+</script>

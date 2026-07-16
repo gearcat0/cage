@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: window.open</title>
+<!-- ATTACK (escalation): open a new window/view — a way to escape the cage rect
+     and/or reach the network from a fresh context. setWindowOpenHandler denies
+     it; window.open must return null and no new view may appear. -->
+<script>
+  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const r = { attack: 'window-open' };
+  try {
+    const w = window.open(canary.http + '/popup', '_blank');
+    r.returned = w === null ? 'null' : typeof w;
+  } catch (e) {
+    r.threw = String(e);
+  }
+  try {
+    const w2 = window.open('https://example.com', '_blank', 'popup');
+    r.returned2 = w2 === null ? 'null' : typeof w2;
+  } catch (e) {
+    r.threw2 = String(e);
+  }
+  window.bridge.emit('done', r);
+</script>

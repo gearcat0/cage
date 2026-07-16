@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: bridge abuse (huge payload)</title>
+<!-- ATTACK (bridge abuse): emit an oversized payload to exhaust shell memory.
+     The shell must reject it (size cap) and stay responsive — a later normal
+     emit must still be processed. -->
+<script>
+  const r = { attack: 'bridge-huge' };
+  try {
+    const huge = 'A'.repeat(4 * 1024 * 1024); // 4 MB, over the 256 KB cap
+    window.bridge.emit('flood-huge', { blob: huge });
+    r.sentHuge = true;
+  } catch (e) {
+    r.threw = String(e);
+  }
+  // If the shell survived, this must still land.
+  window.bridge.emit('done', r);
+</script>

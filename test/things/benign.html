@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>benign thing</title>
+<!-- POSITIVE TEST: a legitimate thing. Renders its supplied args and uses both
+     bridge functions. Proves the cage runs real things, not just "deny all". -->
+<h1>benign</h1>
+<pre id="out"></pre>
+<script>
+  const args = window.bridge.getArgs();
+  document.getElementById('out').textContent = JSON.stringify(args, null, 2);
+  // getArgs() returned something structured, and emit() reaches the shell.
+  window.bridge.emit('hello', { rendered: true });
+  window.bridge.emit('done', {
+    ok: true,
+    sawArgs: args,
+    getArgsType: typeof window.bridge.getArgs,
+    emitType: typeof window.bridge.emit
+  });
+</script>

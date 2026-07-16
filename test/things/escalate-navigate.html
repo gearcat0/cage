@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: navigation off the thing</title>
+<!-- ATTACK (escalation): navigate the cage away from the thing to a remote
+     origin. will-navigate / will-redirect are prevented, so the location must
+     stay on the thing: origin. -->
+<script>
+  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const r = { attack: 'navigate', startOrigin: location.origin };
+
+  // Report first — if navigation succeeded, this page would unload and the
+  // final 'done' (below) would never arrive with the original origin.
+  try { history.pushState({}, '', '/pushed-path'); r.afterPushState = location.pathname; }
+  catch (e) { r.pushStateError = String(e); }
+
+  try { location.href = 'https://example.com/escape'; } catch (e) { r.hrefThrew = String(e); }
+  try { location.assign(canary.http + '/escape'); } catch (e) { r.assignThrew = String(e); }
+
+  setTimeout(() => {
+    r.endOrigin = location.origin;
+    r.stayedOnThing = location.protocol === 'thing:';
+    window.bridge.emit('done', r);
+  }, 800);
+</script>

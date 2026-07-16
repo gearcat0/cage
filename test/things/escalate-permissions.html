@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: permission requests</title>
+<!-- ATTACK (escalation): request powerful permissions. The session's permission
+     request AND check handlers both deny unconditionally, so every one must be
+     denied. -->
+<script>
+  const r = { attack: 'permissions' };
+  (async () => {
+    try {
+      await new Promise((res) =>
+        navigator.geolocation.getCurrentPosition(
+          () => { r.geolocation = 'granted'; res(); },
+          (e) => { r.geolocation = 'denied:' + e.code; res(); }
+        )
+      );
+    } catch (e) { r.geolocation = 'throw:' + e; }
+
+    try { r.notifications = await Notification.requestPermission(); }
+    catch (e) { r.notifications = 'throw:' + e; }
+
+    try {
+      await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      r.camera = 'granted';
+    } catch (e) { r.camera = 'denied:' + e.name; }
+
+    try { await navigator.clipboard.readText(); r.clipboard = 'granted'; }
+    catch (e) { r.clipboard = 'denied:' + e.name; }
+
+    window.bridge.emit('done', r);
+  })();
+</script>

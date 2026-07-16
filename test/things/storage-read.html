@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>storage: reader</title>
+<!-- Reads every storage channel and reports what it found. In a fresh, unique,
+     non-persistent partition, everything must be empty — proving no tracking id
+     survived a reload and that a different thing cannot see another's storage. -->
+<script>
+  const r = { attack: 'storage-read', found: {} };
+
+  try { r.found.localStorage = localStorage.getItem('mark'); }
+  catch (e) { r.found.localStorageError = String(e); }
+
+  try { r.found.sessionStorage = sessionStorage.getItem('mark'); }
+  catch (e) { r.found.sessionStorageError = String(e); }
+
+  try { r.found.cookie = document.cookie; }
+  catch (e) { r.found.cookieError = String(e); }
+
+  const finish = () => window.bridge.emit('read-result', r);
+
+  try {
+    const req = indexedDB.open('trackdb', 1);
+    req.onupgradeneeded = () => {
+      // If this fires, the DB did not previously exist (fresh partition).
+      r.found.indexedDBWasEmpty = true;
+      req.result.createObjectStore('store');
+    };
+    req.onsuccess = () => {
+      try {
+        const tx = req.result.transaction('store', 'readonly');
+        const get = tx.objectStore('store').get('mark');
+        get.onsuccess = () => { r.found.indexedDB = get.result ?? null; finish(); };
+        get.onerror = () => { r.found.indexedDBError = 'get'; finish(); };
+      } catch (e) { r.found.indexedDB = null; r.found.indexedDBNote = String(e); finish(); }
+    };
+    req.onerror = () => { r.found.indexedDBError = 'open'; finish(); };
+  } catch (e) {
+    r.found.indexedDBError = String(e);
+    finish();
+  }
+  setTimeout(finish, 2000);
+</script>

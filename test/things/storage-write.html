@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>storage: writer</title>
+<!-- ATTACK (persistence): plant a tracking identifier in every storage channel.
+     Writes may succeed in-memory during this session, but the partition is
+     non-persistent and unique per thing, so nothing may survive a reload or be
+     visible to any other thing. Paired with storage-read.html. -->
+<script>
+  const MARK = 'tracking-id-12345';
+  const r = { attack: 'storage-write', wrote: {} };
+
+  try { localStorage.setItem('mark', MARK); r.wrote.localStorage = localStorage.getItem('mark'); }
+  catch (e) { r.wrote.localStorageError = String(e); }
+
+  try { sessionStorage.setItem('mark', MARK); r.wrote.sessionStorage = sessionStorage.getItem('mark'); }
+  catch (e) { r.wrote.sessionStorageError = String(e); }
+
+  try { document.cookie = 'mark=' + MARK + '; path=/'; r.wrote.cookie = document.cookie; }
+  catch (e) { r.wrote.cookieError = String(e); }
+
+  const finish = () => window.bridge.emit('write-done', r);
+
+  try {
+    const req = indexedDB.open('trackdb', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('store');
+    req.onsuccess = () => {
+      try {
+        const tx = req.result.transaction('store', 'readwrite');
+        tx.objectStore('store').put(MARK, 'mark');
+        tx.oncomplete = () => { r.wrote.indexedDB = MARK; finish(); };
+        tx.onerror = () => { r.wrote.indexedDBError = 'tx'; finish(); };
+      } catch (e) { r.wrote.indexedDBError = String(e); finish(); }
+    };
+    req.onerror = () => { r.wrote.indexedDBError = 'open'; finish(); };
+  } catch (e) {
+    r.wrote.indexedDBError = String(e);
+    finish();
+  }
+  setTimeout(finish, 2000);
+</script>

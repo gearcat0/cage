@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: bridge abuse (flood)</title>
+<!-- ATTACK (bridge abuse): rapid-fire emit to flood the shell. No capability is
+     granted regardless, and the shell must stay responsive — the final 'done'
+     must still arrive. -->
+<script>
+  const r = { attack: 'bridge-flood', count: 5000 };
+  for (let i = 0; i < r.count; i++) {
+    window.bridge.emit('spam', { i });
+  }
+  window.bridge.emit('done', r);
+</script>

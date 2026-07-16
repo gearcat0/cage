@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: spoof the chrome strip</title>
+<style>
+  /* Try to paint over everything, including (hopefully) the trusted header. */
+  html, body { margin: 0; height: 100%; }
+  #cover {
+    position: fixed; left: 0; top: -200px; width: 100vw; height: 300px;
+    background: #0b5; color: #fff; font: 14px sans-serif; z-index: 2147483647;
+  }
+</style>
+<!-- ATTACK (spoofing): the thing tries to resize/move the window and cover the
+     chrome strip with an overlay to forge a "verified" badge. The chrome strip
+     is a SEPARATE native view above the cage, so none of this can touch it. The
+     test asserts the chrome/cage rectangles are unchanged (a geometry check). -->
+<div id="cover">FAKE ✅ VERIFIED — SIGNED BY TRUSTED</div>
+<script>
+  const r = { attack: 'spoof-chrome' };
+  r.before = { innerH: innerHeight, outerH: outerHeight, screenY: screenY };
+  try { window.resizeTo(2000, 2000); } catch (e) { r.resizeThrew = String(e); }
+  try { window.moveTo(-100, -100); } catch (e) { r.moveThrew = String(e); }
+  try { document.documentElement.requestFullscreen && document.documentElement.requestFullscreen(); }
+  catch (e) { r.fsThrew = String(e); }
+  setTimeout(() => {
+    r.after = { innerH: innerHeight, outerH: outerHeight, screenY: screenY };
+    window.bridge.emit('done', r);
+  }, 600);
+</script>

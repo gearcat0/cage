@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: WebRTC / STUN</title>
+<!-- ATTACK: WebRTC bypasses webRequest entirely, so it is closed separately:
+     setWebRTCIPHandlingPolicy('disable_non_proxied_udp') + a dead UDP proxy +
+     the process-wide WebRTC flag. Creating an offer must produce no server-
+     reflexive (srflx) or relay candidates, and no STUN datagram may reach the
+     canary's UDP port. -->
+<script>
+  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const r = { attack: 'webrtc', candidates: [] };
+  try {
+    if (typeof RTCPeerConnection === 'undefined') {
+      r.rtcUnavailable = true;
+      window.bridge.emit('done', r);
+    } else {
+      const pc = new RTCPeerConnection({ iceServers: [{ urls: canary.stun }] });
+      pc.onicecandidate = (e) => {
+        if (e.candidate) r.candidates.push(e.candidate.candidate);
+      };
+      pc.onicegatheringstatechange = () => {
+        if (pc.iceGatheringState === 'complete') window.bridge.emit('done', r);
+      };
+      pc.createDataChannel('exfil');
+      pc.createOffer()
+        .then((o) => pc.setLocalDescription(o))
+        .catch((e) => { r.offerError = String(e); });
+      // ICE gathering may never complete when all UDP is blocked; report anyway.
+      setTimeout(() => window.bridge.emit('done', { ...r, viaTimeout: true }), 2500);
+    }
+  } catch (e) {
+    r.threw = String(e);
+    window.bridge.emit('done', r);
+  }
+</script>

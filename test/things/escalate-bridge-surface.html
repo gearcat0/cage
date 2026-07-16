@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: enumerate the bridge</title>
+<!-- ATTACK (escalation): probe the bridge for anything beyond getArgs/emit, and
+     try to mutate it. The exposed surface must be EXACTLY those two functions on
+     a frozen object, and no ipcRenderer/Node handle may be reachable. -->
+<script>
+  const b = window.bridge;
+  const r = {
+    attack: 'bridge-surface',
+    keys: Object.keys(b).sort(),
+    ownProps: Object.getOwnPropertyNames(b).sort(),
+    frozen: Object.isFrozen(b),
+    getArgsType: typeof b.getArgs,
+    emitType: typeof b.emit,
+    // Handles a compromised preload might have leaked:
+    ipcRenderer: typeof window.ipcRenderer,
+    electron: typeof window.electron,
+    require: typeof window.require
+  };
+  // Attempt to widen the surface — must not take effect on a frozen object.
+  try { b.steal = () => 'hacked'; } catch (e) { r.mutateThrew = String(e); }
+  r.mutationTook = typeof b.steal;
+  window.bridge.emit('done', r);
+</script>
