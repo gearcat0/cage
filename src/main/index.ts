@@ -59,6 +59,14 @@ protocol.registerSchemesAsPrivileged([
 app.commandLine.appendSwitch('force-webrtc-ip-handling-policy', 'disable_non_proxied_udp')
 app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns')
 
+// TEST-ONLY (finding N2): let the DNS/speculative-connection test point an
+// attacker hostname at the canary via Chromium host-resolver-rules, so that any
+// connection a leak produced would land on the canary and be witnessed. Gated
+// on an env var the suite sets; never used in a real shell.
+if (process.env.CAGE_HOST_RESOLVER_RULES) {
+  app.commandLine.appendSwitch('host-resolver-rules', process.env.CAGE_HOST_RESOLVER_RULES)
+}
+
 // NOTE on the OS sandbox (finding P0-1): the cage REQUESTS the OS-level sandbox
 // via webPreferences `sandbox: true`, but whether it is actually active depends
 // on the launcher and host. Two ways it ends up OFF:

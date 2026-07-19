@@ -180,6 +180,82 @@ test.describe('network egress is impossible', () => {
     expect(r.imgError).toBe(true)
     expect(canary.silent()).toBe(true)
   })
+
+  test('DNS / speculative connection to an attacker hostname is closed (N2)', async ({ open, canary }) => {
+    // Map the attacker hostname straight at the canary, so the canary is a LIVE
+    // target: if dns-prefetch/preconnect/fetch leaked past the dead proxy and
+    // connect-src, a socket would land on it. (The pure DNS-datagram-to-an-
+    // external-resolver channel is separately blocked by the cage's dead-proxy
+    // delegation; routing a real DNS query to the canary would need resolver
+    // reconfiguration this container does not allow — noted in the review.)
+    const addr = new URL(canary.http)
+    const cage = await open({
+      thing: 'net-dns-prefetch.html',
+      extraEnv: { CAGE_HOST_RESOLVER_RULES: `MAP *.attacker.test 127.0.0.1:${addr.port}` }
+    })
+    const r = (await cage.waitForEmit('done', 10_000)) as Record<string, unknown>
+    await settle()
+    // The control fetch ran and was rejected (guards against a false pass where
+    // the hostname was undefined and the fetch never fired)...
+    expect(typeof r.fetchError).toBe('string')
+    expect(r.fetchResolved).not.toBe(true)
+    // ...and nothing reached the canary on ANY transport (tcp/http/ws/udp/dns)
+    // even though the hostname resolved directly to it.
+    expect(canary.silent()).toBe(true)
+  })
+
+  test('data: resolves as a subresource but cannot become a document (N4)', async ({ open, canary }) => {
+    const cage = await open({ thing: 'net-data-document.html' })
+    const r = (await cage.waitForEmit('done')) as Record<string, unknown>
+    // Subresource path is allowed (img-src data:) — data: is legal for rendering.
+    expect(r.dataImgLoaded).toBe(true)
+    // Document path is blocked: the thing never left its origin. Note the two
+    // vectors are stopped by DIFFERENT layers, and this test pins the outcome
+    // rather than the mechanism:
+    //   - window.open(data:) is denied by our setWindowOpenHandler → null +
+    //     a window-open-denied event.
+    //   - location.assign(data:) is blocked by CHROMIUM's built-in ban on
+    //     top-level data: navigations, which fires BEFORE our will-navigate
+    //     handler — so there is (correctly) no navigation-blocked event for it,
+    //     yet the thing never leaves thing://. Defense in depth: our handler
+    //     also blocks it if Chromium's ban is ever absent.
+    expect(r.stillOnThing).toBe(true)
+    expect(String(r.openReturned)).toBe('null')
+    const events = await cage.events()
+    expect(events.some((e) => e.type === 'window-open-denied')).toBe(true)
+    expect(canary.silent()).toBe(true)
+  })
+})
+
+// ── Default-session (trusted chrome) hardening ───────────────────────────────
+// The untrusted thing never uses the default session, but the trusted chrome UI
+// does. index.ts hardens it so even a compromised chrome cannot beacon out.
+// That control had zero coverage (finding N3).
+test.describe('the default (chrome) session cannot beacon out', () => {
+  test('a fetch from the trusted chrome context is cancelled and silent', async ({ open, canary }) => {
+    const cage = await open({ thing: 'benign.html' })
+    await cage.waitForEmit('done')
+    // Drive the chrome webContents (the non-thing:// one) to attempt egress.
+    const probe = (await cage.app.evaluate(async (electron, canaryHttp) => {
+      const all = electron.webContents.getAllWebContents()
+      const chrome = all.find((wc) => !wc.getURL().startsWith('thing:'))
+      if (!chrome) return { noChrome: true }
+      return chrome.executeJavaScript(
+        `(async () => {
+          const out = { attempted: ${JSON.stringify(canaryHttp)} + '/chrome-egress' };
+          try { const res = await fetch(out.attempted); out.fetchResolved = res.ok; }
+          catch (e) { out.fetchError = String(e); }
+          return out;
+        })()`
+      )
+    }, canary.http)) as Record<string, unknown>
+    // The probe actually targeted the real canary (guards against a false pass).
+    expect(probe.attempted).toBe(`${canary.http}/chrome-egress`)
+    // ...and it was cancelled: the default session blocks remote origins even
+    // from trusted chrome.
+    expect(probe.fetchResolved).not.toBe(true)
+    expect(canary.silent()).toBe(true)
+  })
 })
 
 // ── Persistence / tracking channels ──────────────────────────────────────────
@@ -257,6 +333,24 @@ test.describe('escalation and capability probing fail', () => {
     expect(r.notifications).toBe('denied')
     const events = await cage.events()
     expect(has(events, (e) => e.type === 'permission-denied')).toBe(true)
+  })
+
+  test('child frames get no bridge and no network (iframe src + srcdoc) (N1)', async ({ open, canary }) => {
+    const cage = await open({ thing: 'escalate-iframe.html' })
+    const r = (await cage.waitForEmit('done', 12_000)) as Record<string, unknown>
+    // Vector 1: <iframe src="thing://own/index.html"> is blocked by frame-src
+    // 'none' — the CSP violation names the frame directive.
+    expect(r.frameSrcViolation).toBe(true)
+    // Vector 2: the srcdoc child. Either frame-src blocked it (it never ran, so
+    // never reported) OR it ran but has no bridge and no network. Both are safe;
+    // pin the disjunction so a regression in either direction fails.
+    if (r.childReported === true) {
+      expect(r.childHasBridge).toBe(false)
+      expect(r.childRequire).toBe('undefined')
+      expect(r.childFetchResolved).not.toBe(true)
+    }
+    // The out-of-process witness: nothing left the process from either frame.
+    expect(canary.silent()).toBe(true)
   })
 
   test('the bridge exposes exactly the four phase-2 methods on a frozen object', async ({ open }) => {
