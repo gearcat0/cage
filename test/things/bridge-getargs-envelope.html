@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>getArgs withholds the envelope</title>
+<!-- REGRESSION PIN (identity-spoof vector): the object handed to the thing
+     must be the decoded ThingArgs view and NOTHING else — no author, no
+     signature, no timestamp, no path/seq, no prog hash, and no attachment
+     hashes. A thing that can read an identity claim can render it, and a thing
+     that renders "signed by alice.eth" can lie. Identity is chrome's job. -->
+<script>
+  const a = window.bridge.getArgs();
+  const r = {
+    topLevelKeys: Object.keys(a).sort(),
+    attachmentKeys: (a.attachments || []).map((x) => Object.keys(x).sort()),
+    attachments: a.attachments
+  };
+  window.bridge.emit('done', r);
+</script>

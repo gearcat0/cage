@@ -7,7 +7,7 @@
      reflexive (srflx) or relay candidates, and no STUN datagram may reach the
      canary's UDP port. -->
 <script>
-  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const canary = ((window.bridge.getArgs() || {}).args || {}).canary || {};
   const r = { attack: 'webrtc', candidates: [] };
   try {
     if (typeof RTCPeerConnection === 'undefined') {

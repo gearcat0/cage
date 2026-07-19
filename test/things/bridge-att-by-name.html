@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attachments are served only by admitted name</title>
+<!-- Positive AND negative: getBlob('known') resolves and the URL loads;
+     getBlob('nope') is null; a hand-built att/ URL for an unknown name 404s
+     (the table + handler are the gate — getBlob null is just the clean
+     signal). -->
+<script>
+  const r = {
+    knownUrl: window.bridge.getBlob('known'),
+    nopeUrl: window.bridge.getBlob('nope'),
+    nonStringUrl: window.bridge.getBlob(42)
+  };
+  (async () => {
+    await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => { r.knownLoaded = true; resolve(); };
+      img.onerror = () => { r.knownError = true; resolve(); };
+      if (typeof r.knownUrl === 'string') img.src = r.knownUrl;
+      else resolve();
+      setTimeout(resolve, 2000);
+    });
+    await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => { r.handBuiltLoaded = true; resolve(); };
+      img.onerror = () => { r.handBuiltError = true; resolve(); };
+      img.src = 'thing://' + location.host + '/att/nope';
+      setTimeout(resolve, 2000);
+    });
+    window.bridge.emit('done', r);
+  })();
+</script>

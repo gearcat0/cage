@@ -1,8 +1,11 @@
 # the cage
 
-**Phase 1 of a larger project.** The cage is a hardened Electron renderer that
-runs arbitrary untrusted HTML/CSS/JS with **no network access and no ambient
-authority**, plus a suite of escape-attempt tests that prove it holds.
+**Phases 1–2 of a larger project.** The cage is a hardened Electron renderer
+that runs arbitrary untrusted HTML/CSS/JS with **no network access and no
+ambient authority**, plus a suite of escape-attempt tests that prove it holds.
+Phase 2 fleshed out the shell↔thing bridge from its stub into the real
+four-method interface defined by the format spec (see `BRIDGE_BUILD_BRIEF.md`
+in the bridge repo).
 
 ## The trust model, in a paragraph
 
@@ -10,37 +13,78 @@ The larger system distributes content as self-contained "things": single HTML
 files (inline JS/CSS) that render themselves. A thing is **untrusted code with
 nothing worth stealing and nowhere to send it.** All real authority — keys,
 networking, storage, signing — lives in a *trusted shell* outside the cage. The
-thing gets a tiny message bridge (`getArgs` / `emit`) and nothing else. The cage
-is the wall between those two worlds: if it holds, a malicious thing can at worst
-render deceptive pixels *inside its own rectangle* — it cannot exfiltrate, phone
-home, persist a tracking identifier, open a window, navigate away, or reach any
-Node/Electron capability. "No network" is enforced at **four independent layers**
-so that any single layer failing is not a breach.
+thing gets a tiny message bridge and nothing else. The cage is the wall between
+those two worlds: if it holds, a malicious thing can at worst render deceptive
+pixels *inside its own rectangle* — it cannot exfiltrate, phone home, persist a
+tracking identifier, open a window, navigate away, or reach any Node/Electron
+capability. "No network" is enforced at **four independent layers** so that any
+single layer failing is not a breach.
+
+## The bridge (phase 2)
+
+Four methods on a frozen object, and nothing else. Every method either hands
+the thing data it already came with, or accepts a *request* that grants nothing
+until a human confirms it in trusted chrome:
+
+- `getArgs()` — a decoded, read-only `ThingArgs` view (`type`, `args`,
+  attachment names + mime + size). **Never** raw CBOR, and **never** the
+  envelope: author/signature/timestamp live in chrome pixels the thing cannot
+  touch, because a thing that can draw "signed by alice.eth" can lie.
+  Attachment hashes are withheld too — things address blobs by *name*.
+- `getBlob(name)` — a `thing://<id>/att/<name>` URL, or null. A string, not
+  bytes: the protocol handler streams from the shell's store, so the bridge
+  moves no attachment bytes at all. The security gate is the admitted
+  attachment table + the handler (an unknown name 404s there whether or not it
+  came through `getBlob`).
+- `viewerInfo()` — coarse and non-identifying: `locale` + `colorScheme`,
+  nothing that fingerprints.
+- `emit(channel, data)` — fire-and-forget request that grants nothing.
+  `emit("publish", {type, args, blobs})` hands the shell a draft
+  manifest-to-be; the shell validates the shape, enforces per-blob AND
+  total-bytes caps, hashes inline blobs into an attachment table, and records
+  the draft. Signing/sealing/review UI are later phases.
+
+Attachment bytes live in a **content-addressed store** (`<cas>/blobs/<hex>`)
+for public things, or an **ephemeral in-memory store** for sealed things —
+decrypted sealed content must never be written to disk in the clear. Integrity
+is verified once at admission (format spec §8.1), not per serve. The `att/`
+route serves with the manifest's MIME, `nosniff`, and single-range `Range`
+support so media seeking works.
 
 ## Architecture
 
 ```
 src/main/
   index.ts      app bootstrap, privileged thing: scheme, BaseWindow with two
-                sibling native views (trusted chrome strip above, cage below)
+                sibling native views (trusted chrome strip above, cage below),
+                admission-lite for the test/dev harness
   cage.ts       constructs the hardened WebContentsView + session (Layers 1–4)
-  protocol.ts   thing:// handler — serves ONLY pre-supplied in-memory bytes
-  bridge.ts     shell side of the bridge: getArgs stub + emit logger
+  protocol.ts   thing:// handler — index.html from pre-supplied bytes, att/<name>
+                streamed by admitted name (mime + nosniff + Range), 404 otherwise
+  store.ts      CasStore (persistent, content-addressed, on-disk) and
+                EphemeralStore (memory-only, for sealed things)
+  bridge.ts     shell side of the bridge: ThingArgs view, name→URL resolution,
+                coarse viewerInfo, emit + publish-draft validation
+  draft.ts      pure receipt-side validation of emit("publish") drafts (caps,
+                shape, attachment-table assembly)
   events.ts     main-process event log the tests read from OUTSIDE the renderer
 src/preload/
-  index.ts      contextBridge exposure of a FROZEN { getArgs, emit } and nothing else
+  index.ts      contextBridge exposure of a FROZEN { getArgs, getBlob,
+                viewerInfo, emit } and nothing else
 src/renderer/
   index.html    the trusted chrome strip (id / hash / "UNSIGNED — test harness")
 test/
-  things/       one .html per attack (malicious) + benign.html (positive control)
+  things/       one .html per attack (malicious) + positive controls
   canary.ts     local TCP/HTTP/WS/UDP listener that must never receive a connection
-  cage.spec.ts  the escape-attempt suite
+  cage.spec.ts  the escape-attempt suite + the phase-2 bridge suite
 ```
 
 The thing is loaded as `thing://<random-id>/index.html`, handled by
-`protocol.handle()` on the cage's own session. The handler serves bytes **only**
-from an in-memory map populated before load; it never touches the filesystem
-based on thing input, and never touches the network.
+`protocol.handle()` on the cage's own session. The handler serves the program
+**only** from an in-memory map populated before load, and attachments **only**
+by resolving an admitted name to a hash and streaming that hash from the
+shell-controlled store; it never touches the filesystem based on thing input,
+and never touches the network.
 
 ### The four hardening layers
 
@@ -78,7 +122,7 @@ pnpm typecheck
 ```
 
 `pnpm test:cage` prints a wall — one line per attack, all green when the cage
-holds — ending in `CAGE HOLDS  22/22 attempts blocked, positive test passed.`
+holds — ending in `CAGE HOLDS  <n>/<n> attempts blocked, positive test passed.`
 
 ### How egress is verified (from outside the page)
 
@@ -158,7 +202,10 @@ rely on it.
 
 ## Out of scope for this phase
 
-Manifest/format, CBOR, signing/verification, encryption, Ethereum/Nostr identity,
-naming/ENS, torrent transport, the SQLite index, the feed UI, blob-by-hash
-attachments, versioning, publishing, code signing, auto-update. Search the code
-for `// LATER:` for the places that leave room for them.
+Signing and envelope assembly, sealing/encryption, the keyring and any key
+material in the shell, the review/confirm UI, `requestFile()` and file-picking,
+request/response `emit`, Ethereum/Nostr identity, naming/ENS, torrent transport,
+the SQLite index, the feed UI, versioning, code signing, auto-update. The bridge
+holds no keys, does no crypto, opens no network, and reads only the local
+content-addressed (or ephemeral) blob store behind the existing handler. Search
+the code for `// LATER:` for the places that leave room for what comes next.

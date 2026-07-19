@@ -22,8 +22,11 @@ test.describe('positive: the cage runs legitimate things', () => {
     expect(done.ok).toBe(true)
     expect(done.getArgsType).toBe('function')
     expect(done.emitType).toBe('function')
-    // getArgs() returned exactly the supplied payload (canary is merged in).
-    expect((done.sawArgs as Record<string, unknown>).greeting).toBe('hello-cage')
+    // getArgs() returned the ThingArgs view with exactly the supplied
+    // manifest args (canary is merged in by the harness).
+    const sawArgs = done.sawArgs as { type: string; args: Record<string, unknown> }
+    expect(sawArgs.args.greeting).toBe('hello-cage')
+    expect(sawArgs.type).toBe('test')
     // Both bridge functions reached the shell.
     const hello = await cage.emitsOn('hello')
     expect(hello.length).toBe(1)
@@ -114,6 +117,14 @@ test.describe('network egress is impossible', () => {
     // the unknown image 404s (onerror), never loads.
     expect(r.fetchOk).not.toBe(true)
     expect(r.imgLoaded).toBeUndefined()
+    // A hand-built att/ URL on the thing's OWN id, for a name not in its
+    // attachment table, 404s the same way (the table + handler are the gate).
+    expect(r.attImgLoaded).toBeUndefined()
+    expect(r.attImgError).toBe(true)
+    const events = await cage.events()
+    expect(
+      events.some((e) => e.type === 'att-request' && e.name === 'not-in-the-table' && e.status === 404)
+    ).toBe(true)
     expect(canary.silent()).toBe(true)
   })
 })
@@ -195,13 +206,19 @@ test.describe('escalation and capability probing fail', () => {
     expect(has(events, (e) => e.type === 'permission-denied')).toBe(true)
   })
 
-  test('the bridge exposes exactly getArgs/emit on a frozen object', async ({ open }) => {
+  test('the bridge exposes exactly the four phase-2 methods on a frozen object', async ({ open }) => {
+    // DELIBERATE phase-2 update (reviewed, not auto-fixed): the frozen surface
+    // widened from ['emit','getArgs'] to exactly these four. Any further
+    // change to this list is an authority grant and needs the same scrutiny.
+    const SURFACE = ['emit', 'getArgs', 'getBlob', 'viewerInfo']
     const cage = await open({ thing: 'escalate-bridge-surface.html' })
     const r = (await cage.waitForEmit('done')) as Record<string, unknown>
-    expect(r.keys).toEqual(['emit', 'getArgs'])
-    expect(r.ownProps).toEqual(['emit', 'getArgs'])
+    expect(r.keys).toEqual(SURFACE)
+    expect(r.ownProps).toEqual(SURFACE)
     expect(r.frozen).toBe(true)
     expect(r.getArgsType).toBe('function')
+    expect(r.getBlobType).toBe('function')
+    expect(r.viewerInfoType).toBe('function')
     expect(r.emitType).toBe('function')
     expect(r.ipcRenderer).toBe('undefined')
     expect(r.require).toBe('undefined')
@@ -221,6 +238,151 @@ test.describe('escalation and capability probing fail', () => {
     // The cage sits strictly below the chrome and never overlaps it.
     expect(b.cage!.y).toBe(b.chrome!.y + b.chrome!.height)
     expect(b.cage!.x).toBe(0)
+  })
+})
+
+// ── The bridge, phase 2: hands over data, never authority ───────────────────
+test.describe('the bridge hands over data, not authority', () => {
+  test('a thing renders args and an attachment end to end via getBlob', async ({ open, canary }) => {
+    const cage = await open({
+      thing: 'bridge-attachment.html',
+      args: { caption: 'hello poster' },
+      attachments: [{ name: 'poster', file: 'poster.png', mime: 'image/png' }]
+    })
+    const r = (await cage.waitForEmit('done')) as Record<string, unknown>
+    expect(r.type).toBe('test')
+    expect((r.args as Record<string, unknown>).caption).toBe('hello poster')
+    expect(r.attachments).toEqual([{ name: 'poster', mime: 'image/png', size: 70 }])
+    expect(r.url).toMatch(/^thing:\/\/[0-9a-f-]+\/att\/poster$/)
+    expect(r.imgLoaded).toBe(true)
+    expect(r.naturalWidth).toBe(1)
+    // The bytes were served through the handler with the manifest's MIME.
+    const events = await cage.events()
+    expect(events.some((e) => e.type === 'att-request' && e.name === 'poster' && (e.status === 200 || e.status === 206))).toBe(true)
+    // A public thing's attachment lives in the persistent CAS.
+    expect(cage.casBlobs().length).toBe(1)
+    expect(canary.silent()).toBe(true)
+  })
+
+  test('attachments are served only by admitted name', async ({ open }) => {
+    const cage = await open({
+      thing: 'bridge-att-by-name.html',
+      attachments: [{ name: 'known', file: 'poster.png', mime: 'image/png' }]
+    })
+    const r = (await cage.waitForEmit('done')) as Record<string, unknown>
+    expect(r.knownUrl).toMatch(/^thing:\/\//)
+    expect(r.knownLoaded).toBe(true)
+    // Unknown / malformed names: getBlob returns null (the clean signal)…
+    expect(r.nopeUrl).toBeNull()
+    expect(r.nonStringUrl).toBeNull()
+    // …and the actual gate — the handler — 404s the hand-built URL.
+    expect(r.handBuiltLoaded).toBeUndefined()
+    expect(r.handBuiltError).toBe(true)
+    const events = await cage.events()
+    expect(events.some((e) => e.type === 'att-request' && e.name === 'nope' && e.status === 404)).toBe(true)
+  })
+
+  test('a media attachment seeks: Range requests are served with 206', async ({ open }) => {
+    const cage = await open({
+      thing: 'bridge-att-range.html',
+      attachments: [{ name: 'tone', file: 'tone.wav', mime: 'audio/wav' }]
+    })
+    const r = (await cage.waitForEmit('done', 15_000)) as Record<string, unknown>
+    expect(r.mediaError).toBeUndefined()
+    expect(r.seeked).toBe(true)
+    expect(r.duration).toBeGreaterThan(1.5)
+    // Chromium's media stack asked for a byte range and got a 206 back.
+    const events = await cage.events()
+    const ranged = events.filter(
+      (e) => e.type === 'att-request' && e.name === 'tone' && e.status === 206 && e.range !== null
+    )
+    expect(ranged.length).toBeGreaterThan(0)
+  })
+
+  test('getArgs withholds the envelope (identity-spoof regression pin)', async ({ open }) => {
+    const cage = await open({
+      thing: 'bridge-getargs-envelope.html',
+      args: { anything: 1 },
+      attachments: [{ name: 'poster', file: 'poster.png', mime: 'image/png' }]
+    })
+    const r = (await cage.waitForEmit('done')) as Record<string, unknown>
+    // Exactly the ThingArgs view: no author, signature, created, path, seq,
+    // prev, prog — identity claims live in chrome pixels, never in the thing.
+    expect(r.topLevelKeys).toEqual(['args', 'attachments', 'type'])
+    // Attachment rows expose name/mime/size — never the hash: things address
+    // blobs by NAME, and must not be able to construct content claims.
+    expect(r.attachmentKeys).toEqual([['mime', 'name', 'size']])
+  })
+
+  test('viewerInfo is coarse and non-identifying', async ({ open }) => {
+    const cage = await open({ thing: 'bridge-viewerinfo.html' })
+    const r = (await cage.waitForEmit('done')) as Record<string, unknown>
+    // Exactly locale + colorScheme. Any new key here is a fingerprinting
+    // surface and must not appear without the same scrutiny as the bridge
+    // surface test.
+    expect(r.keys).toEqual(['colorScheme', 'locale'])
+    expect(r.localeType).toBe('string')
+    expect(['light', 'dark']).toContain(r.colorScheme)
+  })
+
+  test('emit("publish") records a validated draft with an assembled attachment table', async ({ open }) => {
+    const cage = await open({ thing: 'bridge-publish-valid.html' })
+    const done = (await cage.waitForEmit('done')) as Record<string, unknown>
+    const events = await cage.events()
+    const drafts = events.filter((e) => e.type === 'draft-recorded')
+    expect(drafts.length).toBe(1)
+    const draft = drafts[0] as Extract<CageEvent, { type: 'draft-recorded' }>
+    expect(draft.draftType).toBe('event')
+    // The shell hashed the inline blob into a manifest-shaped Att row.
+    const att = draft.att.poster
+    expect(att).toBeDefined()
+    expect(att.h).toMatch(/^[0-9a-f]{64}$/)
+    expect(att.n).toBe(done.blobLength)
+    expect(draft.blobBytes).toBe(done.blobLength)
+  })
+
+  test('oversized publish drafts are rejected (per-blob AND total caps)', async ({ open }) => {
+    const cage = await open({
+      thing: 'bridge-publish-oversized.html',
+      extraEnv: {
+        CAGE_MAX_DRAFT_BLOB_BYTES: '4096',
+        CAGE_MAX_DRAFT_TOTAL_BYTES: '16384'
+      }
+    })
+    await cage.waitForEmit('done')
+    const events = await cage.events()
+    const rejected = events.filter((e) => e.type === 'emit-rejected')
+    expect(rejected.some((e) => /too large/.test(e.reason))).toBe(true)
+    expect(rejected.some((e) => /total blob bytes/.test(e.reason))).toBe(true)
+    // Neither abuse produced a draft.
+    expect(events.some((e) => e.type === 'draft-recorded')).toBe(false)
+  })
+
+  test('malformed publish drafts are rejected', async ({ open }) => {
+    const cage = await open({ thing: 'bridge-publish-malformed.html' })
+    const done = (await cage.waitForEmit('done')) as Record<string, unknown>
+    const events = await cage.events()
+    const rejected = events.filter(
+      (e) => e.type === 'emit-rejected' && (e.reason as string).startsWith('publish:')
+    )
+    // Every malformed attempt was rejected; none became a draft.
+    expect(rejected.length).toBe(done.sent)
+    expect(events.some((e) => e.type === 'draft-recorded')).toBe(false)
+  })
+
+  test('sealed attachments serve from memory and never touch the CAS', async ({ open }) => {
+    const cage = await open({
+      thing: 'bridge-attachment.html',
+      sealed: true,
+      attachments: [{ name: 'poster', file: 'poster.png', mime: 'image/png' }]
+    })
+    const r = (await cage.waitForEmit('done')) as Record<string, unknown>
+    // The sealed thing rendered its attachment normally…
+    expect(r.imgLoaded).toBe(true)
+    expect(r.naturalWidth).toBe(1)
+    // …but NOTHING was written to the persistent content-addressed store:
+    // decrypted sealed bytes are memory-only, scoped to this cage's lifetime.
+    expect(cage.casBlobs()).toEqual([])
   })
 })
 

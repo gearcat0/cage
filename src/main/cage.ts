@@ -1,6 +1,6 @@
 import { WebContentsView, session as electronSession } from 'electron'
 import type { Session, WebContentsView as View } from 'electron'
-import { registerThingProtocol, THING_CSP, type BlobMap } from './protocol.js'
+import { registerThingProtocol, THING_CSP, type ResourceMap } from './protocol.js'
 import { record } from './events.js'
 
 // ── The cage ────────────────────────────────────────────────────────────────
@@ -26,8 +26,9 @@ export interface CageOptions {
   id: string
   /** Absolute path to the compiled cage preload (out/preload/index.js). */
   preloadPath: string
-  /** Pre-supplied bytes served by the thing:// handler. */
-  blobs: BlobMap
+  /** Everything the thing:// handler may serve for this cage: the program
+   *  bytes plus the admitted attachment table and its store (CAS/ephemeral). */
+  resources: ResourceMap
 }
 
 export function createCage(opts: CageOptions): CageHandle {
@@ -59,15 +60,15 @@ export function createCage(opts: CageOptions): CageHandle {
 
   const contents = view.webContents
 
-  hardenSession(ses, opts.blobs)
+  hardenSession(ses, opts.resources)
   hardenContents(contents)
 
   return { view, session: ses, partition, preloadPath: opts.preloadPath }
 }
 
-function hardenSession(ses: Session, blobs: BlobMap): void {
+function hardenSession(ses: Session, resources: ResourceMap): void {
   // The thing:// handler is the only allowed read path (serves supplied bytes).
-  registerThingProtocol(ses, blobs)
+  registerThingProtocol(ses, resources)
 
   // ── Layer 2 — request interception ───────────────────────────────────────
   // Cancel EVERY request whose scheme is not `thing:`. Deny by default; allow

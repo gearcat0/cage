@@ -4,7 +4,7 @@
 <!-- ATTACK: exfiltrate by making the renderer fetch a remote CSS resource
      (background-image url). Governed by CSP img-src. Canary must stay silent. -->
 <script>
-  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const canary = ((window.bridge.getArgs() || {}).args || {}).canary || {};
   const r = { attack: 'css-exfil' };
   try {
     // Append to <html>, which always exists while this in-<head> script runs

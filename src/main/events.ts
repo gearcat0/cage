@@ -13,9 +13,20 @@ export type CageEvent =
   | { type: 'permission-denied'; permission: string; via: 'request' | 'check' }
   | { type: 'emit'; channel: string; data: unknown; bytes: number }
   | { type: 'emit-rejected'; reason: string }
+  | { type: 'att-request'; name: string; status: number; range: string | null }
+  | {
+      type: 'draft-recorded'
+      draftType: string
+      att: Record<string, { h: string; m: string; n: number }>
+      argsBytes: number
+      blobBytes: number
+    }
 
 export interface CageGlobals {
   events: CageEvent[]
+  /** Publish drafts accepted from things (validated, attachment table built).
+   *  In-memory only for phase 2. LATER: real drafts area + review/sign UI. */
+  drafts: unknown[]
   /** Geometry of the two native views, so the chrome-spoofing test can assert
    *  the thing's pixels never leave the cage rectangle. Set by main/index.ts. */
   bounds: {
@@ -28,7 +39,8 @@ export interface CageGlobals {
 const g = globalThis as unknown as { __cage?: CageGlobals }
 
 export const cage: CageGlobals =
-  g.__cage ?? (g.__cage = { events: [], bounds: { chrome: null, cage: null, window: null } })
+  g.__cage ??
+  (g.__cage = { events: [], drafts: [], bounds: { chrome: null, cage: null, window: null } })
 
 export function record(event: CageEvent): void {
   cage.events.push(event)

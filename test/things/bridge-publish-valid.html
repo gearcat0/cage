@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>publish a valid draft</title>
+<!-- POSITIVE: a thing hands the shell a draft of a new instance of itself —
+     type + args + one generated inline blob (an SVG it produced). The shell
+     validates, hashes the blob into an attachment table, and records the
+     draft. The thing gets NOTHING back: publish is fire-and-forget, and
+     confirmation is a human decision in chrome. -->
+<script>
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="tomato"/></svg>';
+  const bytes = new TextEncoder().encode(svg);
+  window.bridge.emit('publish', {
+    type: 'event',
+    args: { title: 'bbq at ours', when: 'saturday' },
+    blobs: { poster: bytes }
+  });
+  window.bridge.emit('done', { sent: true, blobLength: bytes.length });
+</script>

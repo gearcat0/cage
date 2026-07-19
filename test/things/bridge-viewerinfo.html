@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>viewerInfo is coarse</title>
+<!-- REGRESSION PIN (fingerprinting vector): viewerInfo() must expose locale +
+     colorScheme and nothing else. Any additional field is a step back toward a
+     thing spying on its reader. -->
+<script>
+  const v = window.bridge.viewerInfo();
+  window.bridge.emit('done', {
+    keys: Object.keys(v).sort(),
+    localeType: typeof v.locale,
+    locale: v.locale,
+    colorScheme: v.colorScheme
+  });
+</script>

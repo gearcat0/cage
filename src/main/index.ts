@@ -1,10 +1,12 @@
 import { app, BaseWindow, WebContentsView, protocol, session } from 'electron'
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
 import { createCage } from './cage.js'
-import { installBridge, setArgsFor } from './bridge.js'
-import type { BlobMap } from './protocol.js'
+import { installBridge, bindCage, type ThingArgs } from './bridge.js'
+import type { CageResources, ResourceMap } from './protocol.js'
+import { CasStore, EphemeralStore, type AttachmentTable } from './store.js'
 import { cage as cageGlobals } from './events.js'
 
 // CommonJS output (main/preload are CJS; renderer stays ESM in the browser).
@@ -24,6 +26,7 @@ const CHROME_STRIP_HEIGHT = 44
 // same-origin behave); `secure` lets it host inline scripts under CSP without
 // being treated as insecure content. `supportFetchAPI:false` and
 // `corsEnabled:false` narrow it further — a thing has no reason to fetch().
+// `stream:true` lets the att/ route stream media with Range support.
 protocol.registerSchemesAsPrivileged([
   {
     scheme: 'thing',
@@ -79,7 +82,7 @@ const DEFAULT_THING = `<!doctype html>
 <body>
   <h1>hello from inside the cage</h1>
   <p class="ok" id="status">running…</p>
-  <p>args passed in via the bridge:</p>
+  <p>ThingArgs passed in via the bridge:</p>
   <pre id="args">…</pre>
   <script>
     const args = window.bridge.getArgs();
@@ -89,22 +92,42 @@ const DEFAULT_THING = `<!doctype html>
   </script>
 </body></html>`
 
+/** An attachment supplied to the test/dev harness: bytes come from a local
+ *  file chosen by the OPERATOR (env config), never by the thing. */
+interface AttSpec {
+  name: string
+  path: string
+  mime: string
+}
+
 interface LoadSpec {
   html: string
+  type: string
   args: unknown
+  attachments: AttSpec[]
+  /** Sealed things serve decrypted attachments from memory, never the CAS. */
+  sealed: boolean
 }
 
 function specFromEnv(): { primary: LoadSpec; secondary: LoadSpec | null } {
-  const args = parseJson(process.env.CAGE_ARGS) ?? {}
   const primary: LoadSpec = {
     html: process.env.CAGE_THING ? readFileSync(process.env.CAGE_THING, 'utf8') : DEFAULT_THING,
-    args
+    type: process.env.CAGE_TYPE ?? 'test',
+    args: parseJson(process.env.CAGE_ARGS) ?? {},
+    attachments: (parseJson(process.env.CAGE_ATTACHMENTS) as AttSpec[] | undefined) ?? [],
+    sealed: process.env.CAGE_SEALED === '1'
   }
   // A second cage in the SAME run, with its own fresh partition — used by the
   // storage-isolation tests to prove two different things cannot see each
   // other's storage.
   const secondary: LoadSpec | null = process.env.CAGE_THING2
-    ? { html: readFileSync(process.env.CAGE_THING2, 'utf8'), args: parseJson(process.env.CAGE_ARGS2) ?? {} }
+    ? {
+        html: readFileSync(process.env.CAGE_THING2, 'utf8'),
+        type: 'test',
+        args: parseJson(process.env.CAGE_ARGS2) ?? {},
+        attachments: [],
+        sealed: false
+      }
     : null
   return { primary, secondary }
 }
@@ -118,12 +141,51 @@ function parseJson(s: string | undefined): unknown {
   }
 }
 
-function buildBlobs(id: string, html: string): BlobMap {
-  const map: BlobMap = new Map()
-  const inner = new Map()
-  inner.set('index.html', { mime: mimeFor('index.html'), bytes: new TextEncoder().encode(html) })
-  map.set(id, inner)
-  return map
+/** The persistent, content-addressed store. Public things serve from here.
+ *  Tests point CAGE_CAS_DIR at a temp dir so they can assert what does (and
+ *  does not) get written. */
+let casStore: CasStore | null = null
+function cas(): CasStore {
+  if (!casStore) {
+    const dir =
+      process.env.CAGE_CAS_DIR ?? join(process.env.XDG_DATA_HOME ?? tmpdir(), 'cage-cas')
+    casStore = new CasStore(dir)
+  }
+  return casStore
+}
+
+/**
+ * Admission-lite for the phase-2 harness: hash each supplied attachment, build
+ * the manifest-style table, and place the bytes in the right store — the
+ * on-disk CAS for public things, an ephemeral in-memory store for sealed ones
+ * (decrypted sealed content MUST NOT be written to disk in the clear).
+ *
+ * LATER: the real admission pipeline (format §8.1) replaces this — decode +
+ * verify envelope/manifest, then hand the SAME shapes (table + store) to the
+ * cage. This function exists so the cage side is already shaped for it.
+ */
+function admitAttachments(spec: LoadSpec): { table: AttachmentTable; store: CageResources['store'] } {
+  const store = spec.sealed ? new EphemeralStore() : cas()
+  const table: AttachmentTable = new Map()
+  for (const att of spec.attachments) {
+    const bytes = readFileSync(att.path)
+    const hash = store.put(bytes)
+    table.set(att.name, { hash, mime: att.mime, size: bytes.length })
+  }
+  return { table, store }
+}
+
+function buildResources(id: string, html: string, spec: LoadSpec): { resources: ResourceMap; table: AttachmentTable } {
+  const { table, store } = admitAttachments(spec)
+  const resources: ResourceMap = new Map()
+  resources.set(id, {
+    blobs: new Map([
+      ['index.html', { mime: mimeFor('index.html'), bytes: new TextEncoder().encode(html) }]
+    ]),
+    attachments: table,
+    store
+  })
+  return { resources, table }
 }
 
 function shortHash(html: string): string {
@@ -138,10 +200,21 @@ async function mountCage(
   onTop: boolean
 ): Promise<{ id: string; hash: string }> {
   const id = randomUUID()
-  const blobs = buildBlobs(id, spec.html)
-  const handle = createCage({ id, preloadPath: PRELOAD, blobs })
+  const { resources, table } = buildResources(id, spec.html, spec)
+  const handle = createCage({ id, preloadPath: PRELOAD, resources })
 
-  setArgsFor(handle.view.webContents.id, spec.args)
+  // The decoded, read-only view the thing renders from. Names + metadata only:
+  // no envelope, no prog, no hashes (see bridge.ts for the reasoning).
+  const thingArgs: ThingArgs = {
+    type: spec.type,
+    args: spec.args,
+    attachments: [...table.entries()].map(([name, e]) => ({
+      name,
+      mime: e.mime,
+      size: e.size
+    }))
+  }
+  bindCage(handle.view.webContents.id, { thingId: id, thingArgs, attachments: table })
 
   if (onTop) win.contentView.addChildView(handle.view)
   else win.contentView.addChildView(handle.view, 0)

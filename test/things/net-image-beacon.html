@@ -4,7 +4,7 @@
 <!-- ATTACK: classic tracking-pixel exfil via Image().src and <img src>.
      Blocked by CSP img-src (thing:/data:/blob: only). Canary must stay silent. -->
 <script>
-  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const canary = ((window.bridge.getArgs() || {}).args || {}).canary || {};
   const r = { attack: 'image-beacon' };
   let done = false;
   const finish = () => { if (!done) { done = true; window.bridge.emit('done', r); } };

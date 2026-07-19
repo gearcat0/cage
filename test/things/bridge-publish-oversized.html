@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: oversized publish drafts</title>
+<!-- ATTACK (resource abuse): try to push more blob bytes than the caps allow —
+     once with a single blob over the per-blob cap, once with many small blobs
+     whose TOTAL exceeds the total cap (the P0-3 pattern: count-unbounded
+     growth). Both must be rejected; no draft may be recorded. The test runs
+     with the caps dialled down via env so the payloads stay small. -->
+<script>
+  // Per-blob cap breach (cap set to 4096 by the test).
+  window.bridge.emit('publish', {
+    type: 'event',
+    args: {},
+    blobs: { big: new Uint8Array(8192) }
+  });
+  // Total cap breach via many small blobs (total cap 16384 by the test).
+  const blobs = {};
+  for (let i = 0; i < 10; i++) blobs['b' + i] = new Uint8Array(2048);
+  window.bridge.emit('publish', { type: 'event', args: {}, blobs });
+  window.bridge.emit('done', { sent: 2 });
+</script>

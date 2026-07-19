@@ -4,7 +4,7 @@
 <!-- ATTACK: open a WebSocket to a canary. connect-src 'none' forbids the
      handshake; even the TCP socket must never open. Canary must stay silent. -->
 <script>
-  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const canary = ((window.bridge.getArgs() || {}).args || {}).canary || {};
   const r = { attack: 'websocket' };
   try {
     const ws = new WebSocket(canary.ws);
