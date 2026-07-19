@@ -160,6 +160,31 @@ geometry assertion is a cheap secondary check. A pixel-level screenshot via
 
 ---
 
+## Line-level review findings (this branch)
+
+A fresh read of the diff surfaced one real defect and one accepted observation.
+
+### R2-A (fixed) — unbounded draft retention
+`handlePublish` pushed each accepted draft — **including its inline blob
+bytes** — into `cageGlobals.drafts`, which was never bounded. A thing calling
+`emit("publish", validDraft)` in a loop (each up to the 64 MB total-blob cap)
+would grow main-process memory without limit. This is the P0-3 discipline that
+round 2 explicitly said "applies to the draft path"; it had been applied to the
+event log and the sealed store but missed here. **Fixed:** the drafts list now
+retains bounded (ring of 64) **metadata only** — `{type, att, argsBytes,
+blobBytes}`, never the raw bytes. A `bridge-publish-flood.html` regression test
+sends 100 valid drafts and asserts the list stays ≤ 64 and holds no `blobs` key.
+
+### R2-B (accepted, noted) — caps are enforced post-deserialization
+Both `emit` paths measure and cap size *after* Electron has structured-cloned
+the message into the main process, so an oversized payload is allocated before
+it is rejected. The publish path (binary blobs) raises the transient ceiling
+versus the generic path (JSON). The renderer is sandboxed with its own memory
+limit, so the practical ceiling is bounded, and rejected payloads are freed
+immediately — but a future hardening could measure total blob bytes in the
+preload and refuse before the IPC send, keeping an oversized draft's blast
+radius inside the sandboxed renderer. Noted for a later phase; not fixed here.
+
 ## What is genuinely good (for auditors)
 
 Stated by round 2 and unchanged: five independent egress controls (scheme

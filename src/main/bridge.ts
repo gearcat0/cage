@@ -58,6 +58,11 @@ const bindings = new Map<number, CageBinding>()
 // shell responsive under abuse (see the "bridge abuse" attacks).
 const MAX_EMIT_BYTES = 256 * 1024
 
+/** Cap the in-memory drafts list so a loop of valid publish drafts cannot grow
+ *  main-process memory without bound (P0-3 discipline). Metadata only; oldest
+ *  evicted. */
+const MAX_RETAINED_DRAFTS = 64
+
 /** Draft caps for the publish path (see draft.ts). Env-overridable so the
  *  abuse tests can exercise the caps without shipping huge payloads. */
 function capsFromEnv(): DraftCaps {
@@ -164,8 +169,22 @@ function handlePublish(data: unknown, caps: DraftCaps): void {
     record({ type: 'emit-rejected', reason: result.reason })
     return
   }
-  // LATER: persist to a real drafts area and hand to the review/sign flow.
-  cageGlobals.drafts.push(result.draft)
+  // Retain METADATA ONLY, in a bounded ring — never the raw blob bytes (P0-3
+  // discipline for the draft path). A thing can send valid drafts in a loop,
+  // each up to the total-blob cap; holding every draft's bytes forever would be
+  // an unbounded memory sink. The attachment table (name → hash/mime/size) is
+  // enough for phase 2; the inline bytes are dropped here.
+  // LATER: the real persist/sign flow writes the bytes to an on-disk drafts
+  // area (not memory) and hands the draft to the review UI.
+  cageGlobals.drafts.push({
+    type: result.draft.type,
+    att: result.draft.att,
+    argsBytes: result.argsBytes,
+    blobBytes: result.blobBytes
+  })
+  if (cageGlobals.drafts.length > MAX_RETAINED_DRAFTS) {
+    cageGlobals.drafts.splice(0, cageGlobals.drafts.length - MAX_RETAINED_DRAFTS)
+  }
   record({
     type: 'draft-recorded',
     draftType: result.draft.type,

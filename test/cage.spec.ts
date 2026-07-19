@@ -495,6 +495,24 @@ test.describe('the bridge hands over data, not authority', () => {
     expect(draft.blobBytes).toBe(done.blobLength)
   })
 
+  test('a flood of valid publish drafts stays bounded and retains no blob bytes', async ({ open }) => {
+    const cage = await open({ thing: 'bridge-publish-flood.html' })
+    const r = (await cage.waitForEmit('done')) as Record<string, number>
+    expect(r.count).toBe(100)
+    const info = (await cage.app.evaluate(async (electron) => {
+      const c = (electron.app as unknown as { __cage?: { drafts: Record<string, unknown>[] } }).__cage
+      if (!c) return { len: -1, lastKeys: [] as string[] }
+      return { len: c.drafts.length, lastKeys: Object.keys(c.drafts[c.drafts.length - 1] ?? {}).sort() }
+    })) as { len: number; lastKeys: string[] }
+    // 100 valid drafts accepted, but the in-memory list is a bounded ring...
+    expect(info.len).toBeGreaterThan(0)
+    expect(info.len).toBeLessThanOrEqual(64)
+    // ...and the retained draft is METADATA only — the raw blob bytes are not
+    // held (no `blobs` key), so the retained size per draft is tiny.
+    expect(info.lastKeys).toEqual(['argsBytes', 'att', 'blobBytes', 'type'])
+    expect(info.lastKeys).not.toContain('blobs')
+  })
+
   test('oversized publish drafts are rejected (per-blob AND total caps)', async ({ open }) => {
     const cage = await open({
       thing: 'bridge-publish-oversized.html',
