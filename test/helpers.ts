@@ -1,8 +1,40 @@
 import { test as base, _electron, type ElectronApplication } from '@playwright/test'
 import { join } from 'node:path'
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { startCanary, type Canary } from './canary.js'
+
+/** Recursively collect files under `dir` whose bytes contain `needle`. Used by
+ *  the sealed-content-off-disk test to prove decrypted plaintext is nowhere in
+ *  a scanned tree. Bounded by depth to stay cheap and non-flaky. */
+function scanTree(dir: string, needle: Buffer, depth = 0, hits: string[] = []): string[] {
+  if (depth > 8) return hits
+  let entries: string[]
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return hits
+  }
+  for (const name of entries) {
+    const p = join(dir, name)
+    let s
+    try {
+      s = statSync(p)
+    } catch {
+      continue
+    }
+    if (s.isDirectory()) {
+      scanTree(p, needle, depth + 1, hits)
+    } else if (s.isFile() && s.size < 32 * 1024 * 1024) {
+      try {
+        if (readFileSync(p).includes(needle)) hits.push(p)
+      } catch {
+        /* unreadable — skip */
+      }
+    }
+  }
+  return hits
+}
 
 // Mirror of the main-process CageEvent union (see src/main/events.ts). Redefined
 // locally so the test bundle never imports main/electron code.
@@ -59,8 +91,13 @@ export interface CageHandle {
   app: ElectronApplication
   /** The per-launch CAS directory — what the persistent store writes into. */
   casDir: string
+  /** The per-launch userData dir Electron was redirected to (cache tree). */
+  userDataDir: string
   /** Hex hashes present in the persistent CAS (empty => nothing hit disk). */
   casBlobs(): string[]
+  /** Absolute paths of files under the CAS + userData trees whose bytes contain
+   *  `needle` — the on-disk witness for the sealed-content test. */
+  scanDisk(needle: string): string[]
   /** Snapshot of the main-process event log, read from OUTSIDE the renderer. */
   events(): Promise<CageEvent[]>
   /** Bounded-log stats (length, dropped count, serialized size). */
@@ -137,6 +174,10 @@ export async function launch(opts: LaunchOptions): Promise<CageHandle> {
   // (or was not) persisted to disk by this run.
   const casDir = mkdtempSync(join(tmpdir(), 'cage-cas-'))
   env.CAGE_CAS_DIR = casDir
+  // ...and its own userData dir, so the sealed-content test can scan Electron's
+  // whole cache/storage tree for decrypted plaintext.
+  const userDataDir = mkdtempSync(join(tmpdir(), 'cage-userdata-'))
+  env.CAGE_USER_DATA_DIR = userDataDir
   Object.assign(env, opts.extraEnv ?? {})
 
   // NOTE (P0-1): Playwright's `_electron.launch` injects `--no-sandbox` by
@@ -150,12 +191,17 @@ export async function launch(opts: LaunchOptions): Promise<CageHandle> {
   const handle: CageHandle = {
     app,
     casDir,
+    userDataDir,
     casBlobs() {
       try {
         return readdirSync(join(casDir, 'blobs'))
       } catch {
         return []
       }
+    },
+    scanDisk(needle: string) {
+      const n = Buffer.from(needle, 'ascii')
+      return [...scanTree(casDir, n), ...scanTree(userDataDir, n)]
     },
     events: () => readEvents(app),
     stats: () =>
@@ -207,6 +253,7 @@ export async function launch(opts: LaunchOptions): Promise<CageHandle> {
     close: async () => {
       await app.close()
       rmSync(casDir, { recursive: true, force: true })
+      rmSync(userDataDir, { recursive: true, force: true })
     }
   }
   return handle

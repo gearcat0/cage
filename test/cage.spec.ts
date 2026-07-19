@@ -1,5 +1,6 @@
 import { test, expect, launch, type CageEvent } from './helpers.js'
 import { writeSandboxState } from './sandbox-state-file.js'
+import { SEALED_MAGIC } from './global-setup.js'
 
 // ── The escape-attempt suite ─────────────────────────────────────────────────
 // Each test loads a malicious thing into a REAL cage, lets it run its attack,
@@ -279,8 +280,14 @@ test.describe('persistence and tracking channels are closed', () => {
   })
 
   test('two different things cannot see each other\'s storage', async ({ open }) => {
-    // Writer and reader run in the SAME app run but different partitions.
-    const cage = await open({ thing: 'storage-write.html', thing2: 'storage-read.html' })
+    // Writer and reader run in the SAME app run but different partitions. The
+    // reader (secondary) is held until the writer's write-done emit (P1-6), so
+    // a null read means "isolated", not "nothing had been written yet".
+    const cage = await open({
+      thing: 'storage-write.html',
+      thing2: 'storage-read.html',
+      extraEnv: { CAGE_AWAIT_PRIMARY_EMIT: 'write-done' }
+    })
     await cage.waitForEmit('write-done')
     const found = (await cage.waitForEmit('read-result')) as { found: Record<string, unknown> }
     expect(found.found.localStorage).toBeNull()
@@ -517,19 +524,29 @@ test.describe('the bridge hands over data, not authority', () => {
     expect(events.some((e) => e.type === 'draft-recorded')).toBe(false)
   })
 
-  test('sealed attachments serve from memory and never touch the CAS', async ({ open }) => {
-    const cage = await open({
-      thing: 'bridge-attachment.html',
-      sealed: true,
-      attachments: [{ name: 'poster', file: 'poster.png', mime: 'image/png' }]
-    })
+  test('sealed attachments serve from memory and never touch disk', async ({ open }) => {
+    const att = [{ name: 'poster', file: 'sealed-poster.png', mime: 'image/png' }]
+
+    // Control: a PUBLIC render of the SAME magic-marked fixture writes it to the
+    // CAS, and scanDisk finds the marker there. This proves the scanner is not
+    // vacuous — so absence in the sealed case below means "not on disk", not
+    // "the scan can't detect it" (the 1.8-style false-pass guard).
+    const pub = await open({ thing: 'bridge-attachment.html', attachments: att })
+    const pr = (await pub.waitForEmit('done')) as Record<string, unknown>
+    expect(pr.imgLoaded).toBe(true)
+    expect(pub.casBlobs().length).toBe(1)
+    expect(pub.scanDisk(SEALED_MAGIC).length).toBeGreaterThan(0)
+
+    // Sealed: the thing renders its attachment normally…
+    const cage = await open({ thing: 'bridge-attachment.html', sealed: true, attachments: att })
     const r = (await cage.waitForEmit('done')) as Record<string, unknown>
-    // The sealed thing rendered its attachment normally…
     expect(r.imgLoaded).toBe(true)
     expect(r.naturalWidth).toBe(1)
-    // …but NOTHING was written to the persistent content-addressed store:
-    // decrypted sealed bytes are memory-only, scoped to this cage's lifetime.
+    // …but the decrypted plaintext is provably NOWHERE on disk: not in the
+    // persistent CAS, and not anywhere in Electron's userData/cache tree.
+    // Sealed bytes live only in the ephemeral in-memory store.
     expect(cage.casBlobs()).toEqual([])
+    expect(cage.scanDisk(SEALED_MAGIC)).toEqual([])
   })
 })
 

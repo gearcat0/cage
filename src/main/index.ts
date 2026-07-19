@@ -13,6 +13,14 @@ import { cage as cageGlobals, record } from './events.js'
 // `__dirname` is provided by the bundler and points at out/main.
 const PRELOAD = join(__dirname, '../preload/index.js')
 
+// TEST-ONLY (finding 1.3): redirect Electron's userData/cache tree to a dir the
+// suite controls, so the sealed-content-off-disk test can scan a known location
+// for decrypted plaintext. Must run before app is ready. No effect in a real
+// shell (env unset).
+if (process.env.CAGE_USER_DATA_DIR) {
+  app.setPath('userData', process.env.CAGE_USER_DATA_DIR)
+}
+
 // Expose the event log on the Electron `app` singleton so the Playwright suite
 // can read it from OUTSIDE the renderer via `evaluate(({ app }) => app.__cage)`.
 // (Playwright's main-process evaluate runs in a separate VM whose `globalThis`
@@ -361,6 +369,12 @@ app.whenReady().then(async () => {
   )
 
   if (secondary) {
+    // TEST-ONLY happens-before (finding P1-6): the same-run storage-isolation
+    // test needs the primary to finish WRITING before the reader mounts, or the
+    // reader can pass because there was nothing to find yet — not because
+    // partitions are isolated. Gate the secondary mount on a named primary emit.
+    const awaitChannel = process.env.CAGE_AWAIT_PRIMARY_EMIT
+    if (awaitChannel) await waitForEmitChannel(awaitChannel)
     // Second cage: fresh partition, own random id. It renders on top of the
     // first for the storage-isolation and cross-id tests. Hand it the primary's
     // real id so the cross-id attack can try (and fail) to reach the primary's
@@ -372,5 +386,23 @@ app.whenReady().then(async () => {
     await mountCage(win, secondaryWithId, cageLayout, true)
   }
 })
+
+/** Resolve once a `cage:emit` on `channel` has been recorded (or on timeout).
+ *  Test-only, driven by CAGE_AWAIT_PRIMARY_EMIT; polls the shared event log
+ *  (emit records carry their channel). */
+function waitForEmitChannel(channel: string, timeoutMs = 10_000): Promise<void> {
+  return new Promise((resolve) => {
+    const start = Date.now()
+    const seen = (): boolean =>
+      cageGlobals.events.some((e) => e.type === 'emit' && e.channel === channel)
+    if (seen()) return resolve()
+    const timer = setInterval(() => {
+      if (seen() || Date.now() - start > timeoutMs) {
+        clearInterval(timer)
+        resolve()
+      }
+    }, 50)
+  })
+}
 
 app.on('window-all-closed', () => app.quit())

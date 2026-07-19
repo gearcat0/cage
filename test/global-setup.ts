@@ -7,11 +7,20 @@ import { join } from 'node:path'
 
 export const FIXTURES_DIR = join(__dirname, 'fixtures')
 
+/** A distinctive byte marker embedded in the sealed fixture so the on-disk
+ *  scan (finding 1.3) can search for the decrypted plaintext by content. */
+export const SEALED_MAGIC = 'CAGE_SEALED_PLAINTEXT_MAGIC_7f3a9b21'
+
 /** A valid 1x1 red PNG. Chromium decodes it; naturalWidth === 1. */
 const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
   'base64'
 )
+
+/** The same PNG with the magic marker appended after IEND. Decoders ignore
+ *  trailing bytes, so Chromium still renders it (naturalWidth === 1), while the
+ *  bytes on the wire contain a signature the disk scan can look for. */
+const SEALED_PNG = Buffer.concat([PNG_1X1, Buffer.from(`\n${SEALED_MAGIC}\n`, 'ascii')])
 
 /** A valid PCM WAV: mono, 8 kHz, 16-bit, ~2 s of a 440 Hz tone. Chromium's
  *  media stack plays WAV natively and requests it with `Range: bytes=0-`,
@@ -53,6 +62,8 @@ export default function globalSetup(): void {
   mkdirSync(FIXTURES_DIR, { recursive: true })
   const png = join(FIXTURES_DIR, 'poster.png')
   if (!existsSync(png)) writeFileSync(png, PNG_1X1)
+  const sealedPng = join(FIXTURES_DIR, 'sealed-poster.png')
+  writeFileSync(sealedPng, SEALED_PNG) // always rewrite: marker must be current
   const wav = join(FIXTURES_DIR, 'tone.wav')
   if (!existsSync(wav)) writeFileSync(wav, makeWav())
 }
