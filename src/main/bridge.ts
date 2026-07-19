@@ -1,5 +1,6 @@
 import { app, ipcMain, nativeTheme } from 'electron'
-import { cage as cageGlobals, record } from './events.js'
+import { createHash } from 'node:crypto'
+import { cage as cageGlobals, record, recordTestEmit } from './events.js'
 import { attachmentUrl } from './protocol.js'
 import type { AttachmentTable } from './store.js'
 import { DEFAULT_DRAFT_CAPS, validateDraft, type DraftCaps } from './draft.js'
@@ -131,9 +132,11 @@ export function installBridge(): void {
 
     // Generic path: defensively measure size and swallow anything
     // unserialisable so the shell cannot be crashed from inside the cage.
+    let json = ''
     let bytes = 0
     try {
-      bytes = Buffer.byteLength(JSON.stringify(data ?? null))
+      json = JSON.stringify(data ?? null)
+      bytes = Buffer.byteLength(json)
     } catch {
       record({ type: 'emit-rejected', reason: 'data not serialisable' })
       return
@@ -142,7 +145,12 @@ export function installBridge(): void {
       record({ type: 'emit-rejected', reason: `payload too large (${bytes} bytes)` })
       return
     }
-    record({ type: 'emit', channel, data, bytes })
+    // Store size + a short content hash, NEVER the payload — a flood of
+    // ≤256 KB messages must not grow the main-process log without bound
+    // (P0-3). The payload is retained only in the test-only capture buffer.
+    const hash = createHash('sha256').update(json).digest('hex').slice(0, 16)
+    record({ type: 'emit', channel, bytes, hash })
+    recordTestEmit(channel, data, bytes)
   })
 }
 

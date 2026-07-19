@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: reach another thing's resources by id</title>
+<!-- ATTACK (cross-session): each cage session registers ONLY its own resources.
+     This thing is handed the OTHER thing's real id and tries to load that
+     thing's index.html from its own session. It must fail: the handler on this
+     session has no resources for that id, so it 404s. This pins the per-session
+     registration property — a refactor that shared one resource map across
+     sessions would let one thing read another's bytes, and this would catch it. -->
+<script>
+  const args = (window.bridge.getArgs() || {}).args || {};
+  const r = { attack: 'cross-id', primaryId: args.primaryId || null };
+  // Distinct channel so the test can tell this thing's result from the
+  // primary's own 'done' in the same run.
+  (async () => {
+    if (!r.primaryId) { window.bridge.emit('cross-done', r); return; }
+    await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => { r.imgLoaded = true; resolve(); };
+      img.onerror = () => { r.imgError = true; resolve(); };
+      img.src = 'thing://' + r.primaryId + '/index.html';
+      setTimeout(resolve, 1500);
+    });
+    window.bridge.emit('cross-done', r);
+  })();
+</script>

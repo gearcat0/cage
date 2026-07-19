@@ -18,12 +18,34 @@ describe('parseThingUrl', () => {
     expect(parseThingUrl('not a url')).toBeNull()
   })
 
-  it('neutralises path traversal (URL normalises dot-segments; no fs behind it)', () => {
-    // `new URL()` collapses `..` before we look, so the key is harmless and
-    // simply misses the in-memory blob map. Either way, nothing escapes.
+  it('documents that URL normalisation collapses literal dot-segments', () => {
+    // `new URL()` collapses a literal `..` before we look, so this key is
+    // harmless and simply misses the resource map. This case tests the WHATWG
+    // parser, not our guard — see the next test for the guard itself.
     const p = parseThingUrl('thing://abc/../../etc/passwd')
     expect(p).not.toBeNull()
     expect(p!.path).not.toContain('..')
+  })
+
+  it('rejects percent-encoded traversal that survives normalisation (guard is LIVE)', () => {
+    // `%2f` is an encoded slash, so the URL parser does NOT treat these as dot
+    // segments and does not collapse them. We `decodeURIComponent` AFTER
+    // `new URL()`, which turns them into `../` — and the `path.includes('..')`
+    // guard is what rejects them. Remove that guard and these return a path;
+    // this test is its keeper (finding P1-5 / PR-review 1.1).
+    expect(parseThingUrl('thing://abc/att/%2e%2e%2fsecret')).toBeNull()
+    expect(parseThingUrl('thing://abc/att/..%2f..%2fetc/passwd')).toBeNull()
+    expect(parseThingUrl('thing://abc/%2e%2e%2f%2e%2e%2fpasswd')).toBeNull()
+  })
+
+  it('decodes att/ names so the admitted TABLE is the gate, not string shape', () => {
+    // These are well-formed and reach the handler; the table lookup on the
+    // decoded name is what fails them (an unknown name 404s). parseThingUrl's
+    // job here is only to hand the handler the exact decoded name.
+    expect(parseThingUrl('thing://abc/att/foo%2Fbar')!.path).toBe('att/foo/bar')
+    expect(parseThingUrl('thing://abc/att/poster%20(1).webp')!.path).toBe('att/poster (1).webp')
+    // A null byte survives decoding and simply misses the table.
+    expect(parseThingUrl('thing://abc/att/foo%00bar')!.path).toBe('att/foo\u0000bar')
   })
 })
 

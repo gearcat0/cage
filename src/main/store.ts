@@ -96,6 +96,12 @@ export class EphemeralStore implements AttachmentStore {
     return hash
   }
 
+  /** Drop all decrypted bytes. Called when the cage is torn down so sealed
+   *  plaintext does not outlive the thing that rendered it (1.3). */
+  clear(): void {
+    this.blobs.clear()
+  }
+
   has(hashHex: string): boolean {
     return this.blobs.has(hashHex)
   }

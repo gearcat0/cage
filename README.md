@@ -122,12 +122,20 @@ pnpm typecheck
 ```
 
 `pnpm test:cage` prints a wall — one line per attack, all green when the cage
-holds — ending in `CAGE HOLDS  <n>/<n> attempts blocked, positive test passed.`
+holds — ending in `CAGE HOLDS  <n>/<n> attempts blocked, positive test passed.`,
+followed by the **OS-sandbox status** for that run. Under Playwright the OS
+sandbox is off (see below), so the banner reads `(OS SANDBOX: OFF — Layer 1 not
+exercised; --no-sandbox)`. That qualifier is deliberate: the behavioral
+guarantees below do not depend on Layer 1, and the banner must never let a green
+wall imply the OS sandbox was exercised when it was not (finding P0-1). The
+`harness integrity` test records the sandbox state from a real launch and fails
+unless a `--no-sandbox` run is explicitly acknowledged with
+`CAGE_ALLOW_NO_SANDBOX=1` (which `pnpm test:cage` sets).
 
 ### How egress is verified (from outside the page)
 
 Each malicious thing receives the canary's URLs through the legitimate bridge
-(`getArgs().canary`) and tries to beacon to them. The suite then asserts, from
+(`getArgs().args.canary`) and tries to beacon to them. The suite then asserts, from
 the **main process** and from the **canary listener** — both outside the
 renderer — that nothing arrived: not a TCP socket, HTTP request, WebSocket
 upgrade, or UDP datagram. The thing's own error callbacks are treated as
@@ -164,7 +172,14 @@ depend on the OS sandbox.** The OS sandbox is the additional backstop against a
 renderer memory-corruption exploit; it is present in the cage's configuration and
 active whenever the app runs on a host where it can initialize (a normal `pnpm
 dev`), but the suite does not attempt a memory-corruption exploit and so does not
-rely on it.
+rely on it. Rather than assert this in prose alone, the app records the measured
+sandbox state at startup (`--no-sandbox` seen via `app.commandLine.hasSwitch`,
+plus the env var), the `harness integrity` test reads it back from a real
+launch, and the reporter prints it in the banner — so the claim here is one the
+suite demonstrates, not one you have to take on trust. A static Vitest assertion
+(`test/unit/hardening.test.ts`) separately guards every `webPreferences` Layer 1
+flag, because no behavioral test can catch a refactor that drops `sandbox: true`
+(every behavioral test passes with it off).
 
 ## Adding a new attack test (the suite will grow)
 

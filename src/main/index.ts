@@ -4,10 +4,10 @@ import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
 import { createCage } from './cage.js'
-import { installBridge, bindCage, type ThingArgs } from './bridge.js'
+import { installBridge, bindCage, unbindCage, type ThingArgs } from './bridge.js'
 import type { CageResources, ResourceMap } from './protocol.js'
 import { CasStore, EphemeralStore, type AttachmentTable } from './store.js'
-import { cage as cageGlobals } from './events.js'
+import { cage as cageGlobals, record } from './events.js'
 
 // CommonJS output (main/preload are CJS; renderer stays ESM in the browser).
 // `__dirname` is provided by the bundler and points at out/main.
@@ -41,18 +41,38 @@ protocol.registerSchemesAsPrivileged([
   }
 ])
 
-// ── Layer 3 (bootstrap) — disable WebRTC at the command line ─────────────────
-// Belt to Layer 3's braces (per-contents policy + dead proxy). The app has no
-// need for WebRTC, so we blunt it process-wide too.
+// ── Layer 3 (bootstrap) — WebRTC command-line switches ───────────────────────
+// Two switches, each doing a distinct thing (finding P0-2, corrected):
+//
+//  1. force-webrtc-ip-handling-policy=disable_non_proxied_udp — the REAL,
+//     process-wide WebRTC control. With no proxy that permits UDP (Layer 3
+//     points at a dead one), no ICE candidate can carry a usable transport, so
+//     WebRTC has no path out. This is the load-bearing switch; the per-contents
+//     setWebRTCIPHandlingPolicy in cage.ts is the same control applied per view
+//     and is now belt-and-braces to this one.
+//  2. disable-features=WebRtcHideLocalIpsWithMdns — a companion, NOT a disabler.
+//     It turns OFF the mDNS-hiding privacy feature, so that if a candidate ever
+//     did form it would carry a raw 127.x/LAN IP rather than an `.local` name.
+//     Since the dead proxy means no candidate leaves anyway, this makes a
+//     hypothetical breach MORE visible to the canary, not less. It does not, by
+//     itself, disable WebRTC — the name is easy to misread as if it did.
 app.commandLine.appendSwitch('force-webrtc-ip-handling-policy', 'disable_non_proxied_udp')
 app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns')
 
-// NOTE: the OS-level sandbox is on by default (webPreferences `sandbox: true`).
-// In a locked-down container where it cannot self-initialize, launch dev with
-// `ELECTRON_DISABLE_SANDBOX=1` (see the "dev:nosandbox" script). That env var is
-// read by the Electron binary BEFORE JS runs — a JS-side appendSwitch would be
-// too late. It is a dev-only accommodation; the network/storage/escalation
-// layers still apply, but Layer 1 process isolation is off when it is set.
+// NOTE on the OS sandbox (finding P0-1): the cage REQUESTS the OS-level sandbox
+// via webPreferences `sandbox: true`, but whether it is actually active depends
+// on the launcher and host. Two ways it ends up OFF:
+//   - `ELECTRON_DISABLE_SANDBOX=1` in the environment (the "dev:nosandbox"
+//     accommodation for containers where the setuid helper can't self-init);
+//     read by the Electron binary before JS runs.
+//   - a `--no-sandbox` argv flag — which Playwright's Electron launcher injects
+//     by DEFAULT, so the escape suite runs with the OS sandbox off.
+// Neither weakens the behavioral guarantees (network/storage/escalation are
+// enforced by contextIsolation + CSP + the request canceller + partitions,
+// none of which depend on the OS sandbox); the OS sandbox is the extra backstop
+// against a renderer memory-corruption exploit. Because it can be silently off,
+// we record ground truth below and the reporter/suite surface it rather than
+// letting a green wall imply Layer 1 was exercised when it was not.
 // LATER: when the real shell needs no media at all, consider building Electron
 // with WebRTC compiled out entirely.
 
@@ -201,7 +221,19 @@ async function mountCage(
 ): Promise<{ id: string; hash: string }> {
   const id = randomUUID()
   const { resources, table } = buildResources(id, spec.html, spec)
-  const handle = createCage({ id, preloadPath: PRELOAD, resources })
+  const handle = await createCage({ id, preloadPath: PRELOAD, resources })
+
+  // Tear down per-cage state when the view is destroyed (N5, 1.3): forget the
+  // bridge binding so `bindings` does not grow as the real shell mounts many
+  // things, and drop the ephemeral sealed store so decrypted plaintext does
+  // not linger in a main-process map beyond the cage's lifetime.
+  const wc = handle.view.webContents
+  wc.once('destroyed', () => {
+    unbindCage(wc.id)
+    const store = resources.get(id)?.store
+    if (store instanceof EphemeralStore) store.clear()
+    resources.delete(id)
+  })
 
   // The decoded, read-only view the thing renders from. Names + metadata only:
   // no envelope, no prog, no hashes (see bridge.ts for the reasoning).
@@ -227,6 +259,17 @@ async function mountCage(
 
 app.whenReady().then(async () => {
   installBridge()
+
+  // Record OS-sandbox ground truth (P0-1) so the suite can assert on it and the
+  // reporter can state it. Detect `--no-sandbox` via BOTH raw argv and
+  // Chromium's parsed switch table (`app.commandLine.hasSwitch`) — Playwright
+  // injects the flag in a way that does not always survive in `process.argv`,
+  // and the honest failure direction is to report OFF, never a false ON.
+  record({
+    type: 'sandbox-state',
+    envDisabled: !!process.env.ELECTRON_DISABLE_SANDBOX,
+    argvNoSandbox: process.argv.includes('--no-sandbox') || app.commandLine.hasSwitch('no-sandbox')
+  })
 
   // Harden the DEFAULT session too. The untrusted thing never uses this session
   // (it gets its own partition), but the trusted chrome UI does — so allow only
@@ -311,9 +354,14 @@ app.whenReady().then(async () => {
 
   if (secondary) {
     // Second cage: fresh partition, own random id. It renders on top of the
-    // first for this headless isolation test; its only job is to report what
-    // (if anything) it can see of the first thing's storage.
-    await mountCage(win, secondary, cageLayout, true)
+    // first for the storage-isolation and cross-id tests. Hand it the primary's
+    // real id so the cross-id attack can try (and fail) to reach the primary's
+    // resources from a different session — proving per-session registration.
+    const secondaryWithId: LoadSpec = {
+      ...secondary,
+      args: { ...(secondary.args as Record<string, unknown>), primaryId: info.id }
+    }
+    await mountCage(win, secondaryWithId, cageLayout, true)
   }
 })
 

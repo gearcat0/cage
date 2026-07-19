@@ -11,7 +11,7 @@ export type CageEvent =
   | { type: 'navigation-blocked'; url: string; kind: 'navigate' | 'redirect' }
   | { type: 'window-open-denied'; url: string }
   | { type: 'permission-denied'; permission: string; via: 'request' | 'check' }
-  | { type: 'emit'; channel: string; data: unknown; bytes: number }
+  | { type: 'emit'; channel: string; bytes: number; hash: string }
   | { type: 'emit-rejected'; reason: string }
   | { type: 'att-request'; name: string; status: number; range: string | null }
   | {
@@ -21,6 +21,17 @@ export type CageEvent =
       argsBytes: number
       blobBytes: number
     }
+  | { type: 'sandbox-state'; envDisabled: boolean; argvNoSandbox: boolean }
+
+/** Main-process log stats — lets a flood test assert the log stayed bounded. */
+export interface CageStats {
+  eventsLength: number
+  dropped: number
+  testEmitsLength: number
+  /** Total serialized size of the event log, in bytes. Proves emit payloads
+   *  are not retained: bytes-sent can dwarf this while it stays small. */
+  eventsBytes: number
+}
 
 export interface Bounds {
   chrome: { x: number; y: number; width: number; height: number } | null
@@ -52,6 +63,10 @@ export interface CageHandle {
   casBlobs(): string[]
   /** Snapshot of the main-process event log, read from OUTSIDE the renderer. */
   events(): Promise<CageEvent[]>
+  /** Bounded-log stats (length, dropped count, serialized size). */
+  stats(): Promise<CageStats>
+  /** Ground-truth OS-sandbox state recorded by the app at startup. */
+  sandboxState(): Promise<{ envDisabled: boolean; argvNoSandbox: boolean } | null>
   /** Resolve with the data of the first emit seen on `channel`. */
   waitForEmit(channel: string, timeoutMs?: number): Promise<unknown>
   /** All emit payloads seen on `channel` so far. */
@@ -87,8 +102,24 @@ async function readEvents(app: ElectronApplication): Promise<CageEvent[]> {
   })
 }
 
+async function readTestEmits(app: ElectronApplication): Promise<{ channel: string; data: unknown }[]> {
+  return app.evaluate(async (electron) => {
+    const cage = (electron.app as unknown as { __cage?: { testEmits: unknown[] } }).__cage
+    return (cage ? cage.testEmits : []) as never
+  })
+}
+
 export async function launch(opts: LaunchOptions): Promise<CageHandle> {
   const env: Record<string, string> = { ...process.env } as Record<string, string>
+  // P0-1: never inherit the sandbox-disable escape hatch from the developer's
+  // shell or CI. If it were set, the whole suite would run with Layer 1 off and
+  // still report green. The app records ground truth (sandbox-state) and the
+  // suite asserts on it; scrubbing here keeps that assertion honest.
+  delete env.ELECTRON_DISABLE_SANDBOX
+  // Retain emit payloads for assertions (test-only capture, bounded) and keep
+  // the stderr mirror quiet so a flood test does not spew thousands of writes.
+  env.CAGE_TEST_CAPTURE = '1'
+  env.CAGE_QUIET = '1'
   env.CAGE_THING = thingPath(opts.thing)
   env.CAGE_ARGS = JSON.stringify({ ...(opts.args ?? {}), canary: canaryArg(opts.canary) })
   if (opts.type) env.CAGE_TYPE = opts.type
@@ -108,7 +139,12 @@ export async function launch(opts: LaunchOptions): Promise<CageHandle> {
   env.CAGE_CAS_DIR = casDir
   Object.assign(env, opts.extraEnv ?? {})
 
-  // No --no-sandbox: the cage runs with its real `sandbox: true` renderers.
+  // NOTE (P0-1): Playwright's `_electron.launch` injects `--no-sandbox` by
+  // default, so the OS sandbox (Layer 1) is OFF for the suite. The behavioral
+  // guarantees do not depend on it; the app records this and the harness-
+  // integrity test + reporter surface it, so the wall never overstates what was
+  // proven. To run WITH the OS sandbox, pass `chromiumSandbox: true` here on a
+  // host that can initialize it.
   const app = await _electron.launch({ args: [MAIN], env })
 
   const handle: CageHandle = {
@@ -122,21 +158,46 @@ export async function launch(opts: LaunchOptions): Promise<CageHandle> {
       }
     },
     events: () => readEvents(app),
+    stats: () =>
+      app.evaluate(async (electron) => {
+        const cage = (
+          electron.app as unknown as {
+            __cage?: { events: unknown[]; dropped: number; testEmits: unknown[] }
+          }
+        ).__cage
+        if (!cage) return { eventsLength: 0, dropped: 0, testEmitsLength: 0, eventsBytes: 0 } as never
+        return {
+          eventsLength: cage.events.length,
+          dropped: cage.dropped,
+          testEmitsLength: cage.testEmits.length,
+          eventsBytes: JSON.stringify(cage.events).length
+        } as never
+      }),
+    async sandboxState() {
+      const evs = await readEvents(app)
+      const s = evs.find((e) => e.type === 'sandbox-state')
+      return s && s.type === 'sandbox-state'
+        ? { envDisabled: s.envDisabled, argvNoSandbox: s.argvNoSandbox }
+        : null
+    },
     async waitForEmit(channel, timeoutMs = 10_000) {
       const deadline = performance.now() + timeoutMs
       for (;;) {
-        const evs = await readEvents(app)
-        const hit = evs.find((e) => e.type === 'emit' && e.channel === channel)
-        if (hit && hit.type === 'emit') return hit.data
+        // Payloads live in the test-only capture buffer, not the main log
+        // (which retains only size + hash for emit — see P0-3).
+        const caps = await readTestEmits(app)
+        const hit = caps.find((e) => e.channel === channel)
+        if (hit) return hit.data
         if (performance.now() > deadline) {
+          const evs = await readEvents(app)
           throw new Error(`timed out waiting for emit on "${channel}"; saw: ${JSON.stringify(evs)}`)
         }
         await sleep(100)
       }
     },
     async emitsOn(channel) {
-      const evs = await readEvents(app)
-      return evs.filter((e) => e.type === 'emit' && e.channel === channel).map((e) => (e as { data: unknown }).data)
+      const caps = await readTestEmits(app)
+      return caps.filter((e) => e.channel === channel).map((e) => e.data)
     },
     bounds: () =>
       app.evaluate(async (electron) => {

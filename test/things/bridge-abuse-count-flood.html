@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: bridge abuse (emit-count flood)</title>
+<!-- ATTACK (memory via record() count): emit far more messages than the ring
+     buffer holds. Each emit is tiny and legal, but the COUNT is the vector —
+     an unbounded log would grow one record per message forever (P0-3). The
+     emits are ordered on one IPC channel, so by the time 'done' is observed all
+     of them have been recorded; the log must have truncated (dropped > 0) and
+     never exceeded its cap. This proves eviction under a real driver, exactly
+     and repeatably. -->
+<script>
+  const r = { attack: 'bridge-count-flood', count: 2500 };
+  for (let i = 0; i < r.count; i++) window.bridge.emit('spam', { i });
+  window.bridge.emit('done', r);
+</script>

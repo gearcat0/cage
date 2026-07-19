@@ -31,42 +31,59 @@ export interface CageOptions {
   resources: ResourceMap
 }
 
-export function createCage(opts: CageOptions): CageHandle {
+// ── Layer 1 hardening flags, as a named constant ─────────────────────────────
+// Exported so a STATIC test can assert every flag is set correctly. No
+// behavioral test can catch a future refactor dropping `sandbox: true`, because
+// every behavioral test passes with it off — a static assertion is the only
+// guard for that class of flag (finding P0-1). The per-cage `session` and
+// `preload` are spread in at construction; everything security-relevant is here.
+export const THING_WEB_PREFERENCES = {
+  sandbox: true, // Layer 1: OS-level renderer sandbox
+  contextIsolation: true, // Layer 1: preload world is isolated from the page
+  nodeIntegration: false, // Layer 1: no Node in the renderer
+  nodeIntegrationInSubFrames: false, // Layer 1: ...nor in iframes
+  webSecurity: true, // Layer 1: same-origin policy on
+  allowRunningInsecureContent: false, // Layer 1
+  experimentalFeatures: false, // Layer 1
+  webviewTag: false, // no <webview> escape hatch
+  navigateOnDragDrop: false, // dropping a file must not navigate the cage
+  spellcheck: false, // spellcheck fetches dictionaries — no network, so off
+  v8CacheOptions: 'none'
+} as const
+
+/** The per-thing partition. MUST NOT start with `persist:` — a persistent
+ *  partition would let a thing (or a reload) read another's storage
+ *  breadcrumbs, which is a tracking channel. Exported for the static test. */
+export function thingPartition(id: string): string {
+  return `thing-${id}`
+}
+
+export async function createCage(opts: CageOptions): Promise<CageHandle> {
   // ── Layer 1 — process configuration ──────────────────────────────────────
   // A fresh, NON-persistent partition per thing (no `persist:` prefix => memory
   // only). This means a thing — or a reload of the same thing — can never read
   // storage breadcrumbs left by another. That would be a tracking channel, and
   // it must be impossible.
-  const partition = `thing-${opts.id}`
+  const partition = thingPartition(opts.id)
   const ses = electronSession.fromPartition(partition, { cache: false })
 
   const view = new WebContentsView({
     webPreferences: {
       session: ses,
       preload: opts.preloadPath,
-      sandbox: true, // Layer 1: OS-level renderer sandbox
-      contextIsolation: true, // Layer 1: preload world is isolated from the page
-      nodeIntegration: false, // Layer 1: no Node in the renderer
-      nodeIntegrationInSubFrames: false, // Layer 1: ...nor in iframes
-      webSecurity: true, // Layer 1: same-origin policy on
-      allowRunningInsecureContent: false, // Layer 1
-      experimentalFeatures: false, // Layer 1
-      webviewTag: false, // no <webview> escape hatch
-      navigateOnDragDrop: false, // dropping a file must not navigate the cage
-      spellcheck: false, // spellcheck fetches dictionaries — no network, so off
-      v8CacheOptions: 'none'
+      ...THING_WEB_PREFERENCES
     }
   })
 
   const contents = view.webContents
 
-  hardenSession(ses, opts.resources)
+  await hardenSession(ses, opts.resources)
   hardenContents(contents)
 
   return { view, session: ses, partition, preloadPath: opts.preloadPath }
 }
 
-function hardenSession(ses: Session, resources: ResourceMap): void {
+async function hardenSession(ses: Session, resources: ResourceMap): Promise<void> {
   // The thing:// handler is the only allowed read path (serves supplied bytes).
   registerThingProtocol(ses, resources)
 
@@ -107,8 +124,10 @@ function hardenSession(ses: Session, resources: ResourceMap): void {
 
   // ── Layer 3 — non-webRequest egress paths ────────────────────────────────
   // webRequest does NOT see WebRTC. Route any escaping HTTP(S)/SOCKS to a dead
-  // port so even a bypass of Layer 2 lands nowhere.
-  void ses.setProxy({ proxyRules: 'http=127.0.0.1:1;https=127.0.0.1:1;socks=127.0.0.1:1' })
+  // port so even a bypass of Layer 2 lands nowhere. Awaited (N5/P3-11): this is
+  // the layer whose job is catching bypasses of the other layers, so it must be
+  // installed before the thing can load — createCage awaits hardenSession.
+  await ses.setProxy({ proxyRules: 'http=127.0.0.1:1;https=127.0.0.1:1;socks=127.0.0.1:1' })
 
   // ── Layer 4 — Content-Security-Policy ────────────────────────────────────
   // Inject the strict CSP on every thing: response header. This is redundant

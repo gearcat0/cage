@@ -1,4 +1,5 @@
 import { test, expect, launch, type CageEvent } from './helpers.js'
+import { writeSandboxState } from './sandbox-state-file.js'
 
 // ── The escape-attempt suite ─────────────────────────────────────────────────
 // Each test loads a malicious thing into a REAL cage, lets it run its attack,
@@ -13,6 +14,35 @@ function has(events: CageEvent[], pred: (e: CageEvent) => boolean): boolean {
   return events.some(pred)
 }
 const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 250))
+
+// ── Harness integrity ────────────────────────────────────────────────────────
+// Before trusting anything the wall says, prove the wall is honest about the
+// one thing it cannot otherwise show: whether Layer 1 (the OS sandbox) was
+// actually exercised (finding P0-1).
+test.describe('harness integrity', () => {
+  test('OS-sandbox state is recorded, honest, and acknowledged', async ({ open }) => {
+    const cage = await open({ thing: 'benign.html' })
+    await cage.waitForEmit('done')
+    const s = await cage.sandboxState()
+    // The app must record ground truth at startup.
+    expect(s).not.toBeNull()
+    // The env-var escape hatch must NEVER be how the suite runs — helpers scrubs
+    // it. If this fails, something re-introduced ELECTRON_DISABLE_SANDBOX.
+    expect(s!.envDisabled).toBe(false)
+    // Publish the measured state for the green-wall reporter to print.
+    writeSandboxState(s!)
+    if (s!.argvNoSandbox) {
+      // Running with the OS sandbox off (Playwright injects --no-sandbox) is
+      // permitted ONLY with an explicit acknowledgement, so a green wall can
+      // never silently imply Layer 1 was exercised when it was not.
+      expect(
+        process.env.CAGE_ALLOW_NO_SANDBOX,
+        'OS sandbox is OFF (--no-sandbox). The behavioral guarantees still hold, ' +
+          'but Layer 1 was not exercised. Set CAGE_ALLOW_NO_SANDBOX=1 to acknowledge and run.'
+      ).toBe('1')
+    }
+  })
+})
 
 // ── Positive control ─────────────────────────────────────────────────────────
 test.describe('positive: the cage runs legitimate things', () => {
@@ -113,18 +143,34 @@ test.describe('network egress is impossible', () => {
   test('thing:// content outside the supplied blob map fails', async ({ open, canary }) => {
     const cage = await open({ thing: 'net-thing-unknown.html' })
     const r = (await cage.waitForEmit('done')) as Record<string, unknown>
-    // The handler serves ONLY known bytes: unknown fetch never returns ok, and
-    // the unknown image 404s (onerror), never loads.
+    // The handler serves ONLY known bytes, and every vector uses the thing's
+    // OWN valid id (not a hostname miss), so the handler is genuinely reached.
     expect(r.fetchOk).not.toBe(true)
-    expect(r.imgLoaded).toBeUndefined()
-    // A hand-built att/ URL on the thing's OWN id, for a name not in its
-    // attachment table, 404s the same way (the table + handler are the gate).
+    // Unsupplied path on the index.html route: 404 -> onerror, never loads.
+    expect(r.pathImgLoaded).toBeUndefined()
+    expect(r.pathImgError).toBe(true)
+    // A hand-built att/ URL for a name not in the attachment table 404s the same
+    // way (the table + handler are the gate).
     expect(r.attImgLoaded).toBeUndefined()
     expect(r.attImgError).toBe(true)
     const events = await cage.events()
     expect(
       events.some((e) => e.type === 'att-request' && e.name === 'not-in-the-table' && e.status === 404)
     ).toBe(true)
+    expect(canary.silent()).toBe(true)
+  })
+
+  test('one thing cannot reach another thing\'s resources by id (per-session)', async ({ open, canary }) => {
+    // Two cages in one run, different sessions. The secondary is handed the
+    // primary's real id and tries to load the primary's index.html.
+    const cage = await open({ thing: 'benign.html', thing2: 'net-cross-id.html' })
+    const r = (await cage.waitForEmit('cross-done')) as Record<string, unknown>
+    // It actually had the id (so this is a real attempt, not a no-op)...
+    expect(typeof r.primaryId).toBe('string')
+    // ...and still could not load: each session registers only its own
+    // resources, so the cross-session request 404s.
+    expect(r.imgLoaded).toBeUndefined()
+    expect(r.imgError).toBe(true)
     expect(canary.silent()).toBe(true)
   })
 })
@@ -397,12 +443,42 @@ test.describe('bridge abuse is contained', () => {
     expect(has(events, (e) => e.type === 'emit' && e.channel === 'flood-huge')).toBe(false)
   })
 
-  test('emit flood does not crash the shell', async ({ open }) => {
+  test('a large-payload emit flood leaves the main-process log bounded', async ({ open }) => {
     const cage = await open({ thing: 'bridge-abuse-flood.html' })
-    const r = (await cage.waitForEmit('done')) as Record<string, unknown>
-    expect(r.count).toBe(5000)
-    // Still alive after the flood: we can read the event log.
-    const events = await cage.events()
-    expect(events.length).toBeGreaterThan(0)
+    const r = (await cage.waitForEmit('done')) as Record<string, number>
+    expect(r.count).toBe(200)
+    const stats = await cage.stats()
+    // The log never exceeds the ring-buffer cap...
+    expect(stats.eventsLength).toBeLessThanOrEqual(2000)
+    // ...and — the actual P0-3 property — payloads are NOT retained. ~40 MB of
+    // emit bodies were sent, but the serialized log stays tiny because each
+    // emit stores only size + a short hash. Bytes-sent dwarfs bytes-retained.
+    const bytesSent = r.count * r.chunkBytes
+    expect(bytesSent).toBeGreaterThan(20 * 1024 * 1024)
+    expect(stats.eventsBytes).toBeLessThan(512 * 1024)
+  })
+
+  test('an emit-count flood evicts from the ring buffer (bounded log)', async ({ open }) => {
+    // 2500 emits on one ordered IPC channel: by the time 'done' lands, all were
+    // recorded, so the log MUST have truncated. Deterministic proof of eviction
+    // under a real driver (the ring-buffer math is also unit-tested).
+    const cage = await open({ thing: 'bridge-abuse-count-flood.html' })
+    const r = (await cage.waitForEmit('done')) as Record<string, number>
+    expect(r.count).toBe(2500)
+    const stats = await cage.stats()
+    expect(stats.eventsLength).toBeLessThanOrEqual(2000)
+    expect(stats.dropped).toBeGreaterThan(0)
+  })
+
+  test('a blocked-request flood stays bounded and silent', async ({ open, canary }) => {
+    // The request canceller is the other record() caller. Thousands of image
+    // beacons must not grow the log past its cap, and none may leave the
+    // process. (Exact eviction is covered by the emit-count test above; here
+    // the axis is the blocked-request path under volume + no egress.)
+    const cage = await open({ thing: 'net-abuse-blocked-flood.html' })
+    await cage.waitForEmit('done', 15_000)
+    const stats = await cage.stats()
+    expect(stats.eventsLength).toBeLessThanOrEqual(2000)
+    expect(canary.silent()).toBe(true)
   })
 })
