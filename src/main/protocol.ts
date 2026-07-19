@@ -152,8 +152,9 @@ export function registerThingProtocol(session: Electron.Session, resources: Reso
 }
 
 /** Serve `att/<name>`: resolve the name in the admitted table, stream the blob
- *  by hash from the store, honour single byte ranges so media seeking works. */
-function serveAttachment(res: CageResources, name: string, request: Request): Response {
+ *  by hash from the store, honour single byte ranges so media seeking works.
+ *  Exported for unit tests that assert the response headers and byte slice. */
+export function serveAttachment(res: CageResources, name: string, request: Request): Response {
   const rangeHeader = request.headers.get('range')
   const entry = res.attachments.get(name)
   if (!entry || !res.store.has(entry.hash)) {
