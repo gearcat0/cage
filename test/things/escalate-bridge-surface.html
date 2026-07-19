@@ -1,9 +1,12 @@
 <!doctype html>
 <meta charset="utf-8" />
 <title>attack: enumerate the bridge</title>
-<!-- ATTACK (escalation): probe the bridge for anything beyond getArgs/emit, and
-     try to mutate it. The exposed surface must be EXACTLY those two functions on
-     a frozen object, and no ipcRenderer/Node handle may be reachable. -->
+<!-- ATTACK (escalation): probe the bridge for anything beyond the phase-2
+     contract, and try to mutate it. The exposed surface must be EXACTLY
+     emit/getArgs/getBlob/viewerInfo on a frozen object, and no ipcRenderer/Node
+     handle may be reachable. This file is the guard that the surface does not
+     silently widen: if you are editing the expected key set, you are widening
+     the thing's authority — stop and review. -->
 <script>
   const b = window.bridge;
   const r = {
@@ -12,6 +15,8 @@
     ownProps: Object.getOwnPropertyNames(b).sort(),
     frozen: Object.isFrozen(b),
     getArgsType: typeof b.getArgs,
+    getBlobType: typeof b.getBlob,
+    viewerInfoType: typeof b.viewerInfo,
     emitType: typeof b.emit,
     // Handles a compromised preload might have leaked:
     ipcRenderer: typeof window.ipcRenderer,

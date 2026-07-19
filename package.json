@@ -11,8 +11,8 @@
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test:unit": "vitest run",
-    "test:cage": "pnpm build && xvfb-run -a playwright test",
-    "test:cage:headed": "pnpm build && playwright test"
+    "test:cage": "pnpm build && CAGE_ALLOW_NO_SANDBOX=1 xvfb-run -a playwright test",
+    "test:cage:headed": "pnpm build && CAGE_ALLOW_NO_SANDBOX=1 playwright test"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",

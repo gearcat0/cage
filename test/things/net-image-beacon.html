@@ -4,8 +4,12 @@
 <!-- ATTACK: classic tracking-pixel exfil via Image().src and <img src>.
      Blocked by CSP img-src (thing:/data:/blob: only). Canary must stay silent. -->
 <script>
-  const canary = (window.bridge.getArgs() || {}).canary || {};
-  const r = { attack: 'image-beacon' };
+  const canary = ((window.bridge.getArgs() || {}).args || {}).canary || {};
+  // Report the exact URL the attack targeted, so the test can prove the beacon
+  // aimed at the REAL canary (finding 1.8: guards against a false pass where a
+  // thing reads the canary from the wrong place, fires at `undefined/...`, and
+  // "silent" would then mean "never attempted" rather than "blocked").
+  const r = { attack: 'image-beacon', target: canary.http + '/pixel.gif' };
   let done = false;
   const finish = () => { if (!done) { done = true; window.bridge.emit('done', r); } };
 

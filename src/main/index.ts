@@ -1,15 +1,25 @@
 import { app, BaseWindow, WebContentsView, protocol, session } from 'electron'
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
 import { createCage } from './cage.js'
-import { installBridge, setArgsFor } from './bridge.js'
-import type { BlobMap } from './protocol.js'
-import { cage as cageGlobals } from './events.js'
+import { installBridge, bindCage, unbindCage, type ThingArgs } from './bridge.js'
+import type { CageResources, ResourceMap } from './protocol.js'
+import { CasStore, EphemeralStore, type AttachmentTable } from './store.js'
+import { cage as cageGlobals, record } from './events.js'
 
 // CommonJS output (main/preload are CJS; renderer stays ESM in the browser).
 // `__dirname` is provided by the bundler and points at out/main.
 const PRELOAD = join(__dirname, '../preload/index.js')
+
+// TEST-ONLY (finding 1.3): redirect Electron's userData/cache tree to a dir the
+// suite controls, so the sealed-content-off-disk test can scan a known location
+// for decrypted plaintext. Must run before app is ready. No effect in a real
+// shell (env unset).
+if (process.env.CAGE_USER_DATA_DIR) {
+  app.setPath('userData', process.env.CAGE_USER_DATA_DIR)
+}
 
 // Expose the event log on the Electron `app` singleton so the Playwright suite
 // can read it from OUTSIDE the renderer via `evaluate(({ app }) => app.__cage)`.
@@ -24,6 +34,7 @@ const CHROME_STRIP_HEIGHT = 44
 // same-origin behave); `secure` lets it host inline scripts under CSP without
 // being treated as insecure content. `supportFetchAPI:false` and
 // `corsEnabled:false` narrow it further — a thing has no reason to fetch().
+// `stream:true` lets the att/ route stream media with Range support.
 protocol.registerSchemesAsPrivileged([
   {
     scheme: 'thing',
@@ -38,18 +49,46 @@ protocol.registerSchemesAsPrivileged([
   }
 ])
 
-// ── Layer 3 (bootstrap) — disable WebRTC at the command line ─────────────────
-// Belt to Layer 3's braces (per-contents policy + dead proxy). The app has no
-// need for WebRTC, so we blunt it process-wide too.
+// ── Layer 3 (bootstrap) — WebRTC command-line switches ───────────────────────
+// Two switches, each doing a distinct thing (finding P0-2, corrected):
+//
+//  1. force-webrtc-ip-handling-policy=disable_non_proxied_udp — the REAL,
+//     process-wide WebRTC control. With no proxy that permits UDP (Layer 3
+//     points at a dead one), no ICE candidate can carry a usable transport, so
+//     WebRTC has no path out. This is the load-bearing switch; the per-contents
+//     setWebRTCIPHandlingPolicy in cage.ts is the same control applied per view
+//     and is now belt-and-braces to this one.
+//  2. disable-features=WebRtcHideLocalIpsWithMdns — a companion, NOT a disabler.
+//     It turns OFF the mDNS-hiding privacy feature, so that if a candidate ever
+//     did form it would carry a raw 127.x/LAN IP rather than an `.local` name.
+//     Since the dead proxy means no candidate leaves anyway, this makes a
+//     hypothetical breach MORE visible to the canary, not less. It does not, by
+//     itself, disable WebRTC — the name is easy to misread as if it did.
 app.commandLine.appendSwitch('force-webrtc-ip-handling-policy', 'disable_non_proxied_udp')
 app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns')
 
-// NOTE: the OS-level sandbox is on by default (webPreferences `sandbox: true`).
-// In a locked-down container where it cannot self-initialize, launch dev with
-// `ELECTRON_DISABLE_SANDBOX=1` (see the "dev:nosandbox" script). That env var is
-// read by the Electron binary BEFORE JS runs — a JS-side appendSwitch would be
-// too late. It is a dev-only accommodation; the network/storage/escalation
-// layers still apply, but Layer 1 process isolation is off when it is set.
+// TEST-ONLY (finding N2): let the DNS/speculative-connection test point an
+// attacker hostname at the canary via Chromium host-resolver-rules, so that any
+// connection a leak produced would land on the canary and be witnessed. Gated
+// on an env var the suite sets; never used in a real shell.
+if (process.env.CAGE_HOST_RESOLVER_RULES) {
+  app.commandLine.appendSwitch('host-resolver-rules', process.env.CAGE_HOST_RESOLVER_RULES)
+}
+
+// NOTE on the OS sandbox (finding P0-1): the cage REQUESTS the OS-level sandbox
+// via webPreferences `sandbox: true`, but whether it is actually active depends
+// on the launcher and host. Two ways it ends up OFF:
+//   - `ELECTRON_DISABLE_SANDBOX=1` in the environment (the "dev:nosandbox"
+//     accommodation for containers where the setuid helper can't self-init);
+//     read by the Electron binary before JS runs.
+//   - a `--no-sandbox` argv flag — which Playwright's Electron launcher injects
+//     by DEFAULT, so the escape suite runs with the OS sandbox off.
+// Neither weakens the behavioral guarantees (network/storage/escalation are
+// enforced by contextIsolation + CSP + the request canceller + partitions,
+// none of which depend on the OS sandbox); the OS sandbox is the extra backstop
+// against a renderer memory-corruption exploit. Because it can be silently off,
+// we record ground truth below and the reporter/suite surface it rather than
+// letting a green wall imply Layer 1 was exercised when it was not.
 // LATER: when the real shell needs no media at all, consider building Electron
 // with WebRTC compiled out entirely.
 
@@ -79,7 +118,7 @@ const DEFAULT_THING = `<!doctype html>
 <body>
   <h1>hello from inside the cage</h1>
   <p class="ok" id="status">running…</p>
-  <p>args passed in via the bridge:</p>
+  <p>ThingArgs passed in via the bridge:</p>
   <pre id="args">…</pre>
   <script>
     const args = window.bridge.getArgs();
@@ -89,22 +128,42 @@ const DEFAULT_THING = `<!doctype html>
   </script>
 </body></html>`
 
+/** An attachment supplied to the test/dev harness: bytes come from a local
+ *  file chosen by the OPERATOR (env config), never by the thing. */
+interface AttSpec {
+  name: string
+  path: string
+  mime: string
+}
+
 interface LoadSpec {
   html: string
+  type: string
   args: unknown
+  attachments: AttSpec[]
+  /** Sealed things serve decrypted attachments from memory, never the CAS. */
+  sealed: boolean
 }
 
 function specFromEnv(): { primary: LoadSpec; secondary: LoadSpec | null } {
-  const args = parseJson(process.env.CAGE_ARGS) ?? {}
   const primary: LoadSpec = {
     html: process.env.CAGE_THING ? readFileSync(process.env.CAGE_THING, 'utf8') : DEFAULT_THING,
-    args
+    type: process.env.CAGE_TYPE ?? 'test',
+    args: parseJson(process.env.CAGE_ARGS) ?? {},
+    attachments: (parseJson(process.env.CAGE_ATTACHMENTS) as AttSpec[] | undefined) ?? [],
+    sealed: process.env.CAGE_SEALED === '1'
   }
   // A second cage in the SAME run, with its own fresh partition — used by the
   // storage-isolation tests to prove two different things cannot see each
   // other's storage.
   const secondary: LoadSpec | null = process.env.CAGE_THING2
-    ? { html: readFileSync(process.env.CAGE_THING2, 'utf8'), args: parseJson(process.env.CAGE_ARGS2) ?? {} }
+    ? {
+        html: readFileSync(process.env.CAGE_THING2, 'utf8'),
+        type: 'test',
+        args: parseJson(process.env.CAGE_ARGS2) ?? {},
+        attachments: [],
+        sealed: false
+      }
     : null
   return { primary, secondary }
 }
@@ -118,12 +177,51 @@ function parseJson(s: string | undefined): unknown {
   }
 }
 
-function buildBlobs(id: string, html: string): BlobMap {
-  const map: BlobMap = new Map()
-  const inner = new Map()
-  inner.set('index.html', { mime: mimeFor('index.html'), bytes: new TextEncoder().encode(html) })
-  map.set(id, inner)
-  return map
+/** The persistent, content-addressed store. Public things serve from here.
+ *  Tests point CAGE_CAS_DIR at a temp dir so they can assert what does (and
+ *  does not) get written. */
+let casStore: CasStore | null = null
+function cas(): CasStore {
+  if (!casStore) {
+    const dir =
+      process.env.CAGE_CAS_DIR ?? join(process.env.XDG_DATA_HOME ?? tmpdir(), 'cage-cas')
+    casStore = new CasStore(dir)
+  }
+  return casStore
+}
+
+/**
+ * Admission-lite for the phase-2 harness: hash each supplied attachment, build
+ * the manifest-style table, and place the bytes in the right store — the
+ * on-disk CAS for public things, an ephemeral in-memory store for sealed ones
+ * (decrypted sealed content MUST NOT be written to disk in the clear).
+ *
+ * LATER: the real admission pipeline (format §8.1) replaces this — decode +
+ * verify envelope/manifest, then hand the SAME shapes (table + store) to the
+ * cage. This function exists so the cage side is already shaped for it.
+ */
+function admitAttachments(spec: LoadSpec): { table: AttachmentTable; store: CageResources['store'] } {
+  const store = spec.sealed ? new EphemeralStore() : cas()
+  const table: AttachmentTable = new Map()
+  for (const att of spec.attachments) {
+    const bytes = readFileSync(att.path)
+    const hash = store.put(bytes)
+    table.set(att.name, { hash, mime: att.mime, size: bytes.length })
+  }
+  return { table, store }
+}
+
+function buildResources(id: string, html: string, spec: LoadSpec): { resources: ResourceMap; table: AttachmentTable } {
+  const { table, store } = admitAttachments(spec)
+  const resources: ResourceMap = new Map()
+  resources.set(id, {
+    blobs: new Map([
+      ['index.html', { mime: mimeFor('index.html'), bytes: new TextEncoder().encode(html) }]
+    ]),
+    attachments: table,
+    store
+  })
+  return { resources, table }
 }
 
 function shortHash(html: string): string {
@@ -138,10 +236,33 @@ async function mountCage(
   onTop: boolean
 ): Promise<{ id: string; hash: string }> {
   const id = randomUUID()
-  const blobs = buildBlobs(id, spec.html)
-  const handle = createCage({ id, preloadPath: PRELOAD, blobs })
+  const { resources, table } = buildResources(id, spec.html, spec)
+  const handle = await createCage({ id, preloadPath: PRELOAD, resources })
 
-  setArgsFor(handle.view.webContents.id, spec.args)
+  // Tear down per-cage state when the view is destroyed (N5, 1.3): forget the
+  // bridge binding so `bindings` does not grow as the real shell mounts many
+  // things, and drop the ephemeral sealed store so decrypted plaintext does
+  // not linger in a main-process map beyond the cage's lifetime.
+  const wc = handle.view.webContents
+  wc.once('destroyed', () => {
+    unbindCage(wc.id)
+    const store = resources.get(id)?.store
+    if (store instanceof EphemeralStore) store.clear()
+    resources.delete(id)
+  })
+
+  // The decoded, read-only view the thing renders from. Names + metadata only:
+  // no envelope, no prog, no hashes (see bridge.ts for the reasoning).
+  const thingArgs: ThingArgs = {
+    type: spec.type,
+    args: spec.args,
+    attachments: [...table.entries()].map(([name, e]) => ({
+      name,
+      mime: e.mime,
+      size: e.size
+    }))
+  }
+  bindCage(handle.view.webContents.id, { thingId: id, thingArgs, attachments: table })
 
   if (onTop) win.contentView.addChildView(handle.view)
   else win.contentView.addChildView(handle.view, 0)
@@ -154,6 +275,17 @@ async function mountCage(
 
 app.whenReady().then(async () => {
   installBridge()
+
+  // Record OS-sandbox ground truth (P0-1) so the suite can assert on it and the
+  // reporter can state it. Detect `--no-sandbox` via BOTH raw argv and
+  // Chromium's parsed switch table (`app.commandLine.hasSwitch`) — Playwright
+  // injects the flag in a way that does not always survive in `process.argv`,
+  // and the honest failure direction is to report OFF, never a false ON.
+  record({
+    type: 'sandbox-state',
+    envDisabled: !!process.env.ELECTRON_DISABLE_SANDBOX,
+    argvNoSandbox: process.argv.includes('--no-sandbox') || app.commandLine.hasSwitch('no-sandbox')
+  })
 
   // Harden the DEFAULT session too. The untrusted thing never uses this session
   // (it gets its own partition), but the trusted chrome UI does — so allow only
@@ -237,11 +369,40 @@ app.whenReady().then(async () => {
   )
 
   if (secondary) {
+    // TEST-ONLY happens-before (finding P1-6): the same-run storage-isolation
+    // test needs the primary to finish WRITING before the reader mounts, or the
+    // reader can pass because there was nothing to find yet — not because
+    // partitions are isolated. Gate the secondary mount on a named primary emit.
+    const awaitChannel = process.env.CAGE_AWAIT_PRIMARY_EMIT
+    if (awaitChannel) await waitForEmitChannel(awaitChannel)
     // Second cage: fresh partition, own random id. It renders on top of the
-    // first for this headless isolation test; its only job is to report what
-    // (if anything) it can see of the first thing's storage.
-    await mountCage(win, secondary, cageLayout, true)
+    // first for the storage-isolation and cross-id tests. Hand it the primary's
+    // real id so the cross-id attack can try (and fail) to reach the primary's
+    // resources from a different session — proving per-session registration.
+    const secondaryWithId: LoadSpec = {
+      ...secondary,
+      args: { ...(secondary.args as Record<string, unknown>), primaryId: info.id }
+    }
+    await mountCage(win, secondaryWithId, cageLayout, true)
   }
 })
+
+/** Resolve once a `cage:emit` on `channel` has been recorded (or on timeout).
+ *  Test-only, driven by CAGE_AWAIT_PRIMARY_EMIT; polls the shared event log
+ *  (emit records carry their channel). */
+function waitForEmitChannel(channel: string, timeoutMs = 10_000): Promise<void> {
+  return new Promise((resolve) => {
+    const start = Date.now()
+    const seen = (): boolean =>
+      cageGlobals.events.some((e) => e.type === 'emit' && e.channel === channel)
+    if (seen()) return resolve()
+    const timer = setInterval(() => {
+      if (seen() || Date.now() - start > timeoutMs) {
+        clearInterval(timer)
+        resolve()
+      }
+    }, 50)
+  })
+}
 
 app.on('window-all-closed', () => app.quit())

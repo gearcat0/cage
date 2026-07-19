@@ -4,7 +4,7 @@
 <!-- ATTACK: open a Server-Sent-Events stream to a canary. connect-src 'none'
      forbids it; no socket may open. Canary must stay silent. -->
 <script>
-  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const canary = ((window.bridge.getArgs() || {}).args || {}).canary || {};
   const r = { attack: 'eventsource' };
   try {
     const es = new EventSource(canary.http + '/sse');

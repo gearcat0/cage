@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>positive: render an attachment via getBlob</title>
+<!-- POSITIVE TEST: the whole attachment path end to end. Reads args, lists
+     attachments from getArgs(), resolves a name with getBlob(), sets the
+     returned thing:// URL as an <img src>, and reports whether it rendered.
+     Also used with CAGE_SEALED=1 — the thing's code is identical either way;
+     only the shell-side store differs (CAS vs memory). -->
+<img id="poster" alt="poster" />
+<script>
+  const a = window.bridge.getArgs();
+  const r = {
+    attack: 'none — positive attachment',
+    type: a.type,
+    args: a.args,
+    attachments: a.attachments,
+    url: window.bridge.getBlob('poster')
+  };
+  const img = document.getElementById('poster');
+  img.onload = () => {
+    r.imgLoaded = true;
+    r.naturalWidth = img.naturalWidth;
+    window.bridge.emit('done', r);
+  };
+  img.onerror = () => {
+    r.imgError = true;
+    window.bridge.emit('done', r);
+  };
+  if (typeof r.url === 'string') img.src = r.url;
+  else window.bridge.emit('done', r);
+</script>

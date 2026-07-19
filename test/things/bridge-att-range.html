@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>media attachment seeks (Range)</title>
+<!-- Chromium's media loader requests media with `Range: bytes=0-` and needs
+     206 + Accept-Ranges for seeking to work. This thing loads a WAV attachment
+     into a media element, waits for metadata, seeks to the middle, and reports.
+     The spec-side assertion checks the main-process event log for a 206. -->
+<script>
+  const r = { url: window.bridge.getBlob('tone') };
+  const media = document.createElement('audio');
+  media.preload = 'auto';
+  const finish = () => window.bridge.emit('done', r);
+  const timer = setTimeout(() => { r.timedOut = true; finish(); }, 8000);
+  media.onerror = () => { r.mediaError = true; clearTimeout(timer); finish(); };
+  media.onloadedmetadata = () => {
+    r.duration = media.duration;
+    media.currentTime = media.duration / 2;
+  };
+  media.onseeked = () => {
+    r.seeked = true;
+    r.currentTime = media.currentTime;
+    clearTimeout(timer);
+    finish();
+  };
+  media.src = r.url;
+  document.documentElement.appendChild(media);
+</script>

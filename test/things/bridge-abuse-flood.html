@@ -1,13 +1,19 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>attack: bridge abuse (flood)</title>
-<!-- ATTACK (bridge abuse): rapid-fire emit to flood the shell. No capability is
-     granted regardless, and the shell must stay responsive — the final 'done'
-     must still arrive. -->
+<title>attack: bridge abuse (large-payload flood)</title>
+<!-- ATTACK (bridge abuse / memory): the danger is BYTES RETAINED, not messages
+     sent. Emit many payloads near the 256 KB cap. Each is individually legal,
+     but if the shell retained every payload the main-process log would grow
+     without bound (finding P0-3). The shell must keep only size + a hash per
+     emit, so ~40 MB emitted leaves the log tiny. The final 'done' still lands,
+     proving the shell stayed responsive throughout. -->
 <script>
-  const r = { attack: 'bridge-flood', count: 5000 };
+  const r = { attack: 'bridge-flood-large' };
+  const chunk = 'A'.repeat(200 * 1024); // 200 KB, under the 256 KB cap
+  r.count = 200;
+  r.chunkBytes = chunk.length;
   for (let i = 0; i < r.count; i++) {
-    window.bridge.emit('spam', { i });
+    window.bridge.emit('spam', { i, chunk });
   }
   window.bridge.emit('done', r);
 </script>

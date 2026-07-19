@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: malformed publish drafts</title>
+<!-- ATTACK (contract abuse): drafts that violate the publish shape. Every one
+     must be rejected with no draft recorded: the message contract is what the
+     later sign/seal phases build on, so nothing loose gets through. -->
+<script>
+  const attempts = [
+    'not-an-object',
+    { args: {} },                                        // missing type
+    { type: '', args: {} },                              // empty type
+    { type: 'event' },                                   // missing args
+    { type: 'event', args: {}, blobs: { x: 'strings-are-not-bytes' } },
+    { type: 'event', args: {}, blobs: { '': new Uint8Array(1) } },        // empty name
+    { type: 'event', args: {}, blobs: { 'a/b': new Uint8Array(1) } },     // path separator
+    { type: 'event', args: {}, blobs: { '..': new Uint8Array(1) } },      // dot-dot
+    { type: 'event', args: {}, extra: 'unknown-key' }
+  ];
+  for (const a of attempts) window.bridge.emit('publish', a);
+  window.bridge.emit('done', { sent: attempts.length });
+</script>

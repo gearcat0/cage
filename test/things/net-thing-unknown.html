@@ -1,16 +1,21 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>attack: thing:// outside the blob map</title>
+<title>attack: thing:// outside the supplied resources</title>
 <!-- ATTACK: ask the thing:// handler for content that was NOT supplied. The
-     handler serves ONLY known bytes, so this must fail. Two vectors:
-       1. fetch() of an unknown thing path (also blocked by connect-src),
-       2. <img src> of an unknown thing path (img-src allows thing:, so this
-          actually reaches the handler, which returns 404 -> onerror). -->
+     handler serves ONLY known bytes, so this must fail. The vectors below use
+     the thing's OWN real id (location.host) so the handler is genuinely
+     reached with a valid id and an unsupplied resource — a hostname miss (the
+     old `main` host) would 404 even if path lookup were entirely broken.
+       1. <img> of an unsupplied PATH on the index.html route (valid id).
+       2. a hand-built att/ URL for a name not in the attachment table.
+       3. fetch() as a control — note it is blocked UPSTREAM of the handler
+          (supportFetchAPI:false + connect-src 'none'), so it proves nothing
+          about the blob map; kept only to show the API boundary also holds. -->
 <script>
-  const r = { attack: 'thing-unknown' };
+  const r = { attack: 'thing-unknown', id: location.host };
   (async () => {
     try {
-      const res = await fetch('thing://main/secret-not-supplied.json');
+      const res = await fetch('thing://' + location.host + '/secret-not-supplied.json');
       r.fetchStatus = res.status;
       r.fetchOk = res.ok;
     } catch (e) {
@@ -18,9 +23,17 @@
     }
     await new Promise((resolve) => {
       const img = new Image();
-      img.onload = () => { r.imgLoaded = true; resolve(); };
-      img.onerror = () => { r.imgError = true; resolve(); };
-      img.src = 'thing://main/secret-not-supplied.png';
+      img.onload = () => { r.pathImgLoaded = true; resolve(); };
+      img.onerror = () => { r.pathImgError = true; resolve(); };
+      // Valid id, unsupplied path on the index.html route.
+      img.src = 'thing://' + location.host + '/secret-not-supplied.png';
+      setTimeout(resolve, 1000);
+    });
+    await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => { r.attImgLoaded = true; resolve(); };
+      img.onerror = () => { r.attImgError = true; resolve(); };
+      img.src = 'thing://' + location.host + '/att/not-in-the-table';
       setTimeout(resolve, 1000);
     });
     window.bridge.emit('done', r);

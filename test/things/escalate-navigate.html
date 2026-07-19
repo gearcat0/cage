@@ -5,7 +5,7 @@
      origin. will-navigate / will-redirect are prevented, so the location must
      stay on the thing: origin. -->
 <script>
-  const canary = (window.bridge.getArgs() || {}).canary || {};
+  const canary = ((window.bridge.getArgs() || {}).args || {}).canary || {};
   const r = { attack: 'navigate', startOrigin: location.origin };
 
   // Report first — if navigation succeeded, this page would unload and the

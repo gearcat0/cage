@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: blocked-request flood</title>
+<!-- ATTACK (memory via the request canceller): the emit path is not the only
+     way to drive record(). Every blocked request is logged too, so a loop of
+     image beacons to the canary must not grow the main-process log without
+     bound. The shell's ring buffer truncates rather than growing; the canary
+     stays silent because every request is cancelled before it leaves. -->
+<script>
+  const canary = ((window.bridge.getArgs() || {}).args || {}).canary || {};
+  const r = { attack: 'blocked-flood', count: 5000 };
+  for (let i = 0; i < r.count; i++) {
+    const img = new Image();
+    img.src = canary.http + '/flood/' + i;
+  }
+  setTimeout(() => window.bridge.emit('done', r), 2000);
+</script>

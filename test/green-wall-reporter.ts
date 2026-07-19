@@ -1,4 +1,5 @@
 import type { Reporter, TestCase, TestResult, FullResult } from '@playwright/test/reporter'
+import { readSandboxState } from './sandbox-state-file.js'
 
 // A tiny reporter that prints the "green wall": one line per attack plus a final
 // verdict banner. Runs alongside the built-in 'list' reporter. This output is
@@ -38,14 +39,27 @@ export default class GreenWallReporter implements Reporter {
     }
     process.stdout.write(`${line}\n`)
 
+    // OS-sandbox honesty (P0-1): the banner must state Layer 1's actual status,
+    // never let a green wall imply the OS sandbox was exercised when it was off.
+    const sb = readSandboxState()
+    let sandboxNote = ''
+    if (!sb) {
+      sandboxNote = ` ${DIM}(OS SANDBOX: UNKNOWN — integrity check did not run)${RESET}`
+    } else if (sb.argvNoSandbox || sb.envDisabled) {
+      const why = sb.argvNoSandbox ? '--no-sandbox' : 'ELECTRON_DISABLE_SANDBOX'
+      sandboxNote = ` ${BOLD}${RED}(OS SANDBOX: OFF — Layer 1 not exercised; ${why})${RESET}`
+    } else {
+      sandboxNote = ` ${GREEN}(OS SANDBOX: ON)${RESET}`
+    }
+
     if (result.status === 'passed') {
       process.stdout.write(
         `${BOLD}${GREEN}CAGE HOLDS${RESET}  ${blocked}/${total} attempts blocked, ` +
-          `positive test passed.\n\n`
+          `positive test passed.${sandboxNote}\n\n`
       )
     } else {
       process.stdout.write(
-        `${BOLD}${RED}BREACH${RESET}  ${total - blocked}/${total} checks failed — see failures above.\n\n`
+        `${BOLD}${RED}BREACH${RESET}  ${total - blocked}/${total} checks failed — see failures above.${sandboxNote}\n\n`
       )
     }
   }

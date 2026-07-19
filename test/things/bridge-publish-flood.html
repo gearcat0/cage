@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>attack: publish-draft flood (memory)</title>
+<!-- ATTACK (memory via the draft path): every emit("publish", …) with a VALID
+     draft is accepted and recorded. If the shell retained every draft — and its
+     inline blob bytes — a loop of valid publishes would grow main-process
+     memory without bound (the P0-3 discipline applied to the draft path). The
+     shell must keep only a bounded ring of draft METADATA (no blob bytes). -->
+<script>
+  const r = { attack: 'publish-flood', count: 100 };
+  const svg = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>');
+  for (let i = 0; i < r.count; i++) {
+    window.bridge.emit('publish', { type: 'event', args: { i }, blobs: { poster: svg } });
+  }
+  window.bridge.emit('done', r);
+</script>
