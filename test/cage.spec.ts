@@ -106,6 +106,13 @@ test.describe('network egress is impossible', () => {
     await settle()
     expect(r.loaded).toBeUndefined()
     expect(canary.silent()).toBe(true)
+    // Guard against a FALSE pass (finding 1.8): after the canary URL moved to
+    // getArgs().args.canary, a thing reading it from the wrong place would fire
+    // at `undefined/...` and "silent" would prove nothing. The thing reports the
+    // URL it actually targeted; assert it was the REAL canary, so silence here
+    // means "blocked" (by CSP img-src, upstream of the request canceller), not
+    // "never attempted".
+    expect(r.target).toBe(`${canary.http}/pixel.gif`)
   })
 
   test('navigator.sendBeacon to canary', async ({ open, canary }) => {
