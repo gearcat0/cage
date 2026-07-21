@@ -75,21 +75,39 @@ test('fork detection: same (author, path, seq), different hash → both flagged'
   expect(row1.isFork).toBe(true)
 })
 
-test('a sealed thing addressed to us admits but never writes to the CAS', async () => {
+test('a sealed thing is decrypted, mountable, and never written to disk (§7.1)', async () => {
+  const MAGIC = 'CAGE_SEALED_CONTENT_MAGIC_4b91ef'
   const author = nostrSigner(secp256k1.utils.randomSecretKey())
   const me = await shell.identity()
   const myNostrPub = Uint8Array.from(me.nostrPubkey.match(/../g)!.map((h) => parseInt(h, 16)))
-  // Snapshot the CAS before, admit the sealed thing, assert the CAS did not grow.
+
+  // The sealed program AND an attachment both carry the magic marker.
+  const program = new TextEncoder().encode(`<!doctype html><h1>${MAGIC}</h1>`)
+  const poster = new TextEncoder().encode(`poster-${MAGIC}`)
   const before = shell.casBlobs().length
-  const sealed = await buildSealedBundle(author, [myNostrPub])
+  const sealed = await buildSealedBundle(author, [myNostrPub], {
+    type: 'sealed-event',
+    program,
+    attachments: { poster }
+  })
   const r = await shell.ingest(sealed)
   expect(r.status).toBe('valid')
   expect(r.sealed).toBe(true)
-  // Sealed content is signature-only for now — no plaintext program/manifest/
-  // attachments, and NOTHING sealed is written to the persistent CAS.
+  // The sealed content is fully recovered — the attachment is present.
+  expect(r.attachments).toEqual(['poster'])
+
+  // Nothing sealed hit the persistent CAS...
   expect(shell.casBlobs().length).toBe(before)
-  const feed = await shell.feed()
-  expect(feed.find((x) => x.envelopeHash === hashOf(r))!.sealed).toBe(true)
+  // ...and the decrypted plaintext is NOWHERE on disk (userData tree scan).
+  expect(shell.scanUserData(new TextEncoder().encode(MAGIC))).toEqual([])
+
+  // Yet it is mountable: opening it returns the trust header (served from the
+  // ephemeral in-memory store).
+  const header = await shell.openThing(hashOf(r))
+  expect(header.type).toBe('sealed-event')
+  expect(header.sealed).toBe(true)
+  // Still nothing on disk after mounting + serving.
+  expect(shell.scanUserData(new TextEncoder().encode(MAGIC))).toEqual([])
 })
 
 test('mount: opening a public thing returns its trust header and marks it read', async () => {

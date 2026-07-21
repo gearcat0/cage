@@ -31,6 +31,8 @@ type Response =
         envelope: Uint8Array
         manifest?: Uint8Array
         program?: Uint8Array
+        manifestEnc?: Uint8Array
+        programEnc?: Uint8Array
         blobs: [string, Uint8Array][]
       }
       sealed: boolean
@@ -83,6 +85,8 @@ parentPort.on('message', (event: { data: Request }) => {
     }
     if (source.manifest) response.source.manifest = source.manifest
     if (source.program) response.source.program = source.program
+    if (source.manifestEnc) response.source.manifestEnc = source.manifestEnc
+    if (source.programEnc) response.source.programEnc = source.programEnc
     parentPort.postMessage(response)
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e)

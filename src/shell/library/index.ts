@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
-import { CasStore } from '../../main/store.js'
+import { CasStore, EphemeralStore, type AttachmentStore } from '../../main/store.js'
 import {
   decodeManifest,
   toHex,
@@ -13,9 +13,8 @@ import {
 //
 // One row per admitted envelope. Ordering is by RECEIVED-AT (local clock) — the
 // reader owns ordering (format rule 4); `created` is the author's claim, stored
-// but not trusted. Public content lives in the on-disk CAS; sealed decrypted
-// content would live in an ephemeral in-memory store (never the CAS) — once
-// sealed-content decryption lands (spec §7.1).
+// but not trusted. Public content lives in the on-disk CAS; decrypted SEALED
+// content (spec §7.1) lives in an ephemeral in-memory store, NEVER the CAS.
 //
 // Fork detection (§5.3): two admitted envelopes with the same
 // (author, path, seq) and different hashes are a FORK — surfaced, never silently
@@ -44,12 +43,15 @@ export interface FeedQuery {
   offset?: number
 }
 
-/** Everything needed to mount an admitted thing (rebuilt from the CAS). */
+/** Everything needed to mount an admitted thing (rebuilt from its store). */
 export interface StoredThing {
   row: ThingRow
   /** The program (the thing's HTML) bytes. */
   program: Uint8Array
   manifest: Manifest
+  /** The store the cage serves attachments from: the on-disk CAS for public
+   *  things, the ephemeral in-memory store for sealed ones. */
+  store: AttachmentStore
 }
 
 type Row = {
@@ -98,6 +100,10 @@ export interface AdmitStoreResult {
 export class Library {
   private readonly db: Database.Database
   private readonly cas: CasStore
+  // Decrypted SEALED content lives ONLY here — in memory, scoped to the session,
+  // NEVER the on-disk CAS. Writing sealed plaintext to the persistent store
+  // would silently put someone's private thing on disk in the clear.
+  private readonly sealed = new EphemeralStore()
 
   constructor(dir: string) {
     mkdirSync(dir, { recursive: true })
@@ -139,13 +145,12 @@ export class Library {
     const existing = this.db.prepare('SELECT envelope_hash FROM things WHERE envelope_hash = ?').get(envelopeHash)
     if (existing) return { envelopeHash, fork: false, inserted: false }
 
-    // Persist bytes to the CAS (public content). Sealed content is signature-
-    // only for now, so there is nothing to store beyond the row.
-    if (!result.sealed) {
-      this.cas.put(result.program)
-      this.cas.put(result.manifestBytes)
-      for (const bytes of result.attachments.values()) this.cas.put(bytes)
-    }
+    // Persist bytes to the right store: the on-disk CAS for public content, the
+    // in-memory ephemeral store for decrypted SEALED content (never the CAS).
+    const store = result.sealed ? this.sealed : this.cas
+    store.put(result.program)
+    store.put(result.manifestBytes)
+    for (const bytes of result.attachments.values()) store.put(bytes)
 
     const env = result.envelope
     const authorKey = toHex(env.author.k)
@@ -216,14 +221,17 @@ export class Library {
     return r ? toThingRow(r) : null
   }
 
-  /** Reconstruct the program + manifest for mounting a public thing. */
+  /** Reconstruct the program + manifest + serving store for mounting a thing.
+   *  Sealed content is served from the ephemeral store (in memory); a sealed
+   *  thing not decrypted this session (e.g. after a restart) is unmountable. */
   load(envelopeHash: string): StoredThing | null {
     const row = this.get(envelopeHash)
-    if (!row || row.sealed) return null
-    const manifestBytes = this.cas.readAll(row.manifestHash)
-    const programBytes = this.cas.readAll(row.progHash)
+    if (!row) return null
+    const store: AttachmentStore = row.sealed ? this.sealed : this.cas
+    const manifestBytes = store.readAll(row.manifestHash)
+    const programBytes = store.readAll(row.progHash)
     if (!manifestBytes || !programBytes) return null
-    return { row, program: programBytes, manifest: decodeManifest(manifestBytes) }
+    return { row, program: programBytes, manifest: decodeManifest(manifestBytes), store }
   }
 
   markRead(envelopeHash: string, read = true): void {

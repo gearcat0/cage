@@ -3,7 +3,7 @@ import type { BaseWindow, WebContentsView, Rectangle } from 'electron'
 import { createCage } from '../../main/cage.js'
 import { bindCage, unbindCage, type ThingArgs } from '../../main/bridge.js'
 import type { CageResources, ResourceMap } from '../../main/protocol.js'
-import type { AttachmentTable, CasStore } from '../../main/store.js'
+import type { AttachmentTable } from '../../main/store.js'
 import { toHex } from '../../format/index.js'
 import type { StoredThing } from '../library/index.js'
 
@@ -49,15 +49,16 @@ export interface MountedThing {
 export interface MountOptions {
   win: BaseWindow
   preloadPath: string
-  cas: CasStore
   stored: StoredThing
   /** Rect the cage view occupies (below the chrome strip). */
   bounds: Rectangle
 }
 
-/** Mount a stored public thing and return the live view + header facts. */
+/** Mount a stored thing and return the live view + header facts. Attachments
+ *  are served from the thing's store — the on-disk CAS for public things, the
+ *  ephemeral in-memory store for sealed ones (§7.1). */
 export async function mountThing(opts: MountOptions): Promise<MountedThing> {
-  const { win, preloadPath, cas, stored } = opts
+  const { win, preloadPath, stored } = opts
   const id = mintCageId()
 
   // Attachment table (name -> hash/mime/size) from the manifest.
@@ -70,7 +71,7 @@ export async function mountThing(opts: MountOptions): Promise<MountedThing> {
   const cageResources: CageResources = {
     blobs: new Map([['index.html', { mime: PROGRAM_MIME, bytes: stored.program }]]),
     attachments,
-    store: cas
+    store: stored.store
   }
   resources.set(id, cageResources)
 

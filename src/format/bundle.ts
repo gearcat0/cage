@@ -1,7 +1,7 @@
 import { decodeManifest, type Manifest } from './manifest.js'
 import { verifyEnvelope, type VerifyResult } from './verify.js'
 import { decodeEnvelope, type Envelope } from './envelope.js'
-import { isSealed, unseal, type Unsealer } from './sealed.js'
+import { isSealed, unsealFull, unsealMember, type Unsealer } from './sealed.js'
 import { hash, toHex, type Hash } from './hash.js'
 import { bytesEqual } from './cbor.js'
 import { DEFAULT_LIMITS, type DecodeLimits } from './limits.js'
@@ -42,9 +42,16 @@ export class BundleError extends Error {
 
 export interface BundleSource {
   envelope: Uint8Array
+  /** Public bundle: manifest.cbor plaintext. */
   manifest?: Uint8Array
+  /** Public bundle: program plaintext. */
   program?: Uint8Array
-  /** hex-sha256 -> blob bytes. */
+  /** Sealed bundle: manifest.enc (nonce||ct, §7.1). */
+  manifestEnc?: Uint8Array
+  /** Sealed bundle: program.enc. */
+  programEnc?: Uint8Array
+  /** hex-sha256(plaintext) -> blob bytes. Plaintext for public bundles;
+   *  ciphertext (nonce||ct) for sealed bundles. */
   blobs: Map<string, Uint8Array>
 }
 
@@ -114,6 +121,10 @@ export function parseBundle(tarBytes: Uint8Array, limits: BundleLimits = DEFAULT
   if (manifest) source.manifest = manifest
   const program = entries.get('program')
   if (program) source.program = program
+  const manifestEnc = entries.get('manifest.enc')
+  if (manifestEnc) source.manifestEnc = manifestEnc
+  const programEnc = entries.get('program.enc')
+  if (programEnc) source.programEnc = programEnc
   return source
 }
 
@@ -151,26 +162,23 @@ export interface AdmitOptions {
 export function admitBundle(source: BundleSource, opts: AdmitOptions = {}): AdmissionResult {
   const limits = opts.limits ?? DEFAULT_BUNDLE_LIMITS
 
-  // Step 1-2: decode envelope; if Sealed, trial-decrypt to the inner envelope.
+  // Step 1-2: decode envelope; if Sealed, trial-decrypt to the inner envelope
+  // and recover the content key CK for the sealed members (§7.1).
   let envelopeBytes = source.envelope
   let sealed = false
+  let ck: Uint8Array | null = null
   if (isSealed(envelopeBytes, limits)) {
     sealed = true
     if (!opts.unsealer) return { status: 'not-for-me' }
-    let inner: Uint8Array | 'not-for-me'
+    let inner: ReturnType<typeof unsealFull>
     try {
-      inner = unseal(envelopeBytes, opts.unsealer, limits)
+      inner = unsealFull(envelopeBytes, opts.unsealer, limits)
     } catch (e) {
       return { status: 'invalid', reason: `sealed: ${(e as Error).message}` }
     }
     if (inner === 'not-for-me') return { status: 'not-for-me' }
-    envelopeBytes = inner
-    // LATER (spec-gated): where a sealed thing's manifest/program/attachments
-    // live was under-specified (§7's `ct` holds only the envelope). A proposed
-    // resolution — sealed members `manifest.enc`/`program.enc`/ciphertext blobs,
-    // each XChaCha20-Poly1305 under CK — is in gearcat0/format#2 (§7.1). Until
-    // that merges, this build admits the inner envelope's identity + signature
-    // only; wire up sealed-member decryption once §7.1 lands.
+    envelopeBytes = inner.envelope
+    ck = inner.ck
   }
 
   // Step 3-4: scheme lookup + signature over the received bytes.
@@ -180,47 +188,62 @@ export function admitBundle(source: BundleSource, opts: AdmitOptions = {}): Admi
   const envelope = verified.envelope
   const envelopeHash = hash(envelopeBytes)
 
-  // For sealed things, the manifest/program/attachments are not available in
-  // the plaintext bundle in this build (see note above). Admit signature-only.
-  if (sealed) {
-    return {
-      status: 'valid',
-      envelope,
-      envelopeHash,
-      manifest: { v: 1, prog: envelope.man, type: 'sealed', args: null, att: new Map() },
-      manifestBytes: new Uint8Array(0),
-      program: new Uint8Array(0),
-      attachments: new Map(),
-      sealed: true
+  // Resolve the manifest, program, and attachment bytes to their PLAINTEXT —
+  // directly for a public bundle, or by decrypting the sealed members under CK
+  // (§7.1) for a sealed one. Steps 5-8 then run identically on plaintext.
+  let manifestBytes: Uint8Array
+  let programBytes: Uint8Array
+  const attBytes = (hex: string): Uint8Array | undefined => {
+    const member = source.blobs.get(hex)
+    if (!member) return undefined
+    return sealed ? unsealMember(member, ck!) : member
+  }
+  try {
+    if (sealed) {
+      if (!source.manifestEnc) return { status: 'invalid', reason: 'sealed bundle missing manifest.enc' }
+      if (!source.programEnc) return { status: 'invalid', reason: 'sealed bundle missing program.enc' }
+      manifestBytes = unsealMember(source.manifestEnc, ck!)
+      programBytes = unsealMember(source.programEnc, ck!)
+    } else {
+      if (!source.manifest) return { status: 'invalid', reason: 'bundle missing manifest.cbor' }
+      if (!source.program) return { status: 'invalid', reason: 'bundle missing program' }
+      manifestBytes = source.manifest
+      programBytes = source.program
     }
+  } catch (e) {
+    // A member that fails to decrypt is tampering — reject the whole bundle.
+    return { status: 'invalid', reason: `sealed member decrypt: ${(e as Error).message}` }
   }
 
-  // Step 5: sha256(manifest.cbor received bytes) MUST equal envelope.man.
-  if (!source.manifest) return { status: 'invalid', reason: 'bundle missing manifest.cbor' }
-  if (!bytesEqual(hash(source.manifest), envelope.man)) {
+  // Step 5: sha256(manifest plaintext) MUST equal envelope.man.
+  if (!bytesEqual(hash(manifestBytes), envelope.man)) {
     return { status: 'invalid', reason: 'manifest hash does not match envelope.man' }
   }
 
   // Step 6: decode the manifest.
   let manifest: Manifest
   try {
-    manifest = decodeManifest(source.manifest, limits)
+    manifest = decodeManifest(manifestBytes, limits)
   } catch (e) {
     return { status: 'invalid', reason: `manifest decode: ${(e as Error).message}` }
   }
 
-  // Step 7: sha256(program) MUST equal manifest.prog.
-  if (!source.program) return { status: 'invalid', reason: 'bundle missing program' }
-  if (!bytesEqual(hash(source.program), manifest.prog)) {
+  // Step 7: sha256(program plaintext) MUST equal manifest.prog.
+  if (!bytesEqual(hash(programBytes), manifest.prog)) {
     return { status: 'invalid', reason: 'program hash does not match manifest.prog' }
   }
 
-  // Step 8: every attachment present and its sha256 equals h. Missing or
-  // mismatched fails the WHOLE bundle — no partial admission.
+  // Step 8: every attachment present and its PLAINTEXT sha256 equals h. Missing
+  // or mismatched fails the WHOLE bundle — no partial admission.
   const attachments = new Map<string, Uint8Array>()
   for (const [name, att] of manifest.att) {
     const hex = toHex(att.h)
-    const blob = source.blobs.get(hex)
+    let blob: Uint8Array | undefined
+    try {
+      blob = attBytes(hex)
+    } catch (e) {
+      return { status: 'invalid', reason: `attachment "${name}" decrypt: ${(e as Error).message}` }
+    }
     if (!blob) return { status: 'invalid', reason: `attachment "${name}" missing from bundle` }
     if (!bytesEqual(hash(blob), att.h)) {
       return { status: 'invalid', reason: `attachment "${name}" hash mismatch` }
@@ -235,10 +258,10 @@ export function admitBundle(source: BundleSource, opts: AdmitOptions = {}): Admi
     envelope,
     envelopeHash,
     manifest,
-    manifestBytes: source.manifest,
-    program: source.program,
+    manifestBytes,
+    program: programBytes,
     attachments,
-    sealed: false
+    sealed
   }
 }
 

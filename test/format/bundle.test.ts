@@ -3,7 +3,7 @@ import { secp256k1, schnorr } from '@noble/curves/secp256k1.js'
 import { encodeManifest, type Manifest } from '../../src/format/manifest.js'
 import { encodeEnvelope } from '../../src/format/envelope.js'
 import { hash } from '../../src/format/hash.js'
-import { seal, unseal, unsealerFromKey } from '../../src/format/sealed.js'
+import { seal, sealEnvelope, sealMember, unseal, unsealerFromKey } from '../../src/format/sealed.js'
 import { admitBundle, parseBundle, parseTar, BundleError, DEFAULT_BUNDLE_LIMITS } from '../../src/format/bundle.js'
 import { ethSigner, nostrSigner, buildTar } from './helpers.js'
 
@@ -113,22 +113,64 @@ describe('sealed unseal round-trip', () => {
     expect(unseal(sealed, unsealerFromKey(carolPriv))).toBe('not-for-me')
   })
 
-  it('admitBundle unseals and admits the inner envelope for a recipient', async () => {
+  it('admitBundle decrypts the sealed members (§7.1) for a recipient', async () => {
     const signer = nostrSigner(secp256k1.utils.randomSecretKey())
-    const program = new Uint8Array([7])
-    const manifest: Manifest = { v: 1, prog: hash(program), type: 'invite', args: null, att: new Map() }
-    const inner = await encodeEnvelope({ man: hash(encodeManifest(manifest)), created: 9 }, signer)
+    const program = new TextEncoder().encode('<h1>sealed</h1>')
+    const poster = new Uint8Array([5, 6, 7, 8])
+    const manifest: Manifest = {
+      v: 1,
+      prog: hash(program),
+      type: 'invite',
+      args: null,
+      att: new Map([['poster', { h: hash(poster), m: 'image/png', n: poster.length }]])
+    }
+    const manifestBytes = encodeManifest(manifest)
+    const inner = await encodeEnvelope({ man: hash(manifestBytes), created: 9 }, signer)
     const meP = secp256k1.utils.randomSecretKey()
     const mePub = schnorr.getPublicKey(meP)
-    const sealed = seal(inner, [mePub])
-    const tar = buildTar({ 'envelope.cbor': sealed })
+
+    // §7.1: ct holds the envelope; manifest/program/attachment are members
+    // encrypted under the SAME CK.
+    const { sealed, ck } = sealEnvelope(inner, [mePub])
+    const posterHex = [...hash(poster)].map((b) => b.toString(16).padStart(2, '0')).join('')
+    const tar = buildTar({
+      'envelope.cbor': sealed,
+      'manifest.enc': sealMember(manifestBytes, ck),
+      'program.enc': sealMember(program, ck),
+      [`blobs/${posterHex}`]: sealMember(poster, ck)
+    })
 
     const forMe = admitBundle(parseBundle(tar), { unsealer: unsealerFromKey(meP) })
     expect(forMe.status).toBe('valid')
-    if (forMe.status === 'valid') expect(forMe.sealed).toBe(true)
+    if (forMe.status === 'valid') {
+      expect(forMe.sealed).toBe(true)
+      // The sealed content is fully recovered as plaintext and verified.
+      expect(forMe.manifest.type).toBe('invite')
+      expect(forMe.program).toEqual(program)
+      expect(forMe.attachments.get('poster')).toEqual(poster)
+    }
 
     const notForMe = admitBundle(parseBundle(tar), { unsealer: unsealerFromKey(secp256k1.utils.randomSecretKey()) })
     expect(notForMe.status).toBe('not-for-me')
+  })
+
+  it('a tampered sealed member fails admission (AEAD)', async () => {
+    const signer = nostrSigner(secp256k1.utils.randomSecretKey())
+    const program = new TextEncoder().encode('<h1>x</h1>')
+    const manifest: Manifest = { v: 1, prog: hash(program), type: 'invite', args: null, att: new Map() }
+    const manifestBytes = encodeManifest(manifest)
+    const inner = await encodeEnvelope({ man: hash(manifestBytes), created: 1 }, signer)
+    const meP = secp256k1.utils.randomSecretKey()
+    const { sealed, ck } = sealEnvelope(inner, [schnorr.getPublicKey(meP)])
+    const programEnc = sealMember(program, ck)
+    programEnc[programEnc.length - 3] ^= 0xff // corrupt the program ciphertext
+    const tar = buildTar({
+      'envelope.cbor': sealed,
+      'manifest.enc': sealMember(manifestBytes, ck),
+      'program.enc': programEnc
+    })
+    const r = admitBundle(parseBundle(tar), { unsealer: unsealerFromKey(meP) })
+    expect(r.status).toBe('invalid')
   })
 
   it('caps the slot count before trial-decryption', async () => {
