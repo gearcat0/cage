@@ -201,7 +201,6 @@ app.whenReady().then(async () => {
     mounted = await mountThing({
       win,
       preloadPath: CAGE_PRELOAD,
-      cas: library.casStore,
       stored,
       bounds: cageRect()
     })

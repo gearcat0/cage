@@ -37,8 +37,18 @@ export {
   Nip44Error
 } from './nip44.js'
 
-export { seal, unseal, unsealerFromKey, isSealed, SealedError } from './sealed.js'
-export type { Unsealer } from './sealed.js'
+export {
+  seal,
+  sealEnvelope,
+  sealMember,
+  unseal,
+  unsealFull,
+  unsealMember,
+  unsealerFromKey,
+  isSealed,
+  SealedError
+} from './sealed.js'
+export type { Unsealer, UnsealResult } from './sealed.js'
 
 export {
   admitBundle,

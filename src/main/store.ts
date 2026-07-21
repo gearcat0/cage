@@ -38,6 +38,8 @@ export interface AttachmentStore {
    * admitted size.
    */
   read(hashHex: string, start: number, end: number): ReadableStream<Uint8Array> | null
+  /** Read a whole blob into memory by hex hash, or null if absent. */
+  readAll(hashHex: string): Uint8Array | null
 }
 
 function sha256Hex(bytes: Uint8Array): string {
@@ -116,6 +118,11 @@ export class EphemeralStore implements AttachmentStore {
 
   has(hashHex: string): boolean {
     return this.blobs.has(hashHex)
+  }
+
+  /** Read a whole blob into memory by hex hash, or null if absent. */
+  readAll(hashHex: string): Uint8Array | null {
+    return this.blobs.get(hashHex) ?? null
   }
 
   read(hashHex: string, start: number, end: number): ReadableStream<Uint8Array> | null {
