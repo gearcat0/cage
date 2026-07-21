@@ -18,6 +18,16 @@ describe('parseThingUrl', () => {
     expect(parseThingUrl('not a url')).toBeNull()
   })
 
+  it('rejects malformed percent-escapes instead of throwing (prereq #1)', () => {
+    // decodeURIComponent throws URIError on valid-%XX-but-invalid-UTF-8 like
+    // `%E0%A4`. This runs in the trusted handler on thing-reachable input, so a
+    // throw would be an uncaught error there. Must return null, not throw.
+    expect(() => parseThingUrl('thing://abc/att/%E0%A4')).not.toThrow()
+    expect(parseThingUrl('thing://abc/att/%E0%A4')).toBeNull()
+    expect(parseThingUrl('thing://abc/%ff')).toBeNull()
+    expect(parseThingUrl('thing://abc/att/%C3%28')).toBeNull() // invalid 2-byte seq
+  })
+
   it('documents that URL normalisation collapses literal dot-segments', () => {
     // `new URL()` collapses a literal `..` before we look, so this key is
     // harmless and simply misses the resource map. This case tests the WHATWG
