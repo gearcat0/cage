@@ -2,7 +2,7 @@
   "name": "cage",
   "version": "0.1.0",
   "private": true,
-  "description": "Phase 1: a hardened Electron renderer that runs untrusted HTML/JS with no network access and no ambient authority, plus a suite of escape-attempt tests that prove the cage holds.",
+  "description": "The cage (a hardened Electron renderer for untrusted things) plus the shell (the trusted client: admission, keyring, library, chrome).",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -14,7 +14,16 @@
     "test:cage": "pnpm build && CAGE_ALLOW_NO_SANDBOX=1 xvfb-run -a playwright test",
     "test:cage:headed": "pnpm build && CAGE_ALLOW_NO_SANDBOX=1 playwright test"
   },
+  "dependencies": {
+    "@noble/ciphers": "^2.2.0",
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.2.0",
+    "@yourproject/format": "link:../format",
+    "better-sqlite3": "^12.2.0",
+    "zod": "^4.1.13"
+  },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
     "@playwright/test": "^1.61.1",
     "@types/node": "^22.10.0",
     "electron": "^43.1.1",

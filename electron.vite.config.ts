@@ -1,22 +1,32 @@
 import { resolve } from 'node:path'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 
-// electron-vite splits the build into three independent bundles: main, preload,
-// and renderer (the host chrome UI). The cage itself renders untrusted `thing://`
-// bytes that are NOT part of this build — they are supplied at load time.
+// electron-vite splits the build into main, preload, and renderer bundles.
+//
+// This repo now builds TWO apps from shared modules:
+//   out/main/index.js         — the cage test harness (the escape suite runs it)
+//   out/main/shell/main.js     — the shell (trusted client)
+//   out/main/shell/admission-worker.js — the isolated structural-decode worker
+//
+// `@yourproject/format` and @noble/* are BUNDLED (not externalized) so the CJS
+// main can use these ESM packages without runtime interop issues. `electron`
+// and the native `better-sqlite3` stay external.
+const BUNDLED = ['@yourproject/format', '@noble/curves', '@noble/hashes', '@noble/ciphers', 'zod']
+const EXTERNAL = ['electron', 'better-sqlite3']
+
 export default defineConfig({
   main: {
-    // `electron` lives in devDependencies, so it must be externalized explicitly
-    // — otherwise vite bundles the npm stub and `session`/`app` come back
-    // undefined at runtime. externalizeDepsPlugin handles the node builtins.
-    plugins: [externalizeDepsPlugin({ include: ['electron'] })],
+    plugins: [externalizeDepsPlugin({ exclude: BUNDLED })],
     build: {
       outDir: 'out/main',
       rollupOptions: {
-        external: ['electron'],
-        input: { index: resolve(__dirname, 'src/main/index.ts') },
-        // CommonJS output. Electron loads a CJS main reliably; a bare-file ESM
-        // main did not execute its top-level in this environment.
+        external: EXTERNAL,
+        input: {
+          index: resolve(__dirname, 'src/main/index.ts'),
+          'shell/main': resolve(__dirname, 'src/shell/main.ts'),
+          'shell/admission-worker': resolve(__dirname, 'src/shell/admission/worker.ts')
+        },
+        // CommonJS output. Electron loads a CJS main reliably.
         output: { format: 'cjs', entryFileNames: '[name].js' }
       }
     }
@@ -29,7 +39,7 @@ export default defineConfig({
         external: ['electron'],
         // The cage preload is the ONLY code that bridges the untrusted thing to
         // the trusted shell. Keep it a single, auditable file.
-        // CommonJS: sandboxed preloads must be CommonJS, not ESM.
+        // LATER (chrome-UI stage): add the shell chrome preload here.
         input: { index: resolve(__dirname, 'src/preload/index.ts') },
         output: { format: 'cjs', entryFileNames: '[name].js' }
       }
@@ -40,6 +50,7 @@ export default defineConfig({
     build: {
       outDir: 'out/renderer',
       rollupOptions: {
+        // LATER (chrome-UI stage): add the shell's 3-pane chrome renderer.
         input: { index: resolve(__dirname, 'src/renderer/index.html') }
       }
     }
