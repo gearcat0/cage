@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { createHash } from 'node:crypto'
-import { serveAttachment, type CageResources } from '../../src/main/protocol.js'
+import { serveAttachment, THING_CSP, type CageResources } from '../../src/main/protocol.js'
 import type { AttachmentStore } from '../../src/main/store.js'
 
 // Response-level tests for the att/ route (finding 1.2): the Range unit tests
@@ -87,6 +87,17 @@ describe('serveAttachment', () => {
   it('404s an unknown name (the table is the gate)', async () => {
     const r = serveAttachment(resources(), 'nope', req())
     expect(r.status).toBe(404)
+  })
+
+  it('attaches exactly THING_CSP on every response (CSP-parity, prereq #2)', () => {
+    // Both CSP sites — this handler and cage.ts onHeadersReceived — reference
+    // the single exported THING_CSP constant, so they cannot silently drift.
+    // Pin that the handler attaches it verbatim on 200/206/404/416.
+    const csp = (r: Response): string | null => r.headers.get('content-security-policy')
+    expect(csp(serveAttachment(resources(), 'poster', req()))).toBe(THING_CSP)
+    expect(csp(serveAttachment(resources(), 'poster', req('bytes=0-9')))).toBe(THING_CSP)
+    expect(csp(serveAttachment(resources(), 'nope', req()))).toBe(THING_CSP)
+    expect(csp(serveAttachment(resources(), 'poster', req('bytes=999-')))).toBe(THING_CSP)
   })
 
   it('falls back to the full body on a malformed Range header', async () => {

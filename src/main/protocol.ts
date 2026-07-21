@@ -68,7 +68,17 @@ export function parseThingUrl(rawUrl: string): { id: string; path: string } | nu
   if (u.protocol !== 'thing:') return null
   // thing://<id>/<path...>  -> host is the id, pathname is the resource.
   const id = u.hostname
-  let path = decodeURIComponent(u.pathname).replace(/^\/+/, '')
+  // decodeURIComponent THROWS a URIError on malformed percent-escapes (e.g.
+  // `%E0%A4` — valid %XX octets, incomplete UTF-8), and this runs inside the
+  // trusted protocol handler on thing-reachable input (`new Image().src`). A
+  // throw here would surface as an uncaught error in the handler, so treat a
+  // malformed escape as an unparseable URL and reject it.
+  let path: string
+  try {
+    path = decodeURIComponent(u.pathname).replace(/^\/+/, '')
+  } catch {
+    return null
+  }
   if (path === '') path = 'index.html'
   // Reject any traversal attempt outright. The stores are keyed by hash, not
   // by this path, but a lookup key containing `..` is a smell we refuse on

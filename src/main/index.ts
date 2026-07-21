@@ -228,6 +228,24 @@ function shortHash(html: string): string {
   return createHash('sha256').update(html).digest('hex').slice(0, 12)
 }
 
+// ── Cage id uniqueness invariant (prereq #4) ─────────────────────────────────
+// Cross-id isolation rests on `fromPartition('thing-<id>')` giving a DISTINCT
+// session per id. randomUUID() collisions are astronomically unlikely, but the
+// invariant is load-bearing, so enforce it at the mint site rather than assume:
+// a reused id would silently share a session (and thus storage + resources)
+// between two cages. Fresh id or bust.
+const mintedCageIds = new Set<string>()
+function mintCageId(): string {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const id = randomUUID()
+    if (!mintedCageIds.has(id)) {
+      mintedCageIds.add(id)
+      return id
+    }
+  }
+  throw new Error('cage id mint failed: randomUUID collision (impossible in practice)')
+}
+
 /** Mount one cage into the window and load its thing. Returns when loaded. */
 async function mountCage(
   win: BaseWindow,
@@ -235,7 +253,7 @@ async function mountCage(
   layout: (view: WebContentsView) => void,
   onTop: boolean
 ): Promise<{ id: string; hash: string }> {
-  const id = randomUUID()
+  const id = mintCageId()
   const { resources, table } = buildResources(id, spec.html, spec)
   const handle = await createCage({ id, preloadPath: PRELOAD, resources })
 
