@@ -7,7 +7,7 @@ import {
   type BundleLimits,
   type BundleSource,
   type Unsealer
-} from '@yourproject/format'
+} from '../../format/index.js'
 
 // ── Admission service — the trusted orchestrator (brief §1.1, §1.5) ──────────
 //

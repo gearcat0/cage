@@ -10,20 +10,14 @@ import {
   type AdmissionResult,
   type BundleLimits,
   type Manifest
-} from '@yourproject/format'
+} from '../format/index.js'
 
 // ── The shell — trusted client bootstrap ─────────────────────────────────────
-// Phase 3: admission (isolated) + keyring (safeStorage custody) are wired here.
-// The library, mount, and full chrome UI land next. A test-observable surface is
-// exposed on `app.__shell` so the suite can drive admission and inspect the
-// keyring from OUTSIDE the process, mirroring the cage's `app.__cage` pattern.
-
-// In a headless dev/CI container there is no OS keyring backend, so force
-// safeStorage's `basic` backend — enough that encryptString works and the
-// plaintext key never hits disk. Gated so production uses the real OS backend.
-if (process.env.SHELL_PASSWORD_STORE_BASIC === '1') {
-  app.commandLine.appendSwitch('password-store', 'basic')
-}
+// Phase 3: admission (isolated) + keyring (software key custody for now) are
+// wired here. The library, mount, and full chrome UI land next. A
+// test-observable surface is exposed on `app.__shell` so the suite can drive
+// admission and inspect the keyring from OUTSIDE the process, mirroring the
+// cage's `app.__cage` pattern.
 
 function hex(bytes: Uint8Array): string {
   let s = ''

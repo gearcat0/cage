@@ -14,7 +14,7 @@ import {
   type BundleSource,
   type Manifest,
   type Signer
-} from '@yourproject/format'
+} from '../../src/format/index.js'
 
 const SHELL_MAIN = join(__dirname, '..', '..', 'out', 'main', 'shell', 'main.js')
 
@@ -180,11 +180,9 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
   const userDataDir = mkdtempSync(join(tmpdir(), 'shell-userdata-'))
   const env: Record<string, string> = { ...process.env } as Record<string, string>
   delete env.ELECTRON_DISABLE_SANDBOX
-  env.SHELL_PASSWORD_STORE_BASIC = '1'
-  // Headless CI has no OS keyring backend, so use the gated insecure at-rest
-  // fallback (still never writes the plaintext key). Production requires
-  // safeStorage.
-  env.SHELL_KEYRING_INSECURE_FALLBACK = '1'
+  // Force software key storage so the test is deterministic regardless of host
+  // safeStorage availability (still never writes the plaintext key).
+  env.SHELL_FORCE_SOFTWARE_KEYS = '1'
   env.SHELL_USER_DATA_DIR = userDataDir
   Object.assign(env, opts.extraEnv ?? {})
 

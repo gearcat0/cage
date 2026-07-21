@@ -18,7 +18,6 @@
     "@noble/ciphers": "^2.2.0",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
-    "@yourproject/format": "link:../format",
     "better-sqlite3": "^12.2.0",
     "zod": "^4.1.13"
   },

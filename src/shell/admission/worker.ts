@@ -5,7 +5,7 @@ import {
   isSealed,
   DEFAULT_BUNDLE_LIMITS,
   type BundleLimits
-} from '@yourproject/format'
+} from '../../format/index.js'
 
 // ── Admission worker — the isolated structural-decode process (brief §1.1) ───
 //

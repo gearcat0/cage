@@ -7,14 +7,13 @@ import { keccak_256 } from '@noble/hashes/sha3.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { extract } from '@noble/hashes/hkdf.js'
 import { randomBytes } from '@noble/hashes/utils.js'
-import { nip44Decrypt, type Signer, type Unsealer } from '@yourproject/format'
+import { nip44Decrypt, type Signer, type Unsealer } from '../../format/index.js'
 
 // ── Keyring — the ONLY code that touches private key bytes (brief §2) ────────
 //
 // Custody: the identity is a secp256k1 private key, generated locally and stored
-// ENCRYPTED AT REST via Electron `safeStorage` (OS-backed). The plaintext key is
-// never written to disk, a log, or the index. It is unlocked into memory for the
-// session and zeroed on lock/quit.
+// encrypted at rest. It is unlocked into memory for the session and zeroed on
+// lock/quit.
 //
 // The injected-interface rule (§2.2): `format` and the cage receive a `Signer`
 // and an `Unsealer`, never key bytes. `signer.sign(...)` returns a signature;
@@ -27,39 +26,41 @@ const NOSTR_DERIVATION_MESSAGE = 'thing-nostr-derivation-v1'
 
 // At-rest encoding scheme markers (first byte of the identity file).
 const SCHEME_SAFE_STORAGE = 0x01
-const SCHEME_INSECURE_FALLBACK = 0x02
+const SCHEME_SOFTWARE = 0x02
 
 // ── At-rest custody ──────────────────────────────────────────────────────────
-// Production: Electron safeStorage (OS Keychain / DPAPI / libsecret). In a
-// headless dev/CI container with no keyring backend, safeStorage is unavailable;
-// an explicit, LOUD opt-in (SHELL_KEYRING_INSECURE_FALLBACK=1) enables a
-// static-key XChaCha encoding so the tests can run. It is NOT secure — a fixed
-// key means anyone with the file can decrypt it — but the plaintext key still
-// never touches disk, which is the property the accommodation preserves. The
-// production path REFUSES to run without safeStorage.
+// PHASE 3: keys are kept in PURE SOFTWARE. If Electron safeStorage (OS Keychain
+// / DPAPI / libsecret) is available it is used; otherwise the key is encrypted
+// with a STATIC application key (XChaCha) — this is NOT real protection (a fixed
+// key means anyone with the file can decrypt it), but the plaintext key never
+// touches disk, and software storage is the accepted posture for now.
+//
+// LATER: proper OS-backed key storage (and, on that path, a hardware-wallet
+// Signer). The UI will carry an explicit "your key is stored in software"
+// warning. `SHELL_FORCE_SOFTWARE_KEYS=1` forces software mode even where
+// safeStorage exists (deterministic dev/CI).
 
-const FALLBACK_KEY = sha256(
-  new TextEncoder().encode('thing-shell-keyring-fallback-v1-INSECURE-dev-only')
+const SOFTWARE_KEY = sha256(
+  new TextEncoder().encode('thing-shell-software-key-storage-v1-NOT-SECURE')
 )
 
-function fallbackEnabled(): boolean {
-  return process.env.SHELL_KEYRING_INSECURE_FALLBACK === '1'
+function useSafeStorage(): boolean {
+  if (process.env.SHELL_FORCE_SOFTWARE_KEYS === '1') return false
+  try {
+    return safeStorage.isEncryptionAvailable()
+  } catch {
+    return false
+  }
 }
 
 function encryptAtRest(plaintextHex: string): Buffer {
-  if (safeStorage.isEncryptionAvailable()) {
+  if (useSafeStorage()) {
     const blob = safeStorage.encryptString(plaintextHex)
     return Buffer.concat([Buffer.from([SCHEME_SAFE_STORAGE]), blob])
   }
-  if (!fallbackEnabled()) {
-    throw new Error(
-      'safeStorage is unavailable and no key custody backend is configured. ' +
-        'Refusing to persist the identity key without OS-backed encryption.'
-    )
-  }
   const nonce = randomBytes(24)
-  const ct = xchacha20poly1305(FALLBACK_KEY, nonce).encrypt(new TextEncoder().encode(plaintextHex))
-  return Buffer.concat([Buffer.from([SCHEME_INSECURE_FALLBACK]), Buffer.from(nonce), Buffer.from(ct)])
+  const ct = xchacha20poly1305(SOFTWARE_KEY, nonce).encrypt(new TextEncoder().encode(plaintextHex))
+  return Buffer.concat([Buffer.from([SCHEME_SOFTWARE]), Buffer.from(nonce), Buffer.from(ct)])
 }
 
 function decryptAtRest(file: Buffer): string {
@@ -68,11 +69,10 @@ function decryptAtRest(file: Buffer): string {
   if (scheme === SCHEME_SAFE_STORAGE) {
     return safeStorage.decryptString(payload)
   }
-  if (scheme === SCHEME_INSECURE_FALLBACK) {
-    if (!fallbackEnabled()) throw new Error('identity was stored with the insecure fallback but it is not enabled')
+  if (scheme === SCHEME_SOFTWARE) {
     const nonce = payload.subarray(0, 24)
     const ct = payload.subarray(24)
-    return new TextDecoder().decode(xchacha20poly1305(FALLBACK_KEY, nonce).decrypt(ct))
+    return new TextDecoder().decode(xchacha20poly1305(SOFTWARE_KEY, nonce).decrypt(ct))
   }
   throw new Error(`unknown at-rest scheme byte ${scheme}`)
 }

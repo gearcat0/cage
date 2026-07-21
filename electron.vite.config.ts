@@ -8,10 +8,11 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 //   out/main/shell/main.js     — the shell (trusted client)
 //   out/main/shell/admission-worker.js — the isolated structural-decode worker
 //
-// `@yourproject/format` and @noble/* are BUNDLED (not externalized) so the CJS
-// main can use these ESM packages without runtime interop issues. `electron`
-// and the native `better-sqlite3` stay external.
-const BUNDLED = ['@yourproject/format', '@noble/curves', '@noble/hashes', '@noble/ciphers', 'zod']
+// The format code lives in this repo (src/format) and is bundled as source.
+// @noble/* and zod are BUNDLED (not externalized) so the CJS main can use these
+// ESM packages without runtime interop issues. `electron` and the native
+// `better-sqlite3` stay external.
+const BUNDLED = ['@noble/curves', '@noble/hashes', '@noble/ciphers', 'zod']
 const EXTERNAL = ['electron', 'better-sqlite3']
 
 export default defineConfig({
