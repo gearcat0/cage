@@ -25,5 +25,6 @@
     "playwright.config.ts",
     "vitest.config.ts",
     "electron.vite.config.ts"
-  ]
+  ],
+  "exclude": ["src/shell/chrome/chrome.ts", "src/shell/chrome/css.d.ts"]
 }

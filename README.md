@@ -1,11 +1,23 @@
-# the cage
+# the cage — and the shell
 
-**Phases 1–2 of a larger project.** The cage is a hardened Electron renderer
+**Phases 1–3 of a larger project.** The cage is a hardened Electron renderer
 that runs arbitrary untrusted HTML/CSS/JS with **no network access and no
 ambient authority**, plus a suite of escape-attempt tests that prove it holds.
-Phase 2 fleshed out the shell↔thing bridge from its stub into the real
-four-method interface defined by the format spec (see `BRIDGE_BUILD_BRIEF.md`
-in the bridge repo).
+Phase 2 fleshed out the shell↔thing bridge into the real four-method interface.
+**Phase 3 adds the shell** — the trusted client that holds the keyring, admits
+hostile bundles through an isolated pipeline, indexes them in a library, and
+mounts admitted things into cages with all trust signals in unforgeable chrome.
+
+This repo now contains three layers, kept together for ease of testing and
+CI-enforced to stay decoupled (`test/unit/boundary.test.ts`):
+
+- **`src/format/`** — the thing format (canonical CBOR, hashing, signing/verify,
+  sealed envelopes, bundle admission). Pure TS; the spec lives in the separate
+  `gearcat0/format` repo. See `src/format/README.md`.
+- **`src/main/`, `src/preload/`** — the cage. Imports neither the shell nor
+  format.
+- **`src/shell/`** — the trusted client (admission, keyring, library, mount,
+  chrome UI, transport/naming stubs). See `src/shell/README.md`.
 
 ## The trust model, in a paragraph
 

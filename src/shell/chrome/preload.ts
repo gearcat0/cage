@@ -1,0 +1,29 @@
+import { contextBridge, ipcRenderer } from 'electron'
+
+// ── Shell chrome preload ─────────────────────────────────────────────────────
+// The TRUSTED chrome renderer's bridge to the shell main. This is NOT the cage
+// preload (src/preload/index.ts) — that one is the untrusted thing's surface.
+// The chrome draws the feed, omnibar, per-thing trust header, and confirm
+// dialogs; every trust signal and every human-confirmation decision lives here,
+// in pixels the thing cannot reach.
+
+const shell = {
+  identity: (): Promise<{ address: string; nostrPubkey: string }> => ipcRenderer.invoke('shell:identity'),
+  feed: (query?: unknown): Promise<unknown[]> => ipcRenderer.invoke('shell:feed', query ?? {}),
+  ingest: (base64: string): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:ingest', base64),
+  open: (envelopeHash: string): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:open', envelopeHash),
+  close: (): Promise<void> => ipcRenderer.invoke('shell:close'),
+  /** Main pushes this after the feed changes (e.g. an ingest). */
+  onFeedChanged: (cb: () => void): void => {
+    ipcRenderer.on('shell:feed-changed', () => cb())
+  },
+  /** Main pushes a publish request here; the human decides in chrome. */
+  onConfirmRequest: (cb: (req: { id: number; kind: string; summary: Record<string, unknown> }) => void): void => {
+    ipcRenderer.on('shell:confirm-request', (_e, req) => cb(req))
+  },
+  respondConfirm: (id: number, approved: boolean): void => {
+    ipcRenderer.send('shell:confirm-response', id, approved)
+  }
+}
+
+contextBridge.exposeInMainWorld('shell', Object.freeze(shell))

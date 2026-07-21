@@ -38,21 +38,29 @@ export default defineConfig({
       outDir: 'out/preload',
       rollupOptions: {
         external: ['electron'],
-        // The cage preload is the ONLY code that bridges the untrusted thing to
-        // the trusted shell. Keep it a single, auditable file.
-        // LATER (chrome-UI stage): add the shell chrome preload here.
-        input: { index: resolve(__dirname, 'src/preload/index.ts') },
+        // The cage preload (index) is the untrusted thing's surface; the shell
+        // chrome preload is the TRUSTED chrome↔main bridge — distinct files.
+        input: {
+          index: resolve(__dirname, 'src/preload/index.ts'),
+          'shell/chrome': resolve(__dirname, 'src/shell/chrome/preload.ts')
+        },
         output: { format: 'cjs', entryFileNames: '[name].js' }
       }
     }
   },
   renderer: {
-    root: resolve(__dirname, 'src/renderer'),
+    // root is `src` so both the cage chrome (renderer/) and the shell chrome
+    // (shell/chrome/) are under it. Emitted paths preserve the structure:
+    //   out/renderer/renderer/index.html      (cage chrome)
+    //   out/renderer/shell/chrome/index.html  (shell chrome)
+    root: resolve(__dirname, 'src'),
     build: {
       outDir: 'out/renderer',
       rollupOptions: {
-        // LATER (chrome-UI stage): add the shell's 3-pane chrome renderer.
-        input: { index: resolve(__dirname, 'src/renderer/index.html') }
+        input: {
+          cage: resolve(__dirname, 'src/renderer/index.html'),
+          shell: resolve(__dirname, 'src/shell/chrome/index.html')
+        }
       }
     }
   }

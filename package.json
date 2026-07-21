@@ -10,6 +10,8 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "rebuild:native": "electron-rebuild -f -o better-sqlite3",
+    "postinstall": "electron-rebuild -f -o better-sqlite3 || true",
     "test:unit": "vitest run",
     "test:cage": "pnpm build && CAGE_ALLOW_NO_SANDBOX=1 xvfb-run -a playwright test",
     "test:cage:headed": "pnpm build && CAGE_ALLOW_NO_SANDBOX=1 playwright test"
@@ -22,8 +24,9 @@
     "zod": "^4.1.13"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.11",
+    "@electron/rebuild": "^4.2.0",
     "@playwright/test": "^1.61.1",
+    "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^22.10.0",
     "electron": "^43.1.1",
     "electron-vite": "^5.0.0",
