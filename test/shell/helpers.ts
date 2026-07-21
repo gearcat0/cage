@@ -176,6 +176,10 @@ export function tarFromSource(src: BundleSource): Uint8Array {
   return buildTar(files)
 }
 
+export function bundleTarHash(tar: Uint8Array): string {
+  return [...hash(tar)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
 export { seal, secp256k1, schnorr, hash, parseBundle }
 
 // ── Shell launcher ───────────────────────────────────────────────────────────
@@ -187,6 +191,10 @@ export interface ShellHandle {
   admit(bytes: Uint8Array): Promise<Record<string, unknown>>
   /** Ingest raw bundle bytes (admit + store in the library). */
   ingest(bytes: Uint8Array): Promise<Record<string, unknown>>
+  /** Fetch a locator (file:/bundle:/magnet:) then admit it. */
+  fetchLocator(locator: string): Promise<Record<string, unknown>>
+  /** Whether the seed store holds this bundle tar-hash. */
+  seedHas(hashHex: string): Promise<boolean>
   /** The feed rows (newest received first). */
   feed(): Promise<Record<string, unknown>[]>
   /** Mount a thing via the shell's own hook (returns the header facts). */
@@ -246,6 +254,16 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
         const s = (electron.app as unknown as { __shell: { ingest: (a: number[]) => Promise<Record<string, unknown>> } }).__shell
         return s.ingest(arr)
       }, Array.from(bytes)),
+    fetchLocator: (locator: string) =>
+      app.evaluate(async (electron, loc) => {
+        const s = (electron.app as unknown as { __shell: { fetch: (l: string) => Promise<Record<string, unknown>> } }).__shell
+        return s.fetch(loc)
+      }, locator),
+    seedHas: (hashHex: string) =>
+      app.evaluate(async (electron, h) => {
+        const s = (electron.app as unknown as { __shell: { seedHas: (x: string) => boolean } }).__shell
+        return s.seedHas(h) as never
+      }, hashHex),
     feed: () =>
       app.evaluate(async (electron) => {
         const s = (electron.app as unknown as { __shell: { feed: () => Record<string, unknown>[] } }).__shell

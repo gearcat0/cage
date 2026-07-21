@@ -13,7 +13,9 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 // ESM packages without runtime interop issues. `electron` and the native
 // `better-sqlite3` stay external.
 const BUNDLED = ['@noble/curves', '@noble/hashes', '@noble/ciphers', 'zod']
-const EXTERNAL = ['electron', 'better-sqlite3']
+// `webtorrent` is an OPTIONAL, lazily-imported transport (magnet:); keep it
+// external so the build never tries to bundle it when it is not installed.
+const EXTERNAL = ['electron', 'better-sqlite3', 'webtorrent']
 
 export default defineConfig({
   main: {

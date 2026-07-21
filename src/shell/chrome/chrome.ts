@@ -11,6 +11,7 @@ interface ShellApi {
   identity(): Promise<{ address: string; nostrPubkey: string }>
   feed(query?: unknown): Promise<ThingRow[]>
   ingest(base64: string): Promise<Outcome>
+  fetch(locator: string): Promise<Outcome>
   open(envelopeHash: string): Promise<HeaderFacts>
   close(): Promise<void>
   onFeedChanged(cb: () => void): void
@@ -66,8 +67,8 @@ app.append(topbar, feedPane, main)
 // ── Omnibar ──────────────────────────────────────────────────────────────────
 const identityEl = el('span', 'evm-address evm-address--muted', 'loading…')
 const ingestInput = el('input', 'evm-input evm-input--mono') as HTMLInputElement
-ingestInput.placeholder = 'paste a base64 bundle…'
-ingestInput.setAttribute('aria-label', 'paste bundle')
+ingestInput.placeholder = 'paste a base64 bundle, or a locator (magnet:/bundle:/file:)…'
+ingestInput.setAttribute('aria-label', 'paste bundle or locator')
 const ingestBtn = el('button', 'evm-btn evm-btn--primary evm-btn--sm', 'Ingest') as HTMLButtonElement
 const fileBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Open file…') as HTMLButtonElement
 const fileInput = el('input') as HTMLInputElement
@@ -106,9 +107,14 @@ function showToast(o: Outcome): void {
   }, 6000)
 }
 
-async function doIngest(base64: string): Promise<void> {
-  if (!base64.trim()) return
-  const outcome = await shell.ingest(base64.trim())
+const LOCATOR_RE = /^(magnet|bundle|file):/i
+
+async function doIngest(input: string): Promise<void> {
+  const text = input.trim()
+  if (!text) return
+  // A locator is fetched (transport → admission); anything else is a pasted
+  // base64 bundle ingested directly.
+  const outcome = LOCATOR_RE.test(text) ? await shell.fetch(text) : await shell.ingest(text)
   showToast(outcome)
   ingestInput.value = ''
   await refreshFeed()

@@ -28,7 +28,10 @@ src/shell/
 │                fork detection on same (author, path, seq) / different hash.
 ├── mount/       admitted thing → CageResources → createCage → bridge args →
 │                view placed beneath the chrome. Reuses the cage library.
-├── transport/   stub: file/paste now, webtorrent later (magnet → not-yet).
+├── transport/   fetch bundle bytes by locator (file: / content-addressed
+│                bundle: / magnet:), resource-bounded + content-untrusted —
+│                admission is the gate. webtorrent wired behind the interface
+│                (lazy import); admitted bundles are retained in a seed store.
 ├── naming/      stub: no resolver; direct-hash / direct-bundle ingestion works.
 ├── chrome/      the trusted 3-pane renderer (omnibar, feed, per-thing trust
 │                header, confirm dialogs). Vanilla TS + the evm-ui design

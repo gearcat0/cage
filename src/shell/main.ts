@@ -5,6 +5,8 @@ import { AdmissionService } from './admission/index.js'
 import { Keyring } from './keyring/index.js'
 import { Library, type ThingRow } from './library/index.js'
 import { mountThing, type MountedThing } from './mount/index.js'
+import { TransportService, FileTransport, SeedTransport, WebtorrentTransport } from './transport/index.js'
+import { CasStore } from '../main/store.js'
 import { installBridge, setPublishObserver } from '../main/bridge.js'
 import {
   admitBundle,
@@ -54,6 +56,13 @@ function hex(bytes: Uint8Array): string {
   return s
 }
 
+function numEnv(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (!raw) return fallback
+  const n = Number.parseInt(raw, 10)
+  return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
 function summarize(r: AdmissionResult): Record<string, unknown> {
   if (r.status === 'valid') {
     return {
@@ -94,6 +103,10 @@ interface ShellSurface {
   ingest?: (raw: number[]) => Promise<Record<string, unknown>>
   feed?: (query?: unknown) => ThingRow[]
   open?: (envelopeHash: string) => Promise<Record<string, unknown>>
+  /** Fetch a locator (file:/bundle:/magnet:) then admit it. */
+  fetch?: (locator: string) => Promise<Record<string, unknown>>
+  /** TEST: does the seed store hold this bundle tar-hash? */
+  seedHas?: (hashHex: string) => boolean
   lastConfirm?: { id: number; kind: string; summary: Record<string, unknown> } | null
 }
 
@@ -146,6 +159,17 @@ app.whenReady().then(async () => {
   const library = new Library(join(userDataDir, 'library'))
   dbg('admission')
   const admission = new AdmissionService({ limits: limitsFromEnv() })
+  // Seed store: retains every admitted bundle's raw tar bytes (content-addressed
+  // by tar-hash) so the shell can re-serve it. `bundle:<hash>` fetches from here.
+  const seedStore = new CasStore(join(userDataDir, 'seeds'))
+  const fetchLimits = {
+    maxBytes: numEnv('SHELL_MAX_FETCH_BYTES', 256 * 1024 * 1024),
+    timeoutMs: numEnv('SHELL_FETCH_TIMEOUT_MS', 30_000)
+  }
+  const transport = new TransportService(fetchLimits)
+    .register(new FileTransport())
+    .register(new SeedTransport(seedStore))
+    .register(new WebtorrentTransport())
   dbg('window')
 
   // ── Window + chrome ────────────────────────────────────────────────────────
@@ -184,9 +208,24 @@ app.whenReady().then(async () => {
     const result = await admission.admit(raw, keyring.unsealer)
     if (result.status === 'valid') {
       library.store(result, Date.now())
+      // Seed the raw admitted bundle so it can be re-served by bundle:<hash>.
+      seedStore.put(raw)
       notifyFeedChanged()
     }
     return summarize(result)
+  }
+
+  /** Fetch a locator (file:/bundle:/magnet:) then run it through admission. The
+   *  transport is content-untrusted; admission is the gate, and the fetch is
+   *  resource-bounded + content-addressed-verified inside the service. */
+  async function fetchLocator(locator: string): Promise<Record<string, unknown>> {
+    let bytes: Uint8Array
+    try {
+      bytes = await transport.fetch(locator)
+    } catch (e) {
+      return { status: 'invalid', reason: `transport: ${(e as Error).message}` }
+    }
+    return ingestBytes(bytes)
   }
 
   function getFeed(query: unknown): ThingRow[] {
@@ -232,6 +271,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('shell:identity', () => shell.identity)
   ipcMain.handle('shell:feed', (_e, query) => getFeed(query))
   ipcMain.handle('shell:ingest', (_e, base64: string) => ingestBytes(base64ToBytes(base64)))
+  ipcMain.handle('shell:fetch', (_e, locator: string) => fetchLocator(locator))
   ipcMain.handle('shell:open', (_e, envelopeHash: string) => openThing(envelopeHash))
   ipcMain.handle('shell:close', () => {
     if (mounted) {
@@ -245,6 +285,8 @@ app.whenReady().then(async () => {
   shell.userDataDir = userDataDir
   shell.admit = async (raw) => summarize(await admission.admit(Uint8Array.from(raw), keyring.unsealer))
   shell.ingest = async (raw) => ingestBytes(Uint8Array.from(raw))
+  shell.fetch = (locator) => fetchLocator(locator)
+  shell.seedHas = (hashHex) => seedStore.has(hashHex)
   shell.feed = (query) => getFeed(query)
   shell.open = (envelopeHash) => openThing(envelopeHash)
   shell.signAndAdmit = async (type: string) => {
