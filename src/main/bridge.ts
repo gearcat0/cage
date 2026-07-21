@@ -159,6 +159,21 @@ export function installBridge(): void {
   })
 }
 
+/** An optional observer the shell installs to drive the human-confirmation flow:
+ *  a thing's publish REQUEST is surfaced in trusted chrome and decided there,
+ *  never auto-granted. The bridge still grants nothing itself. */
+export type PublishObserver = (draft: {
+  type: string
+  att: Record<string, { h: string; m: string; n: number }>
+  argsBytes: number
+  blobBytes: number
+}) => void
+
+let publishObserver: PublishObserver | null = null
+export function setPublishObserver(fn: PublishObserver | null): void {
+  publishObserver = fn
+}
+
 /** Receipt side of `emit("publish", …)`: validate the draft shape, enforce the
  *  caps, hash inline blobs into an attachment table, and record the draft.
  *  Nothing is granted: signing, sealing, and the review/confirm UI are later
@@ -188,6 +203,13 @@ function handlePublish(data: unknown, caps: DraftCaps): void {
   record({
     type: 'draft-recorded',
     draftType: result.draft.type,
+    att: result.draft.att,
+    argsBytes: result.argsBytes,
+    blobBytes: result.blobBytes
+  })
+  // Surface the request to the shell's confirm flow (decided in chrome).
+  publishObserver?.({
+    type: result.draft.type,
     att: result.draft.att,
     argsBytes: result.argsBytes,
     blobBytes: result.blobBytes

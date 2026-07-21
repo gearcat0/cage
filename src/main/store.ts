@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { createReadStream, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 
@@ -83,6 +83,18 @@ export class CasStore implements AttachmentStore {
     if (start < 0 || end >= size || start > end) return null
     const nodeStream = createReadStream(path, { start, end })
     return Readable.toWeb(nodeStream) as unknown as ReadableStream<Uint8Array>
+  }
+
+  /** Read a whole blob into memory by hex hash, or null if absent. For the
+   *  library/mount path (small blobs like the program and manifest). */
+  readAll(hashHex: string): Uint8Array | null {
+    if (!HEX_HASH.test(hashHex)) return null
+    const path = join(this.blobsDir, hashHex)
+    try {
+      return new Uint8Array(readFileSync(path))
+    } catch {
+      return null
+    }
   }
 }
 

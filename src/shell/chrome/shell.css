@@ -1,0 +1,148 @@
+/* Shell chrome layout — glue only; all colour/spacing via evm-ui tokens.
+ * The native cage view is composited over .sh-cage-area, so the feed, omnibar,
+ * and per-thing header are the only chrome pixels — the ones the thing cannot
+ * reach. Layout constants (48 / 300 / 44) MUST match src/shell/main.ts. */
+
+:root {
+  color-scheme: dark;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--evm-bg);
+  color: var(--evm-text-1);
+  font-family: var(--evm-font-sans);
+  overflow: hidden;
+}
+
+#app {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  grid-template-rows: 48px 1fr;
+  height: 100vh;
+}
+
+.sh-topbar {
+  grid-column: 1 / 3;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--evm-space-2);
+  padding: 0 var(--evm-space-4);
+  background: var(--evm-surface-1);
+  border-bottom: 1px solid var(--evm-border);
+}
+.sh-brand {
+  color: var(--evm-accent);
+  font-weight: var(--evm-weight-semibold);
+}
+.sh-spacer {
+  flex: 1;
+}
+.sh-id-label,
+.sh-hint,
+.sh-by {
+  color: var(--evm-text-3);
+  font-size: var(--evm-text-sm);
+}
+.sh-topbar .evm-input {
+  max-width: 320px;
+}
+.sh-toast {
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sh-feed {
+  grid-column: 1;
+  grid-row: 2;
+  background: var(--evm-surface-1);
+  border-right: 1px solid var(--evm-border);
+  overflow-y: auto;
+  padding: var(--evm-space-2);
+}
+.sh-feed-title {
+  color: var(--evm-text-3);
+  font-size: var(--evm-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: var(--evm-space-2);
+}
+.sh-feed-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--evm-radius-md);
+  padding: var(--evm-space-2) var(--evm-space-3);
+  margin-bottom: var(--evm-space-1);
+  cursor: pointer;
+  color: var(--evm-text-1);
+}
+.sh-feed-item:hover {
+  background: var(--evm-surface-2);
+}
+.sh-feed-item--active {
+  background: var(--evm-surface-2);
+  border-color: var(--evm-accent-muted);
+}
+.sh-feed-line {
+  display: flex;
+  align-items: center;
+  gap: var(--evm-space-2);
+}
+.sh-feed-author {
+  font-size: var(--evm-text-sm);
+}
+.sh-feed-meta {
+  color: var(--evm-text-3);
+  font-size: var(--evm-text-xs);
+  margin-top: 2px;
+}
+.sh-unread {
+  color: var(--evm-accent);
+  margin-left: auto;
+  font-size: 10px;
+}
+
+.sh-main {
+  grid-column: 2;
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.sh-thing-header {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: var(--evm-space-2);
+  padding: 0 var(--evm-space-4);
+  background: var(--evm-surface-2);
+  border-bottom: 1px solid var(--evm-border);
+}
+.sh-verified {
+  font-weight: var(--evm-weight-semibold);
+}
+.sh-hash {
+  font-size: var(--evm-text-sm);
+}
+.sh-cage-area {
+  flex: 1;
+  background: var(--evm-bg);
+}
+
+.sh-draft {
+  font-family: var(--evm-font-mono);
+  font-size: var(--evm-text-sm);
+  background: var(--evm-surface-1);
+  border: 1px solid var(--evm-border);
+  border-radius: var(--evm-radius-md);
+  padding: var(--evm-space-3);
+  max-height: 40vh;
+  overflow: auto;
+}

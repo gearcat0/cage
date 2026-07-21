@@ -352,8 +352,9 @@ app.whenReady().then(async () => {
   win.contentView.addChildView(chromeView)
 
   const rendererUrl = process.env.ELECTRON_RENDERER_URL
-  if (rendererUrl) await chromeView.webContents.loadURL(rendererUrl)
-  else await chromeView.webContents.loadFile(join(__dirname, '../renderer/index.html'))
+  if (rendererUrl) await chromeView.webContents.loadURL(`${rendererUrl}/renderer/index.html`)
+  // renderer root is `src`, so the cage chrome emits under renderer/.
+  else await chromeView.webContents.loadFile(join(__dirname, '../renderer/renderer/index.html'))
 
   function layoutAll(): void {
     const { width, height } = win.getContentBounds()

@@ -154,8 +154,16 @@ export interface ShellHandle {
   userDataDir: string
   identity(): Promise<{ address: string; nostrPubkey: string }>
   admit(bytes: Uint8Array): Promise<Record<string, unknown>>
+  /** Ingest raw bundle bytes (admit + store in the library). */
+  ingest(bytes: Uint8Array): Promise<Record<string, unknown>>
+  /** The feed rows (newest received first). */
+  feed(): Promise<Record<string, unknown>[]>
+  /** Mount a thing via the shell's own hook (returns the header facts). */
+  openThing(envelopeHash: string): Promise<Record<string, unknown>>
   /** Files under userData whose bytes contain `needle`. */
   scanUserData(needle: Uint8Array): string[]
+  /** Files under the library CAS blobs dir (hex hashes). */
+  casBlobs(): string[]
   close(): Promise<void>
 }
 
@@ -202,8 +210,30 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
         const s = (electron.app as unknown as { __shell: { admit: (a: number[]) => Promise<Record<string, unknown>> } }).__shell
         return s.admit(arr)
       }, Array.from(bytes)),
+    ingest: (bytes: Uint8Array) =>
+      app.evaluate(async (electron, arr) => {
+        const s = (electron.app as unknown as { __shell: { ingest: (a: number[]) => Promise<Record<string, unknown>> } }).__shell
+        return s.ingest(arr)
+      }, Array.from(bytes)),
+    feed: () =>
+      app.evaluate(async (electron) => {
+        const s = (electron.app as unknown as { __shell: { feed: () => Record<string, unknown>[] } }).__shell
+        return s.feed() as never
+      }),
+    openThing: (envelopeHash: string) =>
+      app.evaluate(async (electron, h) => {
+        const s = (electron.app as unknown as { __shell: { open: (x: string) => Promise<Record<string, unknown>> } }).__shell
+        return s.open(h)
+      }, envelopeHash),
     scanUserData(needle: Uint8Array) {
       return scanTree(userDataDir, needle)
+    },
+    casBlobs() {
+      try {
+        return readdirSync(join(userDataDir, 'library', 'blobs'))
+      } catch {
+        return []
+      }
     },
     close: async () => {
       await app.close()
