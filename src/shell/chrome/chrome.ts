@@ -36,6 +36,9 @@ interface HeaderFacts {
   envelopeHash: string
   sealed: boolean
   isFork: boolean
+  /** Verified primary name for the author, or null if none confirmed. */
+  name?: string | null
+  nameStatus?: 'verified' | 'mismatch' | 'unresolvable'
 }
 type Outcome =
   | { status: 'valid'; type: string; author?: { k: string } }
@@ -107,14 +110,15 @@ function showToast(o: Outcome): void {
   }, 6000)
 }
 
-const LOCATOR_RE = /^(magnet|bundle|file):/i
+// A locator (magnet:/bundle:/file:/thing:) or a name (alice.eth, user@host) is
+// fetched (naming/transport → admission); anything else is a pasted base64
+// bundle ingested directly.
+const FETCHABLE_RE = /^(magnet|bundle|file|thing):|^[a-z0-9-]+(\.[a-z0-9-]+)+$|^[^@\s]+@[^@\s]+$/i
 
 async function doIngest(input: string): Promise<void> {
   const text = input.trim()
   if (!text) return
-  // A locator is fetched (transport → admission); anything else is a pasted
-  // base64 bundle ingested directly.
-  const outcome = LOCATOR_RE.test(text) ? await shell.fetch(text) : await shell.ingest(text)
+  const outcome = FETCHABLE_RE.test(text) ? await shell.fetch(text) : await shell.ingest(text)
   showToast(outcome)
   ingestInput.value = ''
   await refreshFeed()
@@ -182,10 +186,21 @@ function renderHeader(h: HeaderFacts | null): void {
   // this is the trust signal the thing must never be able to forge.
   const badge = el('span', 'evm-badge evm-badge--success sh-verified', '✓ signed')
   badge.setAttribute('data-trust', 'verified')
-  const author = el('span', 'evm-address', `${h.authorScheme}:${short(h.authorKey)}`)
+  // Author identity: a VERIFIED name (confirmed to map to the author key) is
+  // shown as a name; otherwise the raw key, marked unverified. The name lives in
+  // chrome pixels the thing cannot reach.
+  let authorEl: HTMLElement
+  if (h.name) {
+    authorEl = el('span', 'evm-badge evm-badge--info sh-name', `✓ ${h.name}`)
+    authorEl.setAttribute('data-name', 'verified')
+    authorEl.setAttribute('title', `${h.authorScheme}:${h.authorKey}`)
+  } else {
+    authorEl = el('span', 'evm-address evm-address--muted', `${h.authorScheme}:${short(h.authorKey)}`)
+    authorEl.setAttribute('data-name', 'unverified')
+  }
   const typeBadge = el('span', 'evm-badge evm-badge--neutral', h.type)
   const hashEl = el('span', 'sh-hash evm-address evm-address--muted', short(h.envelopeHash, 8))
-  thingHeader.append(badge, el('span', 'sh-by', 'by'), author, typeBadge, el('span', 'sh-spacer'), el('span', 'sh-hint', 'hash'), hashEl)
+  thingHeader.append(badge, el('span', 'sh-by', 'by'), authorEl, typeBadge, el('span', 'sh-spacer'), el('span', 'sh-hint', 'hash'), hashEl)
   if (h.isFork) thingHeader.append(el('span', 'evm-badge evm-badge--danger', 'FORK — author history diverged'))
 }
 

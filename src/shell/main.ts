@@ -6,6 +6,9 @@ import { Keyring } from './keyring/index.js'
 import { Library, type ThingRow } from './library/index.js'
 import { mountThing, type MountedThing } from './mount/index.js'
 import { TransportService, FileTransport, SeedTransport, WebtorrentTransport } from './transport/index.js'
+import { NamingService, DirectResolver, EnsResolver, NostrResolver, type EnsClient } from './naming/index.js'
+import { createMockEnsClient } from './naming/mock-ens.js'
+import { createViemEnsClient } from './naming/ens-viem.js'
 import { CasStore } from '../main/store.js'
 import { installBridge, setPublishObserver } from '../main/bridge.js'
 import {
@@ -61,6 +64,37 @@ function numEnv(name: string, fallback: number): number {
   if (!raw) return fallback
   const n = Number.parseInt(raw, 10)
   return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
+/** A no-op ENS client — ENS names resolve to nothing (used when viem is absent
+ *  so the shell starts cleanly; live ENS is disabled until viem is installed). */
+const NULL_ENS_CLIENT: EnsClient = {
+  async getAddress() {
+    return null
+  },
+  async getName() {
+    return null
+  },
+  async getText() {
+    return null
+  }
+}
+
+async function makeEnsClient(): Promise<EnsClient> {
+  const mock = process.env.SHELL_ENS_MOCK
+  if (mock) {
+    try {
+      return createMockEnsClient(JSON.parse(mock))
+    } catch {
+      return NULL_ENS_CLIENT
+    }
+  }
+  try {
+    return await createViemEnsClient(process.env.SHELL_ENS_RPC)
+  } catch {
+    // viem not installed → live ENS disabled, names become unresolvable.
+    return NULL_ENS_CLIENT
+  }
 }
 
 function summarize(r: AdmissionResult): Record<string, unknown> {
@@ -170,6 +204,15 @@ app.whenReady().then(async () => {
     .register(new FileTransport())
     .register(new SeedTransport(seedStore))
     .register(new WebtorrentTransport())
+
+  // ENS client: an in-memory mock for tests (deterministic, no network); a
+  // viem-backed client for live use; a null client if viem is absent (ENS
+  // names simply become unresolvable rather than crashing the shell).
+  const ensClient = await makeEnsClient()
+  const naming = new NamingService()
+    .register(new DirectResolver())
+    .register(new EnsResolver(ensClient))
+    .register(new NostrResolver())
   dbg('window')
 
   // ── Window + chrome ────────────────────────────────────────────────────────
@@ -215,17 +258,39 @@ app.whenReady().then(async () => {
     return summarize(result)
   }
 
-  /** Fetch a locator (file:/bundle:/magnet:) then run it through admission. The
-   *  transport is content-untrusted; admission is the gate, and the fetch is
-   *  resource-bounded + content-addressed-verified inside the service. */
-  async function fetchLocator(locator: string): Promise<Record<string, unknown>> {
+  /** Fetch by a locator OR a name, then run it through admission. A locator is
+   *  fetched directly; a name is resolved to a locator (discovery) first, and
+   *  the admitted author is forward-verified against the name. The transport and
+   *  resolver are content-untrusted; admission is the gate. */
+  async function fetchNameOrLocator(input: string): Promise<Record<string, unknown>> {
+    let locator = input
+    let name: string | null = null
+    if (!transport.supports(input)) {
+      // Not a direct locator — resolve it as a name (discovery).
+      name = input
+      try {
+        locator = await naming.resolve(input)
+      } catch (e) {
+        return { status: 'invalid', reason: `naming: ${(e as Error).message}` }
+      }
+    }
     let bytes: Uint8Array
     try {
       bytes = await transport.fetch(locator)
     } catch (e) {
       return { status: 'invalid', reason: `transport: ${(e as Error).message}` }
     }
-    return ingestBytes(bytes)
+    const outcome = await ingestBytes(bytes)
+    // Forward-verify: if fetched BY a name, confirm the admitted thing is by
+    // that name's author. A mismatch is surfaced, not silently accepted.
+    if (name && outcome.status === 'valid') {
+      const author = outcome.author as { scheme: string; k: string } | undefined
+      if (author) {
+        const v = await naming.verifyName(name, author.scheme, author.k)
+        outcome.nameVerification = v
+      }
+    }
+    return outcome
   }
 
   function getFeed(query: unknown): ThingRow[] {
@@ -245,7 +310,10 @@ app.whenReady().then(async () => {
     })
     library.markRead(envelopeHash)
     notifyFeedChanged()
-    return { ...mounted.header }
+    // The verified primary name for the author — a chrome trust signal. Shown
+    // ONLY when it forward+reverse-confirms against the thing's author key.
+    const nv = await naming.primaryName(mounted.header.authorScheme, mounted.header.authorKey)
+    return { ...mounted.header, name: nv.status === 'verified' ? nv.name : null, nameStatus: nv.status }
   }
 
   // ── Confirm flow: a thing's publish request is decided HERE, in chrome ─────
@@ -271,7 +339,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('shell:identity', () => shell.identity)
   ipcMain.handle('shell:feed', (_e, query) => getFeed(query))
   ipcMain.handle('shell:ingest', (_e, base64: string) => ingestBytes(base64ToBytes(base64)))
-  ipcMain.handle('shell:fetch', (_e, locator: string) => fetchLocator(locator))
+  ipcMain.handle('shell:fetch', (_e, locator: string) => fetchNameOrLocator(locator))
   ipcMain.handle('shell:open', (_e, envelopeHash: string) => openThing(envelopeHash))
   ipcMain.handle('shell:close', () => {
     if (mounted) {
@@ -285,7 +353,7 @@ app.whenReady().then(async () => {
   shell.userDataDir = userDataDir
   shell.admit = async (raw) => summarize(await admission.admit(Uint8Array.from(raw), keyring.unsealer))
   shell.ingest = async (raw) => ingestBytes(Uint8Array.from(raw))
-  shell.fetch = (locator) => fetchLocator(locator)
+  shell.fetch = (locator) => fetchNameOrLocator(locator)
   shell.seedHas = (hashHex) => seedStore.has(hashHex)
   shell.feed = (query) => getFeed(query)
   shell.open = (envelopeHash) => openThing(envelopeHash)
