@@ -146,3 +146,32 @@ body {
   max-height: 40vh;
   overflow: auto;
 }
+
+/* Compose (Create a thing) rows. */
+.sh-compose-row {
+  display: flex;
+  align-items: center;
+  gap: var(--evm-space-3);
+  margin: var(--evm-space-3) 0;
+}
+.sh-compose-label {
+  flex: 0 0 7rem;
+  color: var(--evm-text-muted);
+  font-size: var(--evm-text-sm);
+}
+.sh-compose-row input[type='file'] {
+  flex: 1;
+  color: var(--evm-text-muted);
+  font-size: var(--evm-text-sm);
+}
+
+/* Safety warning. */
+.sh-keywarn {
+  cursor: pointer;
+  border: none;
+}
+.sh-warn {
+  color: var(--evm-danger, #ff6b6b);
+  font-size: var(--evm-text-sm);
+  line-height: 1.5;
+}

@@ -8,10 +8,15 @@ import './shell.css'
 // Styled with the evm-ui design language (dark, teal accent) via CSS classes.
 
 interface ShellApi {
-  identity(): Promise<{ address: string; nostrPubkey: string }>
+  identity(): Promise<{ address: string; nostrPubkey: string; keyStorage: 'os' | 'software' }>
   feed(query?: unknown): Promise<ThingRow[]>
   ingest(base64: string): Promise<Outcome>
   fetch(locator: string): Promise<Outcome>
+  compose(input: {
+    programBase64: string
+    type: string
+    attachments?: { name: string; base64: string; mime?: string }[]
+  }): Promise<{ outcome: Outcome; path: string | null }>
   open(envelopeHash: string): Promise<HeaderFacts>
   close(): Promise<void>
   onFeedChanged(cb: () => void): void
@@ -74,19 +79,24 @@ ingestInput.placeholder = 'paste a base64 bundle, or a locator (magnet:/bundle:/
 ingestInput.setAttribute('aria-label', 'paste bundle or locator')
 const ingestBtn = el('button', 'evm-btn evm-btn--primary evm-btn--sm', 'Ingest') as HTMLButtonElement
 const fileBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Open file…') as HTMLButtonElement
+const createBtn = el('button', 'evm-btn evm-btn--primary evm-btn--sm', 'Create…') as HTMLButtonElement
 const fileInput = el('input') as HTMLInputElement
 fileInput.type = 'file'
 fileInput.style.display = 'none'
 const toast = el('span', 'sh-toast')
+const keyWarn = el('button', 'evm-badge evm-badge--warning sh-keywarn') as HTMLButtonElement
+keyWarn.style.display = 'none'
 topbar.append(
   el('strong', 'sh-brand', 'the shell'),
   el('span', 'sh-spacer'),
+  createBtn,
   ingestInput,
   ingestBtn,
   fileBtn,
   fileInput,
   toast,
   el('span', 'sh-spacer'),
+  keyWarn,
   el('span', 'sh-id-label', 'you:'),
   identityEl
 )
@@ -144,6 +154,154 @@ document.addEventListener('drop', async (e) => {
   const buf = new Uint8Array(await f.arrayBuffer())
   await doIngest(bytesToBase64(buf))
 })
+
+// ── Create a thing (author → sign → save) ────────────────────────────────────
+const MIME: Record<string, string> = {
+  html: 'text/html', htm: 'text/html', css: 'text/css', js: 'text/javascript',
+  json: 'application/json', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', wasm: 'application/wasm',
+  txt: 'text/plain', pdf: 'application/pdf', mp4: 'video/mp4', webm: 'video/webm', mp3: 'audio/mpeg'
+}
+const mimeOf = (name: string): string => MIME[name.split('.').pop()?.toLowerCase() ?? ''] ?? 'application/octet-stream'
+const readAsBase64 = async (f: File): Promise<string> => bytesToBase64(new Uint8Array(await f.arrayBuffer()))
+
+function showText(msg: string, tone: 'success' | 'danger' | 'neutral'): void {
+  toast.className = `sh-toast evm-badge evm-badge--${tone}`
+  toast.textContent = msg
+  toast.setAttribute('data-status', tone)
+  window.setTimeout(() => {
+    if (toast.textContent === msg) toast.textContent = ''
+  }, 8000)
+}
+
+function openComposeModal(): void {
+  const overlay = el('div', 'evm-modal-overlay')
+  const modal = el('div', 'evm-modal')
+  const header = el('div', 'evm-modal-header')
+  header.append(el('span', 'evm-modal-title', 'Create a thing'))
+  const body = el('div', 'evm-modal-body')
+  body.append(
+    el(
+      'p',
+      'sh-hint',
+      'Pick a self-contained HTML page. It is signed with your identity into a shareable .thing file — hand it to anyone over any channel.'
+    )
+  )
+
+  // Program (required).
+  const progInput = el('input') as HTMLInputElement
+  progInput.type = 'file'
+  progInput.accept = '.html,.htm,text/html'
+  const progRow = el('label', 'sh-compose-row')
+  progRow.append(el('span', 'sh-compose-label', 'Page (HTML)'), progInput)
+
+  // Type (display hint).
+  const typeInput = el('input', 'evm-input') as HTMLInputElement
+  typeInput.value = 'page'
+  typeInput.setAttribute('aria-label', 'type')
+  const typeRow = el('label', 'sh-compose-row')
+  typeRow.append(el('span', 'sh-compose-label', 'Type'), typeInput)
+
+  // Attachments (optional, multiple).
+  const attInput = el('input') as HTMLInputElement
+  attInput.type = 'file'
+  attInput.multiple = true
+  const attRow = el('label', 'sh-compose-row')
+  attRow.append(el('span', 'sh-compose-label', 'Attachments'), attInput)
+
+  body.append(progRow, typeRow, attRow)
+
+  const footer = el('div', 'evm-modal-footer')
+  const cancel = el('button', 'evm-btn evm-btn--ghost', 'Cancel')
+  const create = el('button', 'evm-btn evm-btn--primary', 'Sign & save…') as HTMLButtonElement
+  footer.append(cancel, create)
+  modal.append(header, body, footer)
+  overlay.append(modal)
+  document.body.append(overlay)
+
+  cancel.addEventListener('click', () => overlay.remove())
+  create.addEventListener('click', async () => {
+    const prog = progInput.files?.[0]
+    if (!prog) {
+      showText('Choose an HTML page first.', 'danger')
+      return
+    }
+    create.disabled = true
+    try {
+      const attachments = await Promise.all(
+        [...(attInput.files ?? [])].map(async (f) => ({ name: f.name, base64: await readAsBase64(f), mime: mimeOf(f.name) }))
+      )
+      const { outcome, path } = await shell.compose({
+        programBase64: await readAsBase64(prog),
+        type: typeInput.value,
+        attachments
+      })
+      if (outcome.status === 'valid') {
+        overlay.remove()
+        showText(path ? `Created & saved to ${path}` : 'Created (save cancelled — it is in your feed)', 'success')
+        await refreshFeed()
+      } else {
+        showToast(outcome)
+        create.disabled = false
+      }
+    } catch (e) {
+      showText(`Create failed: ${(e as Error).message}`, 'danger')
+      create.disabled = false
+    }
+  })
+}
+createBtn.addEventListener('click', openComposeModal)
+
+// ── Safety notice (experimental alpha + real key custody) ────────────────────
+function safetyModal(keyStorage: 'os' | 'software'): void {
+  const overlay = el('div', 'evm-modal-overlay')
+  const modal = el('div', 'evm-modal')
+  const header = el('div', 'evm-modal-header')
+  header.append(el('span', 'evm-modal-title', '⚠ Experimental alpha'))
+  const body = el('div', 'evm-modal-body')
+  const storageLine =
+    keyStorage === 'software'
+      ? 'Your identity key is stored in SOFTWARE on this device — anyone with access to this machine can read it. It is not protected by your OS keychain.'
+      : 'Your identity key is stored via your OS keychain, but this is still pre-release software.'
+  body.append(
+    el('p', 'sh-hint', 'This is an early build for concept testing. Please do not rely on it.'),
+    el('p', 'sh-warn', storageLine),
+    el(
+      'p',
+      'sh-hint',
+      'Do not use this identity for anything valuable, and do not put anything in a thing that you could not bear to leak — a signed thing is public and permanent once shared.'
+    )
+  )
+  const footer = el('div', 'evm-modal-footer')
+  const ok = el('button', 'evm-btn evm-btn--primary', 'I understand')
+  ok.addEventListener('click', () => {
+    try {
+      localStorage.setItem('sh-safety-ack', '1')
+    } catch {
+      /* private mode — show again next time, harmless */
+    }
+    overlay.remove()
+  })
+  footer.append(ok)
+  modal.append(header, body, footer)
+  overlay.append(modal)
+  document.body.append(overlay)
+}
+
+function renderSafety(keyStorage: 'os' | 'software'): void {
+  keyWarn.style.display = ''
+  keyWarn.textContent = keyStorage === 'software' ? '⚠ software keys · alpha' : '⚠ alpha'
+  keyWarn.className = `evm-badge evm-badge--${keyStorage === 'software' ? 'danger' : 'warning'} sh-keywarn`
+  keyWarn.title = 'Experimental build. Click for details.'
+  keyWarn.addEventListener('click', () => safetyModal(keyStorage))
+  let acked = false
+  try {
+    acked = localStorage.getItem('sh-safety-ack') === '1'
+  } catch {
+    /* ignore */
+  }
+  if (!acked) safetyModal(keyStorage)
+}
 
 // ── Feed ─────────────────────────────────────────────────────────────────────
 let selected: string | null = null
@@ -254,6 +412,7 @@ shell.onFeedChanged(() => void refreshFeed())
   const id = await shell.identity()
   identityEl.textContent = `${short(id.address)}`
   identityEl.setAttribute('title', id.address)
+  renderSafety(id.keyStorage)
   renderHeader(null)
   await refreshFeed()
 })()
