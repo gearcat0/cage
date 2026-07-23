@@ -1,6 +1,7 @@
-import { app, BaseWindow, WebContentsView, ipcMain, protocol, session } from 'electron'
+import { app, BaseWindow, WebContentsView, ipcMain, protocol, session, dialog } from 'electron'
 import { join } from 'node:path'
 import { appendFileSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
 import { AdmissionService } from './admission/index.js'
 import { Keyring } from './keyring/index.js'
 import { Library, type ThingRow } from './library/index.js'
@@ -13,6 +14,7 @@ import { CasStore } from '../main/store.js'
 import { installBridge, setPublishObserver } from '../main/bridge.js'
 import {
   admitBundle,
+  buildBundle,
   encodeEnvelope,
   encodeManifest,
   hash,
@@ -128,13 +130,26 @@ function limitsFromEnv(): BundleLimits {
   }
 }
 
+interface ComposeAttachment {
+  name: string
+  base64: string
+  mime?: string
+}
+
 interface ShellSurface {
   ready: boolean
-  identity?: { address: string; nostrPubkey: string }
+  identity?: { address: string; nostrPubkey: string; keyStorage: 'os' | 'software' }
   userDataDir?: string
   admit?: (raw: number[]) => Promise<Record<string, unknown>>
   signAndAdmit?: (type: string) => Promise<Record<string, unknown>>
   ingest?: (raw: number[]) => Promise<Record<string, unknown>>
+  /** TEST: author a bundle from bytes (no native dialogs), ingest it, and return
+   *  its `.thing` bytes so a fresh shell can re-admit them (the flyer round-trip). */
+  compose?: (
+    programBase64: string,
+    type: string,
+    attachments?: ComposeAttachment[]
+  ) => Promise<{ outcome: Record<string, unknown>; tarBase64: string }>
   feed?: (query?: unknown) => ThingRow[]
   open?: (envelopeHash: string) => Promise<Record<string, unknown>>
   /** Fetch a locator (file:/bundle:/magnet:) then admit it. */
@@ -293,6 +308,30 @@ app.whenReady().then(async () => {
     return outcome
   }
 
+  // ── Authoring: build + sign + ingest a thing (brief §7) ────────────────────
+  // The mirror of ingest. buildBundle signs with the keyring Signer (format never
+  // sees key bytes); the new thing is admitted + stored like any other, so the
+  // author sees it in their own feed and it is seeded for `bundle:<hash>`.
+  function attachmentsMap(list?: ComposeAttachment[]): Map<string, { bytes: Uint8Array; mime?: string }> {
+    const att = new Map<string, { bytes: Uint8Array; mime?: string }>()
+    for (const a of list ?? []) att.set(a.name, { bytes: base64ToBytes(a.base64), mime: a.mime })
+    return att
+  }
+
+  async function composeAndIngest(
+    programBase64: string,
+    type: string,
+    attachments?: ComposeAttachment[]
+  ): Promise<{ tar: Uint8Array; outcome: Record<string, unknown> }> {
+    const tar = await buildBundle(keyring.signer, {
+      program: base64ToBytes(programBase64),
+      type: type.trim() || 'page',
+      attachments: attachmentsMap(attachments)
+    })
+    const outcome = await ingestBytes(tar)
+    return { tar, outcome }
+  }
+
   function getFeed(query: unknown): ThingRow[] {
     const q = (query ?? {}) as { type?: string; author?: string; limit?: number }
     return library.feed(q)
@@ -341,6 +380,25 @@ app.whenReady().then(async () => {
   ipcMain.handle('shell:ingest', (_e, base64: string) => ingestBytes(base64ToBytes(base64)))
   ipcMain.handle('shell:fetch', (_e, locator: string) => fetchNameOrLocator(locator))
   ipcMain.handle('shell:open', (_e, envelopeHash: string) => openThing(envelopeHash))
+  ipcMain.handle(
+    'shell:compose',
+    async (_e, input: { programBase64: string; type: string; attachments?: ComposeAttachment[] }) => {
+      const { tar, outcome } = await composeAndIngest(input.programBase64, input.type, input.attachments)
+      if (outcome.status !== 'valid') return { outcome, path: null }
+      // Offer to save the shareable .thing. The author already holds it (ingested
+      // + seeded); saving is how it leaves this machine (the flyer model).
+      const envHash = String(outcome.envelopeHash ?? 'thing')
+      const safeType = (input.type.trim() || 'thing').replace(/[^a-z0-9-]/gi, '-')
+      const res = await dialog.showSaveDialog(win, {
+        title: 'Save thing to share',
+        defaultPath: `${safeType}-${envHash.slice(0, 8)}.thing`,
+        filters: [{ name: 'thing bundle', extensions: ['thing'] }]
+      })
+      if (res.canceled || !res.filePath) return { outcome, path: null }
+      await writeFile(res.filePath, tar)
+      return { outcome, path: res.filePath }
+    }
+  )
   ipcMain.handle('shell:close', () => {
     if (mounted) {
       mounted.destroy()
@@ -349,11 +407,19 @@ app.whenReady().then(async () => {
   })
 
   // ── Public + test surface ──────────────────────────────────────────────────
-  shell.identity = { address: hex(keyring.identity.address), nostrPubkey: hex(keyring.identity.nostrPubkey) }
+  shell.identity = {
+    address: hex(keyring.identity.address),
+    nostrPubkey: hex(keyring.identity.nostrPubkey),
+    keyStorage: keyring.keyStorage
+  }
   shell.userDataDir = userDataDir
   shell.admit = async (raw) => summarize(await admission.admit(Uint8Array.from(raw), keyring.unsealer))
   shell.ingest = async (raw) => ingestBytes(Uint8Array.from(raw))
   shell.fetch = (locator) => fetchNameOrLocator(locator)
+  shell.compose = async (programBase64, type, attachments) => {
+    const { tar, outcome } = await composeAndIngest(programBase64, type, attachments)
+    return { outcome, tarBase64: bytesToBase64(tar) }
+  }
   shell.seedHas = (hashHex) => seedStore.has(hashHex)
   shell.feed = (query) => getFeed(query)
   shell.open = (envelopeHash) => openThing(envelopeHash)
@@ -373,4 +439,8 @@ app.on('window-all-closed', () => app.quit())
 function base64ToBytes(b64: string): Uint8Array {
   const bin = Buffer.from(b64, 'base64')
   return new Uint8Array(bin)
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('base64')
 }

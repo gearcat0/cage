@@ -8,10 +8,18 @@ import { contextBridge, ipcRenderer } from 'electron'
 // in pixels the thing cannot reach.
 
 const shell = {
-  identity: (): Promise<{ address: string; nostrPubkey: string }> => ipcRenderer.invoke('shell:identity'),
+  identity: (): Promise<{ address: string; nostrPubkey: string; keyStorage: 'os' | 'software' }> =>
+    ipcRenderer.invoke('shell:identity'),
   feed: (query?: unknown): Promise<unknown[]> => ipcRenderer.invoke('shell:feed', query ?? {}),
   ingest: (base64: string): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:ingest', base64),
   fetch: (locator: string): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:fetch', locator),
+  /** Author a thing: HTML program (+ optional attachments) → signed .thing,
+   *  ingested locally and offered for Save. */
+  compose: (input: {
+    programBase64: string
+    type: string
+    attachments?: { name: string; base64: string; mime?: string }[]
+  }): Promise<{ outcome: Record<string, unknown>; path: string | null }> => ipcRenderer.invoke('shell:compose', input),
   open: (envelopeHash: string): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:open', envelopeHash),
   close: (): Promise<void> => ipcRenderer.invoke('shell:close'),
   /** Main pushes this after the feed changes (e.g. an ingest). */

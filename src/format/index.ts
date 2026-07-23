@@ -54,8 +54,10 @@ export {
   admitBundle,
   parseBundle,
   parseTar,
+  packBundle,
+  buildBundle,
   chainInfo,
   DEFAULT_BUNDLE_LIMITS,
   BundleError
 } from './bundle.js'
-export type { AdmissionResult, AdmitOptions, BundleSource, BundleLimits } from './bundle.js'
+export type { AdmissionResult, AdmitOptions, BundleSource, BundleLimits, BuildBundleOptions } from './bundle.js'

@@ -59,16 +59,26 @@ A thing's `emit("publish", …)` is a *request*: it grants nothing. The shell
 surfaces it to chrome, where the human approves or rejects it — never
 auto-granted.
 
-## Ingestion
+## Ingestion & authoring
 
-File / paste / drag only (this phase). Raw bundle bytes → admission → library —
-the "flyer" property already working, transport-agnostic and verify-at-the-gate.
+**Receive:** file / paste / drag / locator / name → admission → library — the
+"flyer" property, transport-agnostic and verify-at-the-gate.
+
+**Author (Create…):** pick a self-contained HTML page (+ optional attachments) →
+`format.buildBundle` signs it with the keyring `Signer` → a shareable `.thing`
+saved via a native dialog, and admitted + seeded locally like any other thing (so
+you see your own creation, and it is re-servable by `bundle:<hash>`). Authoring is
+the mirror of admission and lives in `format`; the shell only supplies the
+`Signer`. Public things only for now — sealed authoring is deferred with the rest
+of sealing. Sharing this phase is **file handoff**; live P2P is the fast-follow.
 
 ## Notes
 
 - **Keys are software-only** for now (safeStorage if present, else static-key
-  XChaCha — never the plaintext key on disk). Proper OS-backed storage + a UI
-  warning are LATER.
+  XChaCha — never the plaintext key on disk). The chrome now carries an explicit
+  **safety warning** reflecting the *actual* at-rest mode (`os` vs `software`): a
+  first-run modal + a persistent topbar badge. Proper OS-backed storage as the
+  default (and a hardware-wallet `Signer`) are still LATER.
 - **`better-sqlite3` is native** and must be built against Electron's ABI, not
   Node's — `pnpm rebuild:native` (run automatically by `postinstall`). Because
   of this, the library is tested through Electron (Playwright), not vitest.

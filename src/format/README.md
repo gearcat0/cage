@@ -19,7 +19,7 @@ against that repo's `FORMAT_SPEC_DRAFT.md`.
 | `manifest.ts` / `envelope.ts` | Decode/encode (§4, §5); domain-separated `signing_input`; the `Signer` interface. |
 | `schemes.ts` / `verify.ts` | Verifier registry; real `eth-eip191` + `nostr-schnorr`; `ssh-ed25519` a documented slot → `unverifiable`. |
 | `nip44.ts` / `sealed.ts` | NIP-44 v2 wraps; `seal`/`unseal` (§7) with an injected `Unsealer` (format never holds key bytes). |
-| `bundle.ts` | Tar parse (tar-bomb caps) + `admitBundle` (§8.1), four distinct outcomes, hashes over **received** bytes. |
+| `bundle.ts` | Read: tar parse (tar-bomb caps) + `admitBundle` (§8.1), four distinct outcomes, hashes over **received** bytes. Write (§9, the mirror): `packBundle` (tar writer) + `buildBundle` (build + sign via the injected `Signer`) — output re-admits `valid`. Public bundles; sealed authoring later. |
 
 Crypto: `@noble/*`. Canonical CBOR is hand-written (off-the-shelf CBOR libs use
 RFC 7049 length-first key ordering, not RFC 8949 §4.2.1 bytewise — §2.2 warns

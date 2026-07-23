@@ -187,8 +187,15 @@ export { seal, secp256k1, schnorr, hash, parseBundle }
 export interface ShellHandle {
   app: ElectronApplication
   userDataDir: string
-  identity(): Promise<{ address: string; nostrPubkey: string }>
+  identity(): Promise<{ address: string; nostrPubkey: string; keyStorage: 'os' | 'software' }>
   admit(bytes: Uint8Array): Promise<Record<string, unknown>>
+  /** Author a thing from bytes (no native dialogs); returns the outcome + the
+   *  `.thing` bytes (base64) for a flyer round-trip. */
+  compose(
+    programBase64: string,
+    type: string,
+    attachments?: { name: string; base64: string; mime?: string }[]
+  ): Promise<{ outcome: Record<string, unknown>; tarBase64: string }>
   /** Ingest raw bundle bytes (admit + store in the library). */
   ingest(bytes: Uint8Array): Promise<Record<string, unknown>>
   /** Fetch a locator (file:/bundle:/magnet:) then admit it. */
@@ -254,6 +261,24 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
         const s = (electron.app as unknown as { __shell: { ingest: (a: number[]) => Promise<Record<string, unknown>> } }).__shell
         return s.ingest(arr)
       }, Array.from(bytes)),
+    compose: (programBase64: string, type: string, attachments?: { name: string; base64: string; mime?: string }[]) =>
+      app.evaluate(
+        async (electron, a) => {
+          const s = (
+            electron.app as unknown as {
+              __shell: {
+                compose: (
+                  p: string,
+                  t: string,
+                  att?: { name: string; base64: string; mime?: string }[]
+                ) => Promise<{ outcome: Record<string, unknown>; tarBase64: string }>
+              }
+            }
+          ).__shell
+          return s.compose(a.programBase64, a.type, a.attachments)
+        },
+        { programBase64, type, attachments }
+      ),
     fetchLocator: (locator: string) =>
       app.evaluate(async (electron, loc) => {
         const s = (electron.app as unknown as { __shell: { fetch: (l: string) => Promise<Record<string, unknown>> } }).__shell

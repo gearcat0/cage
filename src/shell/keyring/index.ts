@@ -131,6 +131,9 @@ export class Keyring {
   readonly #address: Uint8Array
   readonly #nostrPub: Uint8Array
   #locked = false
+  /** Actual at-rest custody: `os` (safeStorage) or `software` (static-key). The
+   *  UI shows this so the safety warning tells the truth, not a constant. */
+  #storage: 'os' | 'software' = 'software'
 
   private constructor(privkey: Uint8Array) {
     this.#privkey = privkey
@@ -144,6 +147,7 @@ export class Keyring {
     const privkey = secp256k1.utils.randomSecretKey()
     const kr = new Keyring(privkey)
     kr.persist(userDataDir)
+    kr.#storage = useSafeStorage() ? 'os' : 'software'
     return kr
   }
 
@@ -151,8 +155,10 @@ export class Keyring {
   static load(userDataDir: string): Keyring | null {
     const path = join(userDataDir, IDENTITY_FILE)
     if (!existsSync(path)) return null
-    const hex = decryptAtRest(readFileSync(path))
-    return new Keyring(fromHex(hex))
+    const file = readFileSync(path)
+    const kr = new Keyring(fromHex(decryptAtRest(file)))
+    kr.#storage = file[0] === SCHEME_SAFE_STORAGE ? 'os' : 'software'
+    return kr
   }
 
   static loadOrCreate(userDataDir: string): Keyring {
@@ -168,6 +174,11 @@ export class Keyring {
 
   get identity(): PublicIdentity {
     return { address: this.#address, nostrPubkey: this.#nostrPub }
+  }
+
+  /** How the key is stored at rest, for the UI safety warning. */
+  get keyStorage(): 'os' | 'software' {
+    return this.#storage
   }
 
   /** The Signer handed to `format` for publishing. */

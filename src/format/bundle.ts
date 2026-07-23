@@ -1,9 +1,9 @@
-import { decodeManifest, type Manifest } from './manifest.js'
+import { decodeManifest, encodeManifest, type Manifest, type Attachment } from './manifest.js'
 import { verifyEnvelope, type VerifyResult } from './verify.js'
-import { decodeEnvelope, type Envelope } from './envelope.js'
+import { decodeEnvelope, encodeEnvelope, type Envelope, type Signer, type UnsignedEnvelope } from './envelope.js'
 import { isSealed, unsealFull, unsealMember, type Unsealer } from './sealed.js'
 import { hash, toHex, type Hash } from './hash.js'
-import { bytesEqual } from './cbor.js'
+import { bytesEqual, type CborValue } from './cbor.js'
 import { DEFAULT_LIMITS, type DecodeLimits } from './limits.js'
 
 // ── Bundle + admission — format spec §8 ──────────────────────────────────────
@@ -263,6 +263,103 @@ export function admitBundle(source: BundleSource, opts: AdmitOptions = {}): Admi
     attachments,
     sealed
   }
+}
+
+// ── Authoring (§9) — the mirror of admission ─────────────────────────────────
+// `parseBundle` reads a tar; `packBundle` writes one. `admitBundle` verifies a
+// bundle; `buildBundle` builds + signs one. Anyone writing a thing (a bot, a
+// CLI, a rival shell) needs these exactly as they need the readers. `format`
+// still never sees key bytes — it calls the injected `Signer` (§2.2).
+
+/** Write a canonical uncompressed ustar archive from name -> bytes. */
+function writeTar(files: [string, Uint8Array][]): Uint8Array {
+  const enc = new TextEncoder()
+  const blocks: Uint8Array[] = []
+  for (const [name, data] of files) {
+    const header = new Uint8Array(512)
+    header.set(enc.encode(name).subarray(0, 100), 0)
+    header.set(enc.encode('0000644\0'), 100) // mode
+    header.set(enc.encode('0000000\0'), 108) // uid
+    header.set(enc.encode('0000000\0'), 116) // gid
+    header.set(enc.encode(data.length.toString(8).padStart(11, '0') + '\0'), 124) // size
+    header.set(enc.encode('00000000000\0'), 136) // mtime (fixed → reproducible)
+    header[156] = 0x30 // typeflag '0' (regular file)
+    header.set(enc.encode('ustar\0'), 257)
+    header.set(enc.encode('00'), 263)
+    for (let i = 148; i < 156; i++) header[i] = 0x20 // checksum field = spaces
+    let sum = 0
+    for (const b of header) sum += b
+    header.set(enc.encode(sum.toString(8).padStart(6, '0') + '\0 '), 148)
+    blocks.push(header)
+    const padded = new Uint8Array(Math.ceil(data.length / 512) * 512)
+    padded.set(data, 0)
+    blocks.push(padded)
+  }
+  blocks.push(new Uint8Array(1024)) // two trailing zero blocks
+  const total = blocks.reduce((n, b) => n + b.length, 0)
+  const out = new Uint8Array(total)
+  let off = 0
+  for (const b of blocks) {
+    out.set(b, off)
+    off += b.length
+  }
+  return out
+}
+
+/** Write a bundle tar from its parts (the authoring counterpart to
+ *  `parseBundle`). `blobs` maps hex-sha256(plaintext) -> attachment bytes. */
+export function packBundle(parts: {
+  envelope: Uint8Array
+  manifest: Uint8Array
+  program: Uint8Array
+  blobs?: Map<string, Uint8Array>
+}): Uint8Array {
+  const files: [string, Uint8Array][] = [
+    ['envelope.cbor', parts.envelope],
+    ['manifest.cbor', parts.manifest],
+    ['program', parts.program]
+  ]
+  for (const [hex, bytes] of parts.blobs ?? new Map()) files.push([`blobs/${hex}`, bytes])
+  return writeTar(files)
+}
+
+export interface BuildBundleOptions {
+  /** The program blob (raw bytes — e.g. a self-contained HTML page). */
+  program: Uint8Array
+  /** Display hint (§4: never trusted by the reader). */
+  type: string
+  /** Program-defined; opaque. Defaults to null. */
+  args?: CborValue
+  /** name -> attachment bytes (+ optional MIME). */
+  attachments?: Map<string, { bytes: Uint8Array; mime?: string }>
+  /** unix seconds; defaults to now. An author CLAIM (§1 rule 4). */
+  created?: number
+  path?: string
+  seq?: number
+  prev?: Hash
+}
+
+/**
+ * Build + sign a PUBLIC bundle: assemble the manifest, sign the envelope with
+ * the injected `Signer`, and pack the tar. The mirror of `admitBundle` — its
+ * output re-admits as `valid`. Sealed authoring is deferred (§7).
+ */
+export async function buildBundle(signer: Signer, opts: BuildBundleOptions): Promise<Uint8Array> {
+  const att = new Map<string, Attachment>()
+  const blobs = new Map<string, Uint8Array>()
+  for (const [name, { bytes, mime }] of opts.attachments ?? new Map()) {
+    const h = hash(bytes)
+    att.set(name, { h, m: mime ?? 'application/octet-stream', n: bytes.length })
+    blobs.set(toHex(h), bytes)
+  }
+  const manifest: Manifest = { v: 1, prog: hash(opts.program), type: opts.type, args: opts.args ?? null, att }
+  const manifestBytes = encodeManifest(manifest)
+  const unsigned: UnsignedEnvelope = { man: hash(manifestBytes), created: opts.created ?? Math.floor(Date.now() / 1000) }
+  if (opts.path !== undefined) unsigned.path = opts.path
+  if (opts.seq !== undefined) unsigned.seq = opts.seq
+  if (opts.prev !== undefined) unsigned.prev = opts.prev
+  const envelope = await encodeEnvelope(unsigned, signer)
+  return packBundle({ envelope, manifest: manifestBytes, program: opts.program, blobs })
 }
 
 /** Decode a top-level envelope's chain fields for the shell's fork check. */
