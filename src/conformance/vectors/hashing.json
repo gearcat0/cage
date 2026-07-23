@@ -1,0 +1,22 @@
+[
+  {
+    "name": "empty",
+    "hex": "",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "name": "ascii \"hello\"",
+    "hex": "68656c6c6f",
+    "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+  },
+  {
+    "name": "a bundle's program blob",
+    "hex": "3c21646f63747970652068746d6c3e3c68313e676f6f643c2f68313e",
+    "sha256": "ef66c412ab4b758cc2be0b60101974b8ac5dcc08c4ceb556b693bba40b812acf"
+  },
+  {
+    "name": "a bundle's canonical manifest bytes",
+    "hex": "a50101025820ef66c412ab4b758cc2be0b60101974b8ac5dcc08c4ceb556b693bba40b812acf03646e6f746504f605a165612e747874a3015820f8014574051fc682ff8f65caa8b63c379c7ba75ca6868cbecc8c94fd24fcdfe90278186170706c69636174696f6e2f6f637465742d73747265616d0312",
+    "sha256": "45bcede0da413dea10889f43d72fa114ba8b5124c576d3de979e444381489fbc"
+  }
+]
