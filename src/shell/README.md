@@ -32,7 +32,11 @@ src/shell/
 │                bundle: / magnet:), resource-bounded + content-untrusted —
 │                admission is the gate. webtorrent wired behind the interface
 │                (lazy import); admitted bundles are retained in a seed store.
-├── naming/      stub: no resolver; direct-hash / direct-bundle ingestion works.
+├── naming/      name → author key (identity) + name → locator (discovery). A
+│                name is shown as VERIFIED only when it provably maps to the
+│                thing's signature-proven author key. ENS via an injected
+│                EnsClient (viem for live, mock-tested); reverse+forward
+│                confirmed. Direct locators pass through; Nostr stubbed.
 ├── chrome/      the trusted 3-pane renderer (omnibar, feed, per-thing trust
 │                header, confirm dialogs). Vanilla TS + the evm-ui design
 │                language (CSS tokens/classes, no framework). Every trust signal
