@@ -122,13 +122,32 @@ export function unseal(
   unsealer: Unsealer,
   limits: DecodeLimits = DEFAULT_LIMITS
 ): Uint8Array | 'not-for-me' {
+  const r = unsealFull(bytes, unsealer, limits)
+  return r === 'not-for-me' ? r : r.envelope
+}
+
+export interface UnsealResult {
+  /** The inner (signed) envelope bytes. */
+  envelope: Uint8Array
+  /** The content key CK — needed to decrypt the sealed bundle members (§7.1). */
+  ck: Uint8Array
+}
+
+/** Like `unseal`, but also returns the recovered content key CK so the caller
+ *  can decrypt the sealed bundle's other members (manifest.enc, program.enc,
+ *  ciphertext attachments — §7.1). */
+export function unsealFull(
+  bytes: Uint8Array,
+  unsealer: Unsealer,
+  limits: DecodeLimits = DEFAULT_LIMITS
+): UnsealResult | 'not-for-me' {
   const { slots, nonce, ct } = parseSealed(bytes, limits)
   for (const slot of slots) {
     const ck = unsealer.unwrap(slot.epk, slot.wrap)
     if (!ck || ck.length !== 32) continue
     try {
       const padded = xchacha20poly1305(ck, nonce).decrypt(ct)
-      return unpadOuter(padded)
+      return { envelope: unpadOuter(padded), ck }
     } catch {
       // CK unwrapped but the outer AEAD failed — corrupt sealed blob. A wrong
       // slot would have failed at unwrap above, so this is tampering.
@@ -138,11 +157,40 @@ export function unseal(
   return 'not-for-me'
 }
 
+// ── Sealed bundle members (§7.1) ─────────────────────────────────────────────
+// Every part of a sealed thing except envelope.cbor travels as its own member,
+// encrypted under CK with a fresh 24-byte nonce, stored `nonce(24) || ct`.
+
+const MEMBER_NONCE_LEN = 24
+
+/** Encrypt a sealed bundle member (manifest / program / attachment) under CK. */
+export function sealMember(plaintext: Uint8Array, ck: Uint8Array): Uint8Array {
+  const nonce = randomBytes(MEMBER_NONCE_LEN)
+  const ciphertext = xchacha20poly1305(ck, nonce).encrypt(plaintext)
+  const out = new Uint8Array(MEMBER_NONCE_LEN + ciphertext.length)
+  out.set(nonce, 0)
+  out.set(ciphertext, MEMBER_NONCE_LEN)
+  return out
+}
+
+/** Decrypt a sealed bundle member under CK. Throws on tamper (AEAD failure). */
+export function unsealMember(member: Uint8Array, ck: Uint8Array): Uint8Array {
+  if (member.length < MEMBER_NONCE_LEN + 16) throw new SealedError('sealed member too short')
+  const nonce = member.subarray(0, MEMBER_NONCE_LEN)
+  const ciphertext = member.subarray(MEMBER_NONCE_LEN)
+  return xchacha20poly1305(ck, nonce).decrypt(ciphertext)
+}
+
 // ── Sealing (out of scope for the v1 shell; used by tests, kept for LATER) ────
 
-/** Seal an envelope to a set of recipient x-only pubkeys. Each slot uses a
- *  fresh ephemeral sender key; slot order is randomized. */
-export function seal(envelopeBytes: Uint8Array, recipientXonlyPubs: Uint8Array[]): Uint8Array {
+/** Seal an envelope to recipient x-only pubkeys. Returns the Sealed bytes AND
+ *  the content key CK, so the caller can encrypt the other bundle members (§7.1)
+ *  under the same CK. Each slot uses a fresh ephemeral sender key; slot order is
+ *  randomized. */
+export function sealEnvelope(
+  envelopeBytes: Uint8Array,
+  recipientXonlyPubs: Uint8Array[]
+): { sealed: Uint8Array; ck: Uint8Array } {
   if (recipientXonlyPubs.length === 0) throw new SealedError('seal: no recipients')
   if (recipientXonlyPubs.length > MAX_SEALED_SLOTS) throw new SealedError('seal: too many recipients')
   const ck = randomBytes(32)
@@ -163,7 +211,12 @@ export function seal(envelopeBytes: Uint8Array, recipientXonlyPubs: Uint8Array[]
   map.set(2, slots)
   map.set(3, nonce)
   map.set(4, ct)
-  return encode(map)
+  return { sealed: encode(map), ck }
+}
+
+/** Seal an envelope only (identity-only sealed thing). */
+export function seal(envelopeBytes: Uint8Array, recipientXonlyPubs: Uint8Array[]): Uint8Array {
+  return sealEnvelope(envelopeBytes, recipientXonlyPubs).sealed
 }
 
 function shuffle<T>(arr: T[]): void {

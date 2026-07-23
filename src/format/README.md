@@ -27,14 +27,14 @@ about this). Tests: `test/format/`.
 
 ## Known deviations from the spec (to reconcile)
 
-- **Sealed content admits signature-only.** The spec was ambiguous about where a
-  sealed thing's manifest/program/attachments live; the proposed resolution is
-  `gearcat0/format#2` (new §7.1). Once it merges, wire up sealed-member
-  decryption in `bundle.ts` (`admitBundle`). Reading sealed *identity* works
-  today; sealed *content* does not.
 - **Outer `ct` padding.** §7 says "reuse NIP-44's padding scheme"; `sealed.ts`
-  currently pads the inner envelope to a 256-byte bucket instead of NIP-44's
-  `calc_padded_len`. Conform before interop matters.
+  pads the inner envelope to a 256-byte bucket instead of NIP-44's
+  `calc_padded_len`. Sealed bundle *members* (§7.1) are unpadded (`nonce||ct`),
+  matching §7.1 as written. Reconcile the envelope padding before interop.
 - **`ssh-ed25519`** verification is unimplemented (the scheme is a documented
   registry slot → `unverifiable`).
 - **§11 conformance vectors** are not built yet.
+
+Sealed content decryption (§7.1) is now implemented: `admitBundle` recovers the
+content key CK, decrypts `manifest.enc` / `program.enc` / ciphertext blobs, and
+verifies each against its plaintext hash.

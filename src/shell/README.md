@@ -28,7 +28,10 @@ src/shell/
 │                fork detection on same (author, path, seq) / different hash.
 ├── mount/       admitted thing → CageResources → createCage → bridge args →
 │                view placed beneath the chrome. Reuses the cage library.
-├── transport/   stub: file/paste now, webtorrent later (magnet → not-yet).
+├── transport/   fetch bundle bytes by locator (file: / content-addressed
+│                bundle: / magnet:), resource-bounded + content-untrusted —
+│                admission is the gate. webtorrent wired behind the interface
+│                (lazy import); admitted bundles are retained in a seed store.
 ├── naming/      stub: no resolver; direct-hash / direct-bundle ingestion works.
 ├── chrome/      the trusted 3-pane renderer (omnibar, feed, per-thing trust
 │                header, confirm dialogs). Vanilla TS + the evm-ui design
@@ -65,5 +68,8 @@ the "flyer" property already working, transport-agnostic and verify-at-the-gate.
 - **`better-sqlite3` is native** and must be built against Electron's ABI, not
   Node's — `pnpm rebuild:native` (run automatically by `postinstall`). Because
   of this, the library is tested through Electron (Playwright), not vitest.
-- **Sealed content** admits signature-only until the sealed-bundle layout
-  (format §7.1) is wired into `admitBundle`.
+- **Sealed content** (format §7.1) is fully decrypted: the library stores a
+  sealed thing's plaintext program/manifest/attachments in an **ephemeral
+  in-memory store** (never the on-disk CAS), and mounts serve from it. A sealed
+  thing not decrypted this session (e.g. after a restart) is unmountable until
+  re-ingested — decrypted plaintext never touches disk.

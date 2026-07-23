@@ -10,6 +10,8 @@ import {
   encodeEnvelope,
   hash,
   seal,
+  sealEnvelope,
+  sealMember,
   parseBundle,
   type BundleSource,
   type Manifest,
@@ -127,13 +129,42 @@ export async function buildBundle(signer: Signer, opts: BuildOpts = {}): Promise
   return buildTar({ 'envelope.cbor': envelope, 'manifest.cbor': manifestBytes, program, ...files })
 }
 
-/** Build a sealed bundle to recipient x-only pubkeys. */
-export async function buildSealedBundle(signer: Signer, recipients: Uint8Array[]): Promise<Uint8Array> {
-  const program = new Uint8Array([1, 2, 3])
-  const manifest: Manifest = { v: 1, prog: hash(program), type: 'invite', args: null, att: new Map() }
-  const inner = await encodeEnvelope({ man: hash(encodeManifest(manifest)), created: 5 }, signer)
-  const sealed = seal(inner, recipients)
-  return buildTar({ 'envelope.cbor': sealed })
+/** Build a full §7.1 sealed bundle to recipient x-only pubkeys: envelope.cbor
+ *  (Sealed) plus manifest.enc / program.enc / ciphertext blobs, all encrypted
+ *  under one content key CK. */
+export async function buildSealedBundle(
+  signer: Signer,
+  recipients: Uint8Array[],
+  opts: BuildOpts = {}
+): Promise<Uint8Array> {
+  const program = opts.program ?? new TextEncoder().encode('<!doctype html><h1>sealed thing</h1>')
+  const att = new Map<string, { h: Uint8Array; m: string; n: number }>()
+  const blobPlain: Record<string, Uint8Array> = {}
+  for (const [name, bytes] of Object.entries(opts.attachments ?? {})) {
+    att.set(name, { h: hash(bytes), m: 'application/octet-stream', n: bytes.length })
+    blobPlain[hexName(hash(bytes))] = bytes
+  }
+  const manifest: Manifest = {
+    v: 1,
+    prog: hash(program),
+    type: opts.type ?? 'invite',
+    args: (opts.args ?? null) as Manifest['args'],
+    att
+  }
+  const manifestBytes = encodeManifest(manifest)
+  const env: Parameters<typeof encodeEnvelope>[0] = { man: hash(manifestBytes), created: opts.created ?? 5 }
+  if (opts.path !== undefined) env.path = opts.path
+  if (opts.seq !== undefined) env.seq = opts.seq
+  const inner = await encodeEnvelope(env, signer)
+
+  const { sealed, ck } = sealEnvelope(inner, recipients)
+  const files: Record<string, Uint8Array> = {
+    'envelope.cbor': sealed,
+    'manifest.enc': sealMember(manifestBytes, ck),
+    'program.enc': sealMember(program, ck)
+  }
+  for (const [hex, bytes] of Object.entries(blobPlain)) files[`blobs/${hex}`] = sealMember(bytes, ck)
+  return buildTar(files)
 }
 
 /** Re-tar a BundleSource (for precise tampering: parse → corrupt a part → tar). */
@@ -143,6 +174,10 @@ export function tarFromSource(src: BundleSource): Uint8Array {
   if (src.program) files['program'] = src.program
   for (const [hex, bytes] of src.blobs) files[`blobs/${hex}`] = bytes
   return buildTar(files)
+}
+
+export function bundleTarHash(tar: Uint8Array): string {
+  return [...hash(tar)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
 export { seal, secp256k1, schnorr, hash, parseBundle }
@@ -156,6 +191,10 @@ export interface ShellHandle {
   admit(bytes: Uint8Array): Promise<Record<string, unknown>>
   /** Ingest raw bundle bytes (admit + store in the library). */
   ingest(bytes: Uint8Array): Promise<Record<string, unknown>>
+  /** Fetch a locator (file:/bundle:/magnet:) then admit it. */
+  fetchLocator(locator: string): Promise<Record<string, unknown>>
+  /** Whether the seed store holds this bundle tar-hash. */
+  seedHas(hashHex: string): Promise<boolean>
   /** The feed rows (newest received first). */
   feed(): Promise<Record<string, unknown>[]>
   /** Mount a thing via the shell's own hook (returns the header facts). */
@@ -215,6 +254,16 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
         const s = (electron.app as unknown as { __shell: { ingest: (a: number[]) => Promise<Record<string, unknown>> } }).__shell
         return s.ingest(arr)
       }, Array.from(bytes)),
+    fetchLocator: (locator: string) =>
+      app.evaluate(async (electron, loc) => {
+        const s = (electron.app as unknown as { __shell: { fetch: (l: string) => Promise<Record<string, unknown>> } }).__shell
+        return s.fetch(loc)
+      }, locator),
+    seedHas: (hashHex: string) =>
+      app.evaluate(async (electron, h) => {
+        const s = (electron.app as unknown as { __shell: { seedHas: (x: string) => boolean } }).__shell
+        return s.seedHas(h) as never
+      }, hashHex),
     feed: () =>
       app.evaluate(async (electron) => {
         const s = (electron.app as unknown as { __shell: { feed: () => Record<string, unknown>[] } }).__shell

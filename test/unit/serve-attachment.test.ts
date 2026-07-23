@@ -15,6 +15,7 @@ const HASH = createHash('sha256').update(BODY).digest('hex')
  *  without Electron. Mirrors EphemeralStore's slicing semantics. */
 const store: AttachmentStore = {
   has: (h) => h === HASH,
+  readAll: (h) => (h === HASH ? BODY : null),
   read: (h, start, end) => {
     if (h !== HASH || start < 0 || end >= BODY.length || start > end) return null
     const slice = BODY.subarray(start, end + 1)

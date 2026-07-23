@@ -39,6 +39,8 @@ interface WorkerOk {
     envelope: Uint8Array
     manifest?: Uint8Array
     program?: Uint8Array
+    manifestEnc?: Uint8Array
+    programEnc?: Uint8Array
     blobs: [string, Uint8Array][]
   }
   sealed: boolean
@@ -94,6 +96,8 @@ export class AdmissionService {
     }
     if (structural.source.manifest) source.manifest = structural.source.manifest
     if (structural.source.program) source.program = structural.source.program
+    if (structural.source.manifestEnc) source.manifestEnc = structural.source.manifestEnc
+    if (structural.source.programEnc) source.programEnc = structural.source.programEnc
 
     try {
       const opts = unsealer ? { limits: this.limits, unsealer } : { limits: this.limits }
