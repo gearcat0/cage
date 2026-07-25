@@ -127,11 +127,33 @@ checks with a geometry assertion.
 ```bash
 pnpm install
 pnpm build          # compile main / preload / renderer into out/
-pnpm dev            # launch the app; loads the benign thing and renders it
+pnpm start          # launch THE SHELL (the trusted client) — run after build
+pnpm dev            # launch the CAGE harness; loads the benign thing and renders it
 pnpm test:cage      # build + run the full escape suite (green wall)
 pnpm test:unit      # fast pure-logic unit tests (Vitest)
 pnpm typecheck
 ```
+
+`pnpm start` launches the **shell** — the user-facing client (feed, Create…,
+trust chrome). It runs the built entry `out/main/shell/main.js` directly, because
+`package.json`'s `main` field points at the *cage test harness*
+(`out/main/index.js`), not the shell — so `pnpm dev` / `pnpm preview` launch the
+harness, and only `pnpm start` launches the shell. Build first; `start` runs
+whatever is already in `out/`. On a headless box add a virtual display and
+disable the OS sandbox via the env var Electron reads before JS runs (the same
+one `dev:nosandbox` uses): `ELECTRON_DISABLE_SANDBOX=1 xvfb-run -a pnpm start`.
+
+> **Windows prerequisite.** `better-sqlite3` is a native module compiled during
+> install, so a C++ toolchain must be present **before** `pnpm install`. Install
+> the Visual Studio Build Tools (VC++ workload) once:
+>
+> ```powershell
+> winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+> ```
+>
+> macOS (Xcode Command Line Tools) and Linux (`build-essential`, `python3`) need
+> the equivalent. This is only for building from source; the packaged installers
+> (phase 8) ship the compiled module, so end-user testers need none of it.
 
 `pnpm test:cage` prints a wall — one line per attack, all green when the cage
 holds — ending in `CAGE HOLDS  <n>/<n> attempts blocked, positive test passed.`,
