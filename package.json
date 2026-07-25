@@ -8,6 +8,7 @@
     "dev": "electron-vite dev",
     "dev:nosandbox": "ELECTRON_DISABLE_SANDBOX=1 electron-vite dev",
     "build": "electron-vite build",
+    "start": "electron out/main/shell/main.js",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "rebuild:native": "electron-rebuild -f -o better-sqlite3",
