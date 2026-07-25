@@ -127,21 +127,24 @@ checks with a geometry assertion.
 ```bash
 pnpm install
 pnpm build          # compile main / preload / renderer into out/
-pnpm start          # launch THE SHELL (the trusted client) — run after build
-pnpm dev            # launch the CAGE harness; loads the benign thing and renders it
+pnpm dev            # launch THE SHELL with HMR (electron-vite dev server)
+pnpm start          # launch the built shell from out/ (run after build)
+pnpm dev:cage       # launch the legacy CAGE harness (benign thing in a bare cage)
+pnpm dist           # build installers for THIS platform (see Packaging)
 pnpm test:cage      # build + run the full escape suite (green wall)
 pnpm test:unit      # fast pure-logic unit tests (Vitest)
 pnpm typecheck
 ```
 
-`pnpm start` launches the **shell** — the user-facing client (feed, Create…,
-trust chrome). It runs the built entry `out/main/shell/main.js` directly, because
-`package.json`'s `main` field points at the *cage test harness*
-(`out/main/index.js`), not the shell — so `pnpm dev` / `pnpm preview` launch the
-harness, and only `pnpm start` launches the shell. Build first; `start` runs
-whatever is already in `out/`. On a headless box add a virtual display and
-disable the OS sandbox via the env var Electron reads before JS runs (the same
-one `dev:nosandbox` uses): `ELECTRON_DISABLE_SANDBOX=1 xvfb-run -a pnpm start`.
+The **shell** is the product — the user-facing client (feed, Create…, trust
+chrome). `package.json`'s `main` is `out/main/shell/main.js`, so `pnpm dev`
+(with HMR), `pnpm start` (from the build), `pnpm preview`, `electron .`, and the
+packaged installer all launch the shell. The phase-1 **cage harness**
+(`out/main/index.js`) — a bare cage that renders one benign thing, used for the
+escape demo — is now launched only by `pnpm dev:cage`. On a headless box add a
+virtual display and disable the OS sandbox via the env var Electron reads before
+JS runs (the same one `dev:nosandbox` uses):
+`ELECTRON_DISABLE_SANDBOX=1 xvfb-run -a pnpm start`.
 
 > **Windows prerequisite.** `better-sqlite3` is a native module compiled during
 > install, so a C++ toolchain must be present **before** `pnpm install`. Install
@@ -153,7 +156,47 @@ one `dev:nosandbox` uses): `ELECTRON_DISABLE_SANDBOX=1 xvfb-run -a pnpm start`.
 >
 > macOS (Xcode Command Line Tools) and Linux (`build-essential`, `python3`) need
 > the equivalent. This is only for building from source; the packaged installers
-> (phase 8) ship the compiled module, so end-user testers need none of it.
+> ship the compiled module, so end-user testers need none of it.
+
+## Packaging (installers for testers)
+
+`electron-builder` packages the **shell** into installers. Config is
+`electron-builder.yml`; the app icon is `build/icon.png` (a placeholder —
+`pnpm gen:icon` regenerates it).
+
+```bash
+pnpm dist          # installers for the current platform → release/
+pnpm dist:linux    # AppImage + deb
+pnpm dist:mac      # dmg + zip   (must run on macOS — Apple toolchain)
+pnpm dist:win      # nsis .exe   (best run on Windows)
+pnpm pack:dir      # unpacked app in release/, no installer — quick local check
+```
+
+- **The packaged app launches the shell.** `main` is the shell entry, so no
+  `extraMetadata` rewrite is needed (that footgun rewrites the source
+  `package.json` in place — avoided deliberately).
+- **`better-sqlite3` is native** and rebuilt against the target Electron ABI
+  during packaging (`npmRebuild`), then unpacked from the asar so its `.node`
+  loads. Each installer therefore ships a module matching its own Electron;
+  testers need no toolchain.
+- **Cross-platform builds** happen in CI, not locally: a **macOS `.dmg` can only
+  be built on a Mac**, and Windows `.exe` is most reliable on Windows.
+  `.github/workflows/release.yml` builds all three on their own runners on a
+  `v*` tag push and drafts a GitHub Release with the artifacts attached:
+
+  ```bash
+  git tag v0.1.0 && git push origin v0.1.0
+  ```
+
+### Signing (unsigned for now)
+
+Alpha builds are **unsigned**, so first launch shows a warning the tester
+bypasses once: macOS Gatekeeper (right-click → **Open**, or
+`xattr -dr com.apple.quarantine "/Applications/Shell.app"`); Windows SmartScreen
+(**More info → Run anyway**); Linux `chmod +x Shell-*.AppImage`. To sign later,
+add an Apple Developer ID + notarization creds (macOS) and a code-signing cert
+(Windows) as CI secrets — electron-builder reads them from the environment; no
+config change beyond providing the certs.
 
 `pnpm test:cage` prints a wall — one line per attack, all green when the cage
 holds — ending in `CAGE HOLDS  <n>/<n> attempts blocked, positive test passed.`,

@@ -1,0 +1,79 @@
+# electron-builder — installers for the SHELL (the trusted client).
+#
+# The packaged app launches the shell: package.json `main` is
+# out/main/shell/main.js (so `electron .`, `pnpm start`, `pnpm dev`, and the
+# installer all agree). The legacy cage harness (out/main/index.js) is launched
+# only by `pnpm dev:cage`. We deliberately DO NOT use `extraMetadata.main` — with
+# the app dir at the repo root, electron-builder rewrites the source package.json
+# in place to apply it (stripping scripts/devDeps) and does not always restore
+# it. Keeping `main` correct at the source avoids that footgun entirely.
+#
+# Native module: better-sqlite3 is compiled per-platform. `npmRebuild: true`
+# (the default) rebuilds it against the TARGET Electron ABI during packaging, so
+# each installer ships a module matching its own Electron — testers need no
+# toolchain. It is unpacked from the asar (a .node cannot be loaded from inside).
+#
+# Signing is OFF for this alpha (no certs). Unsigned builds warn on first launch:
+# macOS Gatekeeper (right-click → Open, or `xattr -dr com.apple.quarantine`),
+# Windows SmartScreen (More info → Run anyway). Add certs later — see README.
+
+appId: dev.gearcat.shell
+productName: Shell
+copyright: © 2026
+
+directories:
+  output: release
+  buildResources: build
+
+# What goes in the app. The vite build bundles @noble/* and zod INTO out/main,
+# so the only runtime node_module is the native better-sqlite3, which
+# electron-builder includes automatically as a production dependency.
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+  - '!**/*.ts'
+
+asar: true
+asarUnpack:
+  - '**/node_modules/better-sqlite3/**'
+
+npmRebuild: true
+
+# ── macOS ────────────────────────────────────────────────────────────────────
+mac:
+  target:
+    - dmg
+    - zip # zip is the auto-update-friendly artifact; handy for direct download too
+  category: public.app-category.social-networking
+  icon: build/icon.png
+  identity: null # unsigned alpha — no notarization
+  hardenedRuntime: false
+  darkModeSupport: true
+
+# ── Windows ──────────────────────────────────────────────────────────────────
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.png
+
+nsis:
+  oneClick: false # let the tester choose the install dir
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+
+# ── Linux ────────────────────────────────────────────────────────────────────
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Network
+  icon: build/icon.png
+  maintainer: gearcat0 <large.oil2707@fastmail.com>
+  synopsis: A trusted client for decentralized, self-contained signed content ("things")
+
+# No auto-publish; the release workflow attaches artifacts to a GitHub Release.
+publish: null

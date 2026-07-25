@@ -1,0 +1,100 @@
+name: release
+
+# Build the shell's installers for macOS, Windows, and Linux, and attach them to
+# a GitHub Release. Triggered by pushing a version tag (v*), or manually.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# macOS .dmg can ONLY be built on a Mac, Windows .exe is most reliable on
+# Windows, so each platform builds on its own runner (a matrix). Builds are
+# UNSIGNED (alpha) — see README "Signing" for adding certs later.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {} # manual runs produce artifacts but no Release
+
+permissions:
+  contents: write # the release job needs to create/attach to a Release
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+            artifacts: 'release/*.dmg release/*.zip'
+          - os: windows-latest
+            platform: win
+            artifacts: 'release/*.exe'
+          - os: ubuntu-latest
+            platform: linux
+            artifacts: |
+              release/*.AppImage
+              release/*.deb
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # better-sqlite3 compiles natively on install. The runners ship the needed
+      # toolchains (Xcode CLT on macOS, VS Build Tools on Windows, gcc on Linux),
+      # so no extra setup is required.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (main / preload / renderer)
+        run: pnpm build
+
+      - name: Package installers (${{ matrix.platform }})
+        run: pnpm exec electron-builder --${{ matrix.platform }} --publish never
+        env:
+          # Unsigned alpha: don't let electron-builder try to auto-discover a
+          # macOS signing identity (would fail the build on a runner without one).
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.platform }}
+          path: ${{ matrix.artifacts }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') # only tag pushes cut a Release
+    steps:
+      - name: Download all installers
+        uses: actions/download-artifact@v4
+        with:
+          path: installers
+          merge-multiple: true
+
+      - name: Create / update the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installers/**/*
+          draft: true # publish manually after a smoke check
+          generate_release_notes: true
+          body: |
+            **Experimental alpha.** Unsigned builds:
+            - **macOS** — right-click the app → Open (Gatekeeper), or
+              `xattr -dr com.apple.quarantine "/Applications/Shell.app"`.
+            - **Windows** — SmartScreen: More info → Run anyway.
+            - **Linux** — `chmod +x Shell-*.AppImage` then run; or install the `.deb`.
+
+            Your identity key is stored in **software** on your device. Do not use
+            it for anything valuable. See the in-app safety notice.
