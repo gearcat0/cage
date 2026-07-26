@@ -131,7 +131,7 @@ pnpm dev            # launch THE SHELL with HMR (electron-vite dev server)
 pnpm start          # launch the built shell from out/ (run after build)
 pnpm dev:cage       # launch the legacy CAGE harness (benign thing in a bare cage)
 pnpm dist           # build installers for THIS platform (see Packaging)
-pnpm test:cage      # build + run the full escape suite (green wall)
+pnpm test:cage      # build + run the full escape suite (green wall) — mac/win/linux
 pnpm test:unit      # fast pure-logic unit tests (Vitest)
 pnpm typecheck
 ```
@@ -208,6 +208,13 @@ wall imply the OS sandbox was exercised when it was not (finding P0-1). The
 `harness integrity` test records the sandbox state from a real launch and fails
 unless a `--no-sandbox` run is explicitly acknowledged with
 `CAGE_ALLOW_NO_SANDBOX=1` (which `pnpm test:cage` sets).
+
+`pnpm test:cage` is cross-platform: a small Node launcher
+(`scripts/run-cage-tests.mjs`) sets `CAGE_ALLOW_NO_SANDBOX` on the child (no
+POSIX-only `VAR=value` prefix, so Windows `cmd` is fine) and only wraps the run
+in `xvfb-run` on **headless Linux** where it is installed — macOS, Windows, and
+any desktop with a display server run Playwright directly, no X server required.
+The `test` workflow runs the suite on all three OSes on every push/PR.
 
 ### How egress is verified (from outside the page)
 

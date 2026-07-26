@@ -1,0 +1,60 @@
+name: test
+
+# Runs the test suites on every push to master and every PR. The escape suite
+# runs on all three OSes so cross-platform regressions (native better-sqlite3,
+# the Windows script portability fixed in #11/#12) are caught automatically.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# A newer push to the same ref supersedes an in-flight run.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: unit + typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test:unit
+
+  cage:
+    name: escape suite (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Headless Linux needs a virtual X server; the test launcher
+      # (scripts/run-cage-tests.mjs) auto-detects and uses it. macOS/Windows
+      # runners have a native display server and need nothing.
+      - name: Install xvfb (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:cage

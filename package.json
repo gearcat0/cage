@@ -8,7 +8,7 @@
   "homepage": "https://github.com/gearcat0/cage",
   "scripts": {
     "dev": "electron-vite dev",
-    "dev:nosandbox": "ELECTRON_DISABLE_SANDBOX=1 electron-vite dev",
+    "dev:nosandbox": "cross-env ELECTRON_DISABLE_SANDBOX=1 electron-vite dev",
     "dev:cage": "electron-vite build && electron out/main/index.js",
     "build": "electron-vite build",
     "start": "electron out/main/shell/main.js",
@@ -24,8 +24,8 @@
     "postinstall": "electron-rebuild -f -o better-sqlite3 || true",
     "gen:vectors": "tsx src/conformance/generate.ts",
     "test:unit": "vitest run",
-    "test:cage": "pnpm build && CAGE_ALLOW_NO_SANDBOX=1 xvfb-run -a playwright test",
-    "test:cage:headed": "pnpm build && CAGE_ALLOW_NO_SANDBOX=1 playwright test"
+    "test:cage": "pnpm build && node scripts/run-cage-tests.mjs",
+    "test:cage:headed": "pnpm build && node scripts/run-cage-tests.mjs --headed"
   },
   "dependencies": {
     "@noble/ciphers": "^2.2.0",
@@ -39,6 +39,7 @@
     "@playwright/test": "^1.61.1",
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^22.10.0",
+    "cross-env": "^10.1.0",
     "electron": "^43.1.1",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
