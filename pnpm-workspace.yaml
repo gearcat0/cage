@@ -2,6 +2,10 @@ allowBuilds:
   esbuild: true
   electron: true
   better-sqlite3: true
+  # We target NSIS (not Squirrel.Windows), so electron-winstaller's build script
+  # is not needed; acknowledged as false so `pnpm install` exits cleanly (which
+  # electron-builder invokes as its pre-pack deps check).
+  electron-winstaller: false
 onlyBuiltDependencies:
   - electron
   - esbuild
