@@ -4,7 +4,7 @@ import { createCage } from '../../main/cage.js'
 import { bindCage, unbindCage, type ThingArgs } from '../../main/bridge.js'
 import type { CageResources, ResourceMap } from '../../main/protocol.js'
 import type { AttachmentTable } from '../../main/store.js'
-import { toHex } from '../../format/index.js'
+import { cborToJs, toHex } from '../../format/index.js'
 import type { StoredThing } from '../library/index.js'
 
 // ── Mount — admitted thing → cage (brief §5) ─────────────────────────────────
@@ -52,6 +52,10 @@ export interface MountOptions {
   stored: StoredThing
   /** Rect the cage view occupies (below the chrome strip). */
   bounds: Rectangle
+  /** Called with the cage's webContents id once the bridge is bound — BEFORE
+   *  the program loads, so anything keyed on the id (e.g. the publish confirm
+   *  flow) is in place for emits that fire during the load itself. */
+  onBound?: (webContentsId: number) => void
 }
 
 /** Mount a stored thing and return the live view + header facts. Attachments
@@ -80,11 +84,14 @@ export async function mountThing(opts: MountOptions): Promise<MountedThing> {
   // The decoded, read-only view the thing renders from — NEVER the envelope.
   const thingArgs: ThingArgs = {
     type: stored.manifest.type,
-    args: stored.manifest.args as ThingArgs['args'],
+    // Decoded args are CborMaps, which don't survive the context bridge into
+    // the thing — hand over the plain-JS shape instead.
+    args: cborToJs(stored.manifest.args),
     attachments: [...attachments.entries()].map(([name, e]) => ({ name, mime: e.mime, size: e.size }))
   }
   const wc = handle.view.webContents
   bindCage(wc.id, { thingId: id, thingArgs, attachments })
+  opts.onBound?.(wc.id)
 
   win.contentView.addChildView(handle.view)
   handle.view.setBounds(opts.bounds)

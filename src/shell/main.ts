@@ -4,7 +4,7 @@ import { appendFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { AdmissionService } from './admission/index.js'
 import { Keyring } from './keyring/index.js'
-import { Library, type ThingRow } from './library/index.js'
+import { Library, type StoredThing, type ThingRow } from './library/index.js'
 import { mountThing, type MountedThing } from './mount/index.js'
 import { TransportService, FileTransport, SeedTransport, WebtorrentTransport } from './transport/index.js'
 import { NamingService, DirectResolver, EnsResolver, NostrResolver, type EnsClient } from './naming/index.js'
@@ -12,15 +12,18 @@ import { createMockEnsClient } from './naming/mock-ens.js'
 import { createViemEnsClient } from './naming/ens-viem.js'
 import { CasStore } from '../main/store.js'
 import { installBridge, setPublishObserver } from '../main/bridge.js'
+import type { Draft } from '../main/draft.js'
 import {
   admitBundle,
   buildBundle,
   encodeEnvelope,
   encodeManifest,
   hash,
+  jsToCbor,
   DEFAULT_BUNDLE_LIMITS,
   type AdmissionResult,
   type BundleLimits,
+  type CborValue,
   type Manifest
 } from '../format/index.js'
 
@@ -157,9 +160,11 @@ interface ShellSurface {
   /** TEST: does the seed store hold this bundle tar-hash? */
   seedHas?: (hashHex: string) => boolean
   lastConfirm?: { id: number; kind: string; summary: Record<string, unknown> } | null
+  /** TEST: outcome of the most recent decided publish ({status:'denied'} on deny). */
+  lastPublish?: Record<string, unknown> | null
 }
 
-const shell: ShellSurface = { ready: false, lastConfirm: null }
+const shell: ShellSurface = { ready: false, lastConfirm: null, lastPublish: null }
 ;(app as unknown as { __shell: ShellSurface }).__shell = shell
 
 // Optional file-based startup tracing (SHELL_DEBUG_FILE) — off by default. Kept
@@ -238,6 +243,12 @@ app.whenReady().then(async () => {
   win.contentView.addChildView(chrome)
 
   let mounted: MountedThing | null = null
+  // The stored thing behind the mounted cage and that cage's webContents id,
+  // recorded at BIND time (before the program loads — a thing can emit publish
+  // during its own load, well before mountThing resolves). Kept so an approved
+  // publish can reuse the SAME program bytes for the new instance.
+  let mountedStored: StoredThing | null = null
+  let mountedWcId = -1
 
   function cageRect(): Electron.Rectangle {
     const { width, height } = win.getContentBounds()
@@ -341,11 +352,17 @@ app.whenReady().then(async () => {
     const stored = library.load(envelopeHash)
     if (!stored) return { error: 'not found or not mountable (sealed)' }
     if (mounted) mounted.destroy()
+    mountedStored = null
+    mountedWcId = -1
     mounted = await mountThing({
       win,
       preloadPath: CAGE_PRELOAD,
       stored,
-      bounds: cageRect()
+      bounds: cageRect(),
+      onBound: (wcId) => {
+        mountedWcId = wcId
+        mountedStored = stored
+      }
     })
     library.markRead(envelopeHash)
     notifyFeedChanged()
@@ -356,22 +373,89 @@ app.whenReady().then(async () => {
   }
 
   // ── Confirm flow: a thing's publish request is decided HERE, in chrome ─────
+  // A pending publish holds the full draft (blob bytes included) plus the
+  // program bytes captured at request time, so approval publishes exactly what
+  // was mounted when the human saw the dialog — even across a remount. Bounded:
+  // few pending, short TTL, deleted on response. Blob bytes never cross to the
+  // chrome renderer; the dialog gets type/args/att metadata only.
+  interface PendingPublish {
+    draft: Draft
+    program: Uint8Array
+    timer: ReturnType<typeof setTimeout>
+  }
   let nextConfirmId = 1
-  const pendingConfirms = new Map<number, (approved: boolean) => void>()
-  setPublishObserver((draft) => {
-    const id = nextConfirmId++
-    const req = { id, kind: 'publish', summary: draft as Record<string, unknown> }
-    shell.lastConfirm = req
-    chrome.webContents.send('shell:confirm-request', req)
-    pendingConfirms.set(id, (approved) => {
-      // Phase 3: approval is recorded, not yet acted on (signing/sealing LATER).
-      // The point proven here is that the grant is a human decision in chrome.
-      void approved
+  const pendingConfirms = new Map<number, PendingPublish>()
+  const MAX_PENDING_PUBLISH = 4
+  const PUBLISH_CONFIRM_TTL_MS = 5 * 60_000
+
+  /** Approved publish: rebuild a bundle with the SAME program as the mounted
+   *  thing + the draft's type/args/blobs, sign with the keyring, and ingest it
+   *  (admission → library → seed → feed refresh). No save dialog, no envelope
+   *  chaining (path/seq/prev) — the new instance is a standalone thing in the
+   *  author's own feed. */
+  async function persistApprovedDraft(p: PendingPublish): Promise<Record<string, unknown>> {
+    let args: CborValue
+    try {
+      // A draft can pass validateDraft (JSON-measured) yet not be canonical
+      // CBOR — floats, say. Surface that as a failed publish, not a crash.
+      args = jsToCbor(p.draft.args)
+    } catch (e) {
+      return { status: 'invalid', reason: `publish: ${(e as Error).message}` }
+    }
+    const attachments = new Map<string, { bytes: Uint8Array; mime?: string }>()
+    for (const [name, bytes] of Object.entries(p.draft.blobs)) {
+      // Draft blobs carry no MIME (FORMAT_SPEC_NOTES §4); validateDraft already
+      // recorded application/octet-stream in the att table — reuse it.
+      attachments.set(name, { bytes, mime: p.draft.att[name]?.m })
+    }
+    const tar = await buildBundle(keyring.signer, {
+      program: p.program,
+      type: p.draft.type,
+      args,
+      attachments
     })
+    return ingestBytes(tar)
+  }
+
+  setPublishObserver((req) => {
+    // Only the currently mounted cage may raise a confirmable publish.
+    if (!mountedStored || req.senderId !== mountedWcId) return
+    while (pendingConfirms.size >= MAX_PENDING_PUBLISH) {
+      const oldest = pendingConfirms.keys().next().value as number
+      clearTimeout(pendingConfirms.get(oldest)!.timer)
+      pendingConfirms.delete(oldest)
+    }
+    const id = nextConfirmId++
+    // What the human decides on: type + args + attachment table — args is
+    // JSON-serializable and ≤256 KB by validateDraft.
+    const summary: Record<string, unknown> = {
+      type: req.draft.type,
+      args: req.draft.args,
+      att: req.draft.att,
+      argsBytes: req.argsBytes,
+      blobBytes: req.blobBytes
+    }
+    const timer = setTimeout(() => pendingConfirms.delete(id), PUBLISH_CONFIRM_TTL_MS)
+    timer.unref?.()
+    pendingConfirms.set(id, { draft: req.draft, program: mountedStored.program, timer })
+    const confirmReq = { id, kind: 'publish', summary }
+    shell.lastConfirm = confirmReq
+    chrome.webContents.send('shell:confirm-request', confirmReq)
   })
-  ipcMain.on('shell:confirm-response', (_e, id: number, approved: boolean) => {
-    pendingConfirms.get(id)?.(approved)
+  ipcMain.on('shell:confirm-response', (_e, id: unknown, approved: unknown) => {
+    if (typeof id !== 'number' || typeof approved !== 'boolean') return
+    const p = pendingConfirms.get(id)
     pendingConfirms.delete(id)
+    if (!p) return
+    clearTimeout(p.timer)
+    if (!approved) {
+      shell.lastPublish = { status: 'denied' }
+      return
+    }
+    void persistApprovedDraft(p).then((outcome) => {
+      shell.lastPublish = outcome
+      chrome.webContents.send('shell:publish-result', outcome)
+    })
   })
 
   // ── IPC surface for the chrome ─────────────────────────────────────────────
@@ -403,6 +487,8 @@ app.whenReady().then(async () => {
     if (mounted) {
       mounted.destroy()
       mounted = null
+      mountedStored = null
+      mountedWcId = -1
     }
   })
 

@@ -22,6 +22,7 @@ interface ShellApi {
   onFeedChanged(cb: () => void): void
   onConfirmRequest(cb: (req: { id: number; kind: string; summary: Record<string, unknown> }) => void): void
   respondConfirm(id: number, approved: boolean): void
+  onPublishResult(cb: (outcome: Record<string, unknown>) => void): void
 }
 interface ThingRow {
   envelopeHash: string
@@ -382,7 +383,9 @@ shell.onConfirmRequest((req) => {
   body.append(pre)
   const footer = el('div', 'evm-modal-footer')
   const cancel = el('button', 'evm-btn evm-btn--ghost', 'Reject')
+  cancel.setAttribute('data-testid', 'confirm-reject')
   const ok = el('button', 'evm-btn evm-btn--primary', `Approve ${req.kind}`)
+  ok.setAttribute('data-testid', 'confirm-approve')
   const closeModal = (approved: boolean): void => {
     shell.respondConfirm(req.id, approved)
     overlay.remove()
@@ -408,6 +411,10 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 shell.onFeedChanged(() => void refreshFeed())
+shell.onPublishResult((o) => {
+  if (o.status === 'valid') showText('Published to your feed', 'success')
+  else showText(`Publish failed: ${String(o.reason ?? o.status)}`, 'danger')
+})
 ;(async () => {
   const id = await shell.identity()
   identityEl.textContent = `${short(id.address)}`

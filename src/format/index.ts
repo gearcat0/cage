@@ -5,6 +5,8 @@
 export { encode, decode, decodeCanonical, bytesEqual, compareBytes, CborError } from './cbor.js'
 export type { CborValue, CborKey, CborMap } from './cbor.js'
 
+export { jsToCbor, cborToJs, ArgsError } from './args.js'
+
 export { hash, toHex, fromHex, toHashText, asHash, HASH_LENGTH } from './hash.js'
 export type { Hash } from './hash.js'
 

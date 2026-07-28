@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { cage as cageGlobals, record, recordTestEmit } from './events.js'
 import { attachmentUrl } from './protocol.js'
 import type { AttachmentTable } from './store.js'
-import { DEFAULT_DRAFT_CAPS, validateDraft, type DraftCaps } from './draft.js'
+import { DEFAULT_DRAFT_CAPS, validateDraft, type Draft, type DraftCaps } from './draft.js'
 
 // ── The bridge (shell side) ──────────────────────────────────────────────────
 // The trusted half of the four-method bridge. Every method either hands the
@@ -122,7 +122,7 @@ export function installBridge(): void {
 
   // emit(channel, data): a request that grants nothing. Fire-and-forget — the
   // thing cannot observe whether a human confirmed anything.
-  ipcMain.on('cage:emit', (_event, channel: unknown, data: unknown) => {
+  ipcMain.on('cage:emit', (event, channel: unknown, data: unknown) => {
     if (typeof channel !== 'string') {
       record({ type: 'emit-rejected', reason: 'channel not a string' })
       return
@@ -131,7 +131,7 @@ export function installBridge(): void {
     // The publish path carries binary blobs, so it gets its own validation and
     // caps (per-blob AND total — see draft.ts) instead of the JSON measure.
     if (channel === 'publish') {
-      handlePublish(data, draftCaps)
+      handlePublish(event.sender.id, data, draftCaps)
       return
     }
 
@@ -161,10 +161,14 @@ export function installBridge(): void {
 
 /** An optional observer the shell installs to drive the human-confirmation flow:
  *  a thing's publish REQUEST is surfaced in trusted chrome and decided there,
- *  never auto-granted. The bridge still grants nothing itself. */
-export type PublishObserver = (draft: {
-  type: string
-  att: Record<string, { h: string; m: string; n: number }>
+ *  never auto-granted. The bridge still grants nothing itself, and retains no
+ *  bytes — the observer receives the full validated draft (blob bytes
+ *  included) and owns its bounding and lifetime from there. */
+export type PublishObserver = (req: {
+  /** webContents id of the emitting cage — lets the shell match the request
+   *  to the thing it mounted there. */
+  senderId: number
+  draft: Draft
   argsBytes: number
   blobBytes: number
 }) => void
@@ -178,7 +182,7 @@ export function setPublishObserver(fn: PublishObserver | null): void {
  *  caps, hash inline blobs into an attachment table, and record the draft.
  *  Nothing is granted: signing, sealing, and the review/confirm UI are later
  *  phases; the thing never learns whether anything was accepted. */
-function handlePublish(data: unknown, caps: DraftCaps): void {
+function handlePublish(senderId: number, data: unknown, caps: DraftCaps): void {
   const result = validateDraft(data, caps)
   if (!result.ok) {
     record({ type: 'emit-rejected', reason: result.reason })
@@ -187,10 +191,9 @@ function handlePublish(data: unknown, caps: DraftCaps): void {
   // Retain METADATA ONLY, in a bounded ring — never the raw blob bytes (P0-3
   // discipline for the draft path). A thing can send valid drafts in a loop,
   // each up to the total-blob cap; holding every draft's bytes forever would be
-  // an unbounded memory sink. The attachment table (name → hash/mime/size) is
-  // enough for phase 2; the inline bytes are dropped here.
-  // LATER: the real persist/sign flow writes the bytes to an on-disk drafts
-  // area (not memory) and hands the draft to the review UI.
+  // an unbounded memory sink. The full draft (bytes included) goes only to the
+  // observer below, which owns bounding it; with no observer installed (the
+  // bare cage harness), the bytes are dropped right here.
   cageGlobals.drafts.push({
     type: result.draft.type,
     att: result.draft.att,
@@ -209,8 +212,8 @@ function handlePublish(data: unknown, caps: DraftCaps): void {
   })
   // Surface the request to the shell's confirm flow (decided in chrome).
   publishObserver?.({
-    type: result.draft.type,
-    att: result.draft.att,
+    senderId,
+    draft: result.draft,
     argsBytes: result.argsBytes,
     blobBytes: result.blobBytes
   })

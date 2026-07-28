@@ -32,6 +32,10 @@ const shell = {
   },
   respondConfirm: (id: number, approved: boolean): void => {
     ipcRenderer.send('shell:confirm-response', id, approved)
+  },
+  /** Main pushes the outcome of an approved publish (admission summary). */
+  onPublishResult: (cb: (outcome: Record<string, unknown>) => void): void => {
+    ipcRenderer.on('shell:publish-result', (_e, outcome) => cb(outcome))
   }
 }
 
