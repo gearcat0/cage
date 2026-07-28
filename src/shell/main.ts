@@ -259,9 +259,21 @@ app.whenReady().then(async () => {
   let mountedStored: StoredThing | null = null
   let mountedWcId = -1
 
+  // ── Lockstep zoom (Ctrl +/−/0) ─────────────────────────────────────────────
+  // Per-webContents zoom would scale the chrome and the cage content
+  // independently (the original complaint) — so zoom is a single app-level
+  // state applied to BOTH views, and the native layout follows: the chrome's
+  // CSS pixels grow with its zoom factor, so the cage rect must scale by the
+  // same factor to stay aligned with the feed/header the chrome draws.
+  let zoomLevel = 0
+  const zoomFactor = (): number => Math.pow(1.2, zoomLevel)
+
   function cageRect(): Electron.Rectangle {
     const { width, height } = win.getContentBounds()
-    return { x: FEED_WIDTH, y: TOP_BAR + THING_HEADER, width: width - FEED_WIDTH, height: height - TOP_BAR - THING_HEADER }
+    const z = zoomFactor()
+    const x = Math.round(FEED_WIDTH * z)
+    const y = Math.round((TOP_BAR + THING_HEADER) * z)
+    return { x, y, width: width - x, height: height - y }
   }
   function layout(): void {
     const { width, height } = win.getContentBounds()
@@ -269,6 +281,28 @@ app.whenReady().then(async () => {
     if (mounted) mounted.view.setBounds(cageRect())
   }
   win.on('resize', layout)
+
+  function applyZoom(): void {
+    const z = zoomFactor()
+    chrome.webContents.setZoomFactor(z)
+    if (mounted && !mounted.view.webContents.isDestroyed()) mounted.view.webContents.setZoomFactor(z)
+    layout()
+  }
+  /** Take over Ctrl +/−/0 for this view. preventDefault also stops the default
+   *  menu accelerators, so the per-webContents zoom never fires. Real input
+   *  only — a thing's synthetic key events do not raise before-input-event. */
+  function watchZoomKeys(wc: Electron.WebContents): void {
+    wc.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown' || !input.control || input.alt || input.meta) return
+      if (input.key === '+' || input.key === '=') zoomLevel = Math.min(zoomLevel + 1, 5)
+      else if (input.key === '-') zoomLevel = Math.max(zoomLevel - 1, -5)
+      else if (input.key === '0') zoomLevel = 0
+      else return
+      event.preventDefault()
+      applyZoom()
+    })
+  }
+  watchZoomKeys(chrome.webContents)
 
   dbg('chrome-load')
   const rendererUrl = process.env.ELECTRON_RENDERER_URL
@@ -373,6 +407,9 @@ app.whenReady().then(async () => {
         mountedStored = stored
       }
     })
+    // The new cage joins the app-level zoom: same factor, zoom keys watched.
+    watchZoomKeys(mounted.view.webContents)
+    applyZoom()
     library.markRead(envelopeHash)
     notifyFeedChanged()
     // The verified primary name for the author — a chrome trust signal. Shown
