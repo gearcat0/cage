@@ -58,6 +58,15 @@ protocol.registerSchemesAsPrivileged([
 app.commandLine.appendSwitch('force-webrtc-ip-handling-policy', 'disable_non_proxied_udp')
 app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns')
 
+// Display scale. Ctrl+/- zoom is per-webContents, so it scales the trusted
+// chrome and the cage content independently and can never resize the app as a
+// whole; forcing the DEVICE scale factor scales every view uniformly while all
+// bounds math stays in DIP (chrome strip and cage rect keep their alignment).
+// Linux defaults to 2x (no usable systemwide HiDPI signal there); SHELL_SCALE
+// overrides on any platform.
+const SCALE = process.env.SHELL_SCALE ?? (process.platform === 'linux' ? '2' : null)
+if (SCALE) app.commandLine.appendSwitch('force-device-scale-factor', SCALE)
+
 function hex(bytes: Uint8Array): string {
   let s = ''
   for (const b of bytes) s += b.toString(16).padStart(2, '0')
