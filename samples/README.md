@@ -17,8 +17,9 @@ The smallest program with real state: renders `Name: <name>`, where the label
 is part of the program and the name comes from `args`.
 
 Try it: launch the shell → **Create…** → choose `nametag.html`, type `nametag`
-→ Sign & save. Open it from the feed: with no args it shows its *set* mode
-(input + Save). Saving emits a `publish` request; approve it in the shell's
-dialog and a new instance — same program, `args: {name}` — appears in your
-feed. Open that one and you get the *view* mode, with an Edit button that loops
-back to *set*.
+→ Sign & save. Open it from the feed: it lands in **View** mode (a blank tag
+shows `—`). The **View | Edit** toggle in the shell's trusted header — not in
+the program — switches to Edit mode: input + Save. Saving emits a `publish`
+request; approve it in the shell's dialog and a new instance — same program,
+`args: {name}` — appears in your feed. In-progress edits survive toggling back
+and forth: both modes stay mounted while the thing is open.

@@ -26,11 +26,12 @@
   <script>
     'use strict';
     // The convention this sample demonstrates: the PROGRAM supplies its own
-    // composition UI. The shell signs it blank (args: null); this code decides
-    // set-mode vs view-mode from the args it was signed with. State is passed
-    // in as an argument, never fetched.
+    // composition UI, and the SHELL decides which mode to render (a.mode) —
+    // the switching control lives in trusted chrome, not in this page. State
+    // is passed in as an argument, never fetched.
     var a = window.bridge.getArgs() || {};
     var args = (a && typeof a.args === 'object' && a.args !== null) ? a.args : {};
+    var name = (typeof args.name === 'string' && args.name.length > 0) ? args.name : '';
     var app = document.getElementById('app');
 
     function el(tag, text) {
@@ -39,38 +40,35 @@
       return e;
     }
 
-    function setMode(prefill) {
+    function editMode() {
       app.replaceChildren();
       var row = el('div'); row.className = 'row';
       var label = el('label', 'Name:');
-      var input = el('input'); input.id = 'name'; input.value = prefill;
+      var input = el('input'); input.id = 'name'; input.value = name;
       var save = el('button', 'Save'); save.id = 'save';
       row.append(label, input, save);
       var note = el('div'); note.className = 'note'; note.id = 'note';
       app.append(row, note);
       save.addEventListener('click', function () {
-        var name = input.value.trim();
-        if (!name) { note.textContent = 'Type a name first.'; return; }
+        var typed = input.value.trim();
+        if (!typed) { note.textContent = 'Type a name first.'; return; }
         // A fire-and-forget REQUEST. Nothing is granted here; the human decides
         // in the shell's trusted chrome. This program never learns the outcome.
-        window.bridge.emit('publish', { type: 'nametag', args: { name: name } });
+        window.bridge.emit('publish', { type: 'nametag', args: { name: typed } });
         note.textContent = 'Publish requested — approve it in the shell to create your name tag.';
       });
       input.focus();
     }
 
-    function viewMode(name) {
+    function viewMode() {
       app.replaceChildren();
       var row = el('div'); row.className = 'row';
-      var display = el('span', name); display.id = 'display';
+      var display = el('span', name || '—'); display.id = 'display';
       row.append(el('label', 'Name:'), display);
-      var edit = el('button', 'Edit'); edit.id = 'edit'; edit.className = 'note';
-      app.append(row, edit);
-      edit.addEventListener('click', function () { setMode(name); });
+      app.append(row);
     }
 
-    if (typeof args.name === 'string' && args.name.length > 0) viewMode(args.name);
-    else setMode('');
+    if (a.mode === 'edit') editMode(); else viewMode();
   </script>
 </body>
 </html>
