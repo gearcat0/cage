@@ -19,6 +19,8 @@ interface ShellApi {
   }): Promise<{ outcome: Outcome; path: string | null }>
   open(envelopeHash: string): Promise<HeaderFacts>
   close(): Promise<void>
+  setMode(mode: 'view' | 'edit'): Promise<'view' | 'edit'>
+  onModeChanged(cb: (mode: 'view' | 'edit') => void): void
   onFeedChanged(cb: () => void): void
   onConfirmRequest(cb: (req: { id: number; kind: string; summary: Record<string, unknown> }) => void): void
   respondConfirm(id: number, approved: boolean): void
@@ -333,10 +335,40 @@ async function refreshFeed(): Promise<void> {
   }
 }
 
+// ── View | Edit mode toggle ──────────────────────────────────────────────────
+// The SHELL owns mode switching — this control lives in chrome pixels the
+// thing cannot reach; the program just renders whichever mode it is told.
+// Main is the source of truth: it pushes shell:mode-changed on open and on
+// every switch, so this local state is only a render cache.
+let currentMode: 'view' | 'edit' = 'view'
+let modeButtons: { view: HTMLElement; edit: HTMLElement } | null = null
+
+function styleModeButtons(): void {
+  modeButtons?.view.classList.toggle('sh-mode-btn--active', currentMode === 'view')
+  modeButtons?.edit.classList.toggle('sh-mode-btn--active', currentMode === 'edit')
+}
+
+function renderModeToggle(): HTMLElement {
+  const wrap = el('span', 'sh-mode')
+  const mk = (m: 'view' | 'edit', label: string, testid: string): HTMLElement => {
+    const b = el('button', 'evm-btn evm-btn--ghost evm-btn--sm sh-mode-btn', label)
+    b.setAttribute('data-testid', testid)
+    b.addEventListener('click', () => void shell.setMode(m)) // main pushes mode-changed back
+    return b
+  }
+  const view = mk('view', 'View', 'mode-view')
+  const edit = mk('edit', 'Edit', 'mode-edit')
+  modeButtons = { view, edit }
+  wrap.append(view, edit)
+  styleModeButtons()
+  return wrap
+}
+
 // ── Per-thing trust header ───────────────────────────────────────────────────
 function renderHeader(h: HeaderFacts | null): void {
   thingHeader.replaceChildren()
   if (!h) {
+    modeButtons = null
     thingHeader.append(el('span', 'sh-hint', 'Select a thing from the feed.'))
     return
   }
@@ -359,7 +391,7 @@ function renderHeader(h: HeaderFacts | null): void {
   }
   const typeBadge = el('span', 'evm-badge evm-badge--neutral', h.type)
   const hashEl = el('span', 'sh-hash evm-address evm-address--muted', short(h.envelopeHash, 8))
-  thingHeader.append(badge, el('span', 'sh-by', 'by'), authorEl, typeBadge, el('span', 'sh-spacer'), el('span', 'sh-hint', 'hash'), hashEl)
+  thingHeader.append(badge, el('span', 'sh-by', 'by'), authorEl, typeBadge, renderModeToggle(), el('span', 'sh-spacer'), el('span', 'sh-hint', 'hash'), hashEl)
   if (h.isFork) thingHeader.append(el('span', 'evm-badge evm-badge--danger', 'FORK — author history diverged'))
 }
 
@@ -411,6 +443,10 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 shell.onFeedChanged(() => void refreshFeed())
+shell.onModeChanged((m) => {
+  currentMode = m
+  styleModeButtons()
+})
 shell.onPublishResult((o) => {
   if (o.status === 'valid') showText('Published to your feed', 'success')
   else showText(`Publish failed: ${String(o.reason ?? o.status)}`, 'danger')

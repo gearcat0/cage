@@ -22,6 +22,12 @@ const shell = {
   }): Promise<{ outcome: Record<string, unknown>; path: string | null }> => ipcRenderer.invoke('shell:compose', input),
   open: (envelopeHash: string): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:open', envelopeHash),
   close: (): Promise<void> => ipcRenderer.invoke('shell:close'),
+  /** Switch the open thing's view/edit mode; main answers the applied mode. */
+  setMode: (mode: 'view' | 'edit'): Promise<'view' | 'edit'> => ipcRenderer.invoke('shell:set-mode', mode),
+  /** Main pushes the authoritative mode (set on open and on every switch). */
+  onModeChanged: (cb: (mode: 'view' | 'edit') => void): void => {
+    ipcRenderer.on('shell:mode-changed', (_e, p: { mode: 'view' | 'edit' }) => cb(p.mode))
+  },
   /** Main pushes this after the feed changes (e.g. an ingest). */
   onFeedChanged: (cb: () => void): void => {
     ipcRenderer.on('shell:feed-changed', () => cb())

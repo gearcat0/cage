@@ -175,3 +175,20 @@ body {
   font-size: var(--evm-text-sm);
   line-height: 1.5;
 }
+
+/* View | Edit mode toggle (segmented control in the per-thing header). */
+.sh-mode {
+  display: inline-flex;
+  border: 1px solid var(--evm-border);
+  border-radius: var(--evm-radius-md);
+  overflow: hidden;
+}
+.sh-mode-btn {
+  border: 0;
+  border-radius: 0;
+}
+.sh-mode-btn--active {
+  background: var(--evm-accent);
+  color: var(--evm-bg);
+  font-weight: var(--evm-weight-semibold);
+}
