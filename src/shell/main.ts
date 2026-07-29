@@ -288,8 +288,13 @@ app.whenReady().then(async () => {
 
   function applyVisibility(): void {
     if (!current) return
-    current.view?.view.setVisible(current.activeMode === 'view')
-    current.edit?.view.setVisible(current.activeMode === 'edit')
+    // While a publish confirm is pending, hide BOTH cages: the decision modal
+    // lives in chrome pixels, and the cage views are native siblings
+    // composited ABOVE the chrome — they would overpaint the modal, leaving
+    // the user a dimmed, unclickable shell with no visible prompt.
+    const occluded = pendingConfirms.size > 0
+    current.view?.view.setVisible(!occluded && current.activeMode === 'view')
+    current.edit?.view.setVisible(!occluded && current.activeMode === 'edit')
   }
 
   // ── Lockstep zoom (Ctrl +/−/0) ─────────────────────────────────────────────
@@ -341,13 +346,6 @@ app.whenReady().then(async () => {
     })
   }
   watchZoomKeys(chrome.webContents)
-
-  dbg('chrome-load')
-  const rendererUrl = process.env.ELECTRON_RENDERER_URL
-  if (rendererUrl) await chrome.webContents.loadURL(`${rendererUrl}/shell/chrome/index.html`)
-  else await chrome.webContents.loadFile(join(__dirname, '../../renderer/shell/chrome/index.html'))
-  dbg('chrome-loaded')
-  layout()
 
   function notifyFeedChanged(): void {
     chrome.webContents.send('shell:feed-changed')
@@ -585,9 +583,13 @@ app.whenReady().then(async () => {
       argsBytes: req.argsBytes,
       blobBytes: req.blobBytes
     }
-    const timer = setTimeout(() => pendingConfirms.delete(id), PUBLISH_CONFIRM_TTL_MS)
+    const timer = setTimeout(() => {
+      pendingConfirms.delete(id)
+      applyVisibility()
+    }, PUBLISH_CONFIRM_TTL_MS)
     timer.unref?.()
     pendingConfirms.set(id, { draft: req.draft, program: stored.program, timer })
+    applyVisibility() // cages hide while the human decides in chrome
     const confirmReq = { id, kind: 'publish', summary }
     shell.lastConfirm = confirmReq
     chrome.webContents.send('shell:confirm-request', confirmReq)
@@ -596,6 +598,7 @@ app.whenReady().then(async () => {
     if (typeof id !== 'number' || typeof approved !== 'boolean') return
     const p = pendingConfirms.get(id)
     pendingConfirms.delete(id)
+    applyVisibility() // restore the cages once nothing is pending
     if (!p) return
     clearTimeout(p.timer)
     if (!approved) {
@@ -671,6 +674,18 @@ app.whenReady().then(async () => {
     const envelope = await encodeEnvelope({ man: hash(manifestBytes), created: 1 }, keyring.signer)
     return summarize(admitBundle({ envelope, manifest: manifestBytes, program, blobs: new Map() }))
   }
+  // Load the chrome only AFTER every IPC handler and surface datum above is
+  // live: the chrome's boot script invokes shell:identity + shell:feed while
+  // the page is still loading, and an unregistered handler (or an undefined
+  // identity) kills that boot script — which is exactly a blank feed on
+  // startup, populated only by the next feed-changed event.
+  dbg('chrome-load')
+  const rendererUrl = process.env.ELECTRON_RENDERER_URL
+  if (rendererUrl) await chrome.webContents.loadURL(`${rendererUrl}/shell/chrome/index.html`)
+  else await chrome.webContents.loadFile(join(__dirname, '../../renderer/shell/chrome/index.html'))
+  dbg('chrome-loaded')
+  layout()
+
   shell.ready = true
   dbg('ready-done')
 }).catch((e) => dbg(`whenReady FAILED ${String(e)}\n${(e as Error).stack}`))

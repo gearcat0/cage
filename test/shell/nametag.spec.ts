@@ -98,6 +98,20 @@ async function switchMode(mode: 'view' | 'edit'): Promise<void> {
 const displayText = (which: 'view' | 'edit' = 'view'): Promise<string | null> =>
   thingEval<string | null>(`document.getElementById('display')?.textContent ?? null`, which)
 
+// Visibility of every live cage view. While a publish confirm is pending both
+// must be hidden: the modal lives in chrome pixels, and the cage views are
+// native siblings composited ABOVE the chrome — they would overpaint it.
+const cageVisibility = (): Promise<boolean[]> =>
+  shell.app.evaluate(async (electron) => {
+    const thingWcs = electron.webContents
+      .getAllWebContents()
+      .filter((w) => !w.isDestroyed() && w.getURL().startsWith('thing:'))
+    const win = electron.BaseWindow.getAllWindows()[0]!
+    return win.contentView.children
+      .filter((v) => thingWcs.includes((v as Electron.WebContentsView).webContents))
+      .map((v) => v.getVisible()) as never
+  })
+
 let blankHash = '' // E1: the blank nametag (args: null)
 let namedHash = '' // E2: the instance carrying {name: 'Joe Bloggs'}
 
@@ -129,12 +143,18 @@ test('opens in view, edit mode publishes, approval creates a named instance of t
   )
   expect(confirm!.summary.type).toBe('nametag')
 
+  // The decision modal must actually be seeable: with a confirm pending, every
+  // cage view is hidden (they would otherwise overpaint the chrome's modal).
+  expect((await cageVisibility()).every((v) => !v)).toBe(true)
+
   await chromeEval(`document.querySelector('[data-testid=confirm-approve]').click()`)
   const publish = await poll(
     () => shellSurface<Record<string, unknown> | null>('lastPublish'),
     (p) => p != null && p.status !== undefined
   )
   expect(publish!.status).toBe('valid')
+  // Decision made — the active cage comes back.
+  await poll(cageVisibility, (vs) => vs.some(Boolean))
 
   // The new instance: same author, same PROGRAM, different envelope.
   const rows = (await shell.feed()) as { envelopeHash: string; type: string; progHash: string; authorKey: string }[]
@@ -175,6 +195,8 @@ test('a denied publish is dropped', async () => {
   )
   await chromeEval(`document.querySelector('[data-testid=confirm-reject]').click()`)
   await poll(() => shellSurface<Record<string, unknown> | null>('lastPublish'), (p) => p?.status === 'denied')
+  // Deny restores the cages too.
+  await poll(cageVisibility, (vs) => vs.some(Boolean))
 
   // Give a wrongly-approved persist time to land, then assert nothing did.
   await new Promise((r) => setTimeout(r, 600))
