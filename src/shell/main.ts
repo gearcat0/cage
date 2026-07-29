@@ -20,6 +20,8 @@ import {
   encodeManifest,
   hash,
   jsToCbor,
+  parseBundle,
+  toHex,
   DEFAULT_BUNDLE_LIMITS,
   type AdmissionResult,
   type BundleLimits,
@@ -175,6 +177,10 @@ interface ShellSurface {
   setMode?: (mode: 'view' | 'edit') => Promise<'view' | 'edit'>
   /** TEST: active mode + the wcIds of both cages, for spec targeting. */
   modeState?: () => { activeMode: 'view' | 'edit'; viewWcId: number | null; editWcId: number | null } | null
+  /** Copy a thing (new instance, same program/type/args/attachments, your key). */
+  copyThing?: (envelopeHash: string) => Promise<Record<string, unknown>>
+  /** Delete a thing from the library (+ blob GC + seed removal). */
+  deleteThing?: (envelopeHash: string) => Record<string, unknown>
 }
 
 const shell: ShellSurface = { ready: false, lastConfirm: null, lastPublish: null }
@@ -288,14 +294,23 @@ app.whenReady().then(async () => {
 
   function applyVisibility(): void {
     if (!current) return
-    // While a publish confirm is pending, hide BOTH cages: the decision modal
-    // lives in chrome pixels, and the cage views are native siblings
-    // composited ABOVE the chrome — they would overpaint the modal, leaving
-    // the user a dimmed, unclickable shell with no visible prompt.
-    const occluded = pendingConfirms.size > 0
+    // While a publish confirm is pending OR the chrome has a modal overlay
+    // open (compose, delete confirm, safety notice), hide BOTH cages: modals
+    // live in chrome pixels, and the cage views are native siblings composited
+    // ABOVE the chrome — they would overpaint the modal, leaving the user a
+    // dimmed, unclickable shell with no visible prompt.
+    const occluded = pendingConfirms.size > 0 || chromeOverlays > 0
     current.view?.view.setVisible(!occluded && current.activeMode === 'view')
     current.edit?.view.setVisible(!occluded && current.activeMode === 'edit')
   }
+
+  // Chrome-side modal overlays announce themselves so the cages can yield.
+  let chromeOverlays = 0
+  ipcMain.on('shell:overlay', (_e, delta: unknown) => {
+    if (delta !== 1 && delta !== -1) return
+    chromeOverlays = Math.max(0, chromeOverlays + delta)
+    applyVisibility()
+  })
 
   // ── Lockstep zoom (Ctrl +/−/0) ─────────────────────────────────────────────
   // Per-webContents zoom would scale the chrome and the cage content
@@ -518,6 +533,59 @@ app.whenReady().then(async () => {
     return o.activeMode
   }
 
+  /** Copy: a NEW instance signed by THIS identity carrying the exact same
+   *  program, type, args (the byte-faithful CBOR value — no JS round trip),
+   *  and attachments. This is the shell-level "edit the selected object"
+   *  primitive: things are immutable, so editing starts by making your own
+   *  copy — including of things authored by someone else. Sealed things are
+   *  refused: silently republishing private content as public is a footgun. */
+  async function copyThing(envelopeHash: string): Promise<Record<string, unknown>> {
+    const stored = library.load(envelopeHash)
+    if (!stored) return { status: 'invalid', reason: 'not found or not mountable (sealed, undecrypted)' }
+    if (stored.row.sealed) return { status: 'invalid', reason: 'refusing to copy a sealed thing into a public one' }
+    const attachments = new Map<string, { bytes: Uint8Array; mime?: string }>()
+    for (const [name, att] of stored.manifest.att) {
+      const bytes = stored.store.readAll(toHex(att.h))
+      if (!bytes) return { status: 'invalid', reason: `attachment missing from store: ${name}` }
+      attachments.set(name, { bytes, mime: att.m })
+    }
+    const tar = await buildBundle(keyring.signer, {
+      program: stored.program,
+      type: stored.manifest.type,
+      args: stored.manifest.args,
+      attachments
+    })
+    return ingestBytes(tar)
+  }
+
+  /** The seed store is keyed by TAR hash with no envelope index — scan and
+   *  parse to find the bundle(s) whose envelope matches. Seeds are few. */
+  function removeSeedsFor(envelopeHashHex: string): void {
+    for (const tarHash of seedStore.list()) {
+      const bytes = seedStore.readAll(tarHash)
+      if (!bytes) continue
+      try {
+        if (toHex(hash(parseBundle(bytes).envelope)) === envelopeHashHex) seedStore.delete(tarHash)
+      } catch {
+        /* unparseable seed — leave it */
+      }
+    }
+  }
+
+  /** Delete a thing everywhere the shell holds it: close it if open, drop the
+   *  library row (+ GC of now-unreferenced content blobs), and stop seeding
+   *  its bundle. Copies held by others are of course unaffected — a signed
+   *  thing is public and permanent once shared. */
+  function deleteThing(envelopeHash: string): Record<string, unknown> {
+    if (current?.envelopeHash === envelopeHash) destroyCurrent()
+    const deleted = library.delete(envelopeHash)
+    if (deleted) {
+      removeSeedsFor(envelopeHash)
+      notifyFeedChanged()
+    }
+    return { deleted }
+  }
+
   // ── Confirm flow: a thing's publish request is decided HERE, in chrome ─────
   // A pending publish holds the full draft (blob bytes included) plus the
   // program bytes captured at request time, so approval publishes exactly what
@@ -618,6 +686,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('shell:fetch', (_e, locator: string) => fetchNameOrLocator(locator))
   ipcMain.handle('shell:open', (_e, envelopeHash: string) => openThing(envelopeHash))
   ipcMain.handle('shell:set-mode', (_e, mode: unknown) => setMode(mode === 'edit' ? 'edit' : 'view'))
+  ipcMain.handle('shell:copy', (_e, h: unknown) =>
+    typeof h === 'string' ? copyThing(h) : { status: 'invalid', reason: 'bad hash' }
+  )
+  ipcMain.handle('shell:delete', (_e, h: unknown) => (typeof h === 'string' ? deleteThing(h) : { deleted: false }))
   ipcMain.handle(
     'shell:compose',
     async (_e, input: { programBase64: string; type: string; attachments?: ComposeAttachment[] }) => {
@@ -659,6 +731,8 @@ app.whenReady().then(async () => {
   shell.feed = (query) => getFeed(query)
   shell.open = (envelopeHash) => openThing(envelopeHash)
   shell.setMode = (m) => setMode(m)
+  shell.copyThing = (h) => copyThing(h)
+  shell.deleteThing = (h) => deleteThing(h)
   shell.modeState = () =>
     current
       ? {

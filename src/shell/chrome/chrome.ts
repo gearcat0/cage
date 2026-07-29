@@ -21,6 +21,9 @@ interface ShellApi {
   close(): Promise<void>
   setMode(mode: 'view' | 'edit'): Promise<'view' | 'edit'>
   onModeChanged(cb: (mode: 'view' | 'edit') => void): void
+  copyThing(envelopeHash: string): Promise<Record<string, unknown>>
+  deleteThing(envelopeHash: string): Promise<{ deleted: boolean }>
+  overlay(delta: 1 | -1): void
   onFeedChanged(cb: () => void): void
   onConfirmRequest(cb: (req: { id: number; kind: string; summary: Record<string, unknown> }) => void): void
   respondConfirm(id: number, approved: boolean): void
@@ -177,6 +180,69 @@ function showText(msg: string, tone: 'success' | 'danger' | 'neutral'): void {
   }, 8000)
 }
 
+/** Announce a modal overlay to main — the cage views hide while any chrome
+ *  modal is open (they are native siblings composited ABOVE the chrome and
+ *  would overpaint it). Patches remove() so every close path announces the
+ *  close without per-modal bookkeeping. */
+function trackOverlay(overlay: HTMLElement): HTMLElement {
+  shell.overlay(1)
+  const origRemove = overlay.remove.bind(overlay)
+  let closed = false
+  overlay.remove = () => {
+    if (!closed) {
+      closed = true
+      shell.overlay(-1)
+    }
+    origRemove()
+  }
+  return overlay
+}
+
+/** A small chrome-local confirm for destructive actions. Resolves the choice. */
+function confirmDanger(title: string, text: string, action: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = el('div', 'evm-modal-overlay')
+    const modal = el('div', 'evm-modal')
+    const header = el('div', 'evm-modal-header')
+    header.append(el('span', 'evm-modal-title', title))
+    const body = el('div', 'evm-modal-body')
+    body.append(el('p', 'sh-hint', text))
+    const footer = el('div', 'evm-modal-footer')
+    const cancel = el('button', 'evm-btn evm-btn--ghost', 'Cancel')
+    const ok = el('button', 'evm-btn evm-btn--danger', action)
+    ok.setAttribute('data-testid', 'danger-confirm')
+    cancel.setAttribute('data-testid', 'danger-cancel')
+    const done = (v: boolean): void => {
+      overlay.remove()
+      resolve(v)
+    }
+    cancel.addEventListener('click', () => done(false))
+    ok.addEventListener('click', () => done(true))
+    footer.append(cancel, ok)
+    modal.append(header, body, footer)
+    overlay.append(modal)
+    document.body.append(trackOverlay(overlay))
+  })
+}
+
+/** Delete via either the header button or a feed row: confirm, delete, and
+ *  clear the header if the deleted thing was the open one. */
+async function deleteWithConfirm(envelopeHash: string, type: string): Promise<void> {
+  const ok = await confirmDanger(
+    'Delete thing',
+    `Delete this ${type} from your library? Its bundle stops being seeded from this machine. Copies already shared are unaffected — a signed thing is public and permanent once shared.`,
+    'Delete'
+  )
+  if (!ok) return
+  await shell.deleteThing(envelopeHash)
+  if (selected === envelopeHash) {
+    selected = null
+    renderHeader(null)
+  }
+  showText('Deleted from your library', 'neutral')
+  await refreshFeed()
+}
+
 function openComposeModal(): void {
   const overlay = el('div', 'evm-modal-overlay')
   const modal = el('div', 'evm-modal')
@@ -220,7 +286,7 @@ function openComposeModal(): void {
   footer.append(cancel, create)
   modal.append(header, body, footer)
   overlay.append(modal)
-  document.body.append(overlay)
+  document.body.append(trackOverlay(overlay))
 
   cancel.addEventListener('click', () => overlay.remove())
   create.addEventListener('click', async () => {
@@ -288,7 +354,7 @@ function safetyModal(keyStorage: 'os' | 'software'): void {
   footer.append(ok)
   modal.append(header, body, footer)
   overlay.append(modal)
-  document.body.append(overlay)
+  document.body.append(trackOverlay(overlay))
 }
 
 function renderSafety(keyStorage: 'os' | 'software'): void {
@@ -328,6 +394,18 @@ async function refreshFeed(): Promise<void> {
     if (row.isFork) line1.append(el('span', 'evm-badge evm-badge--danger', 'FORK'))
     if (row.sealed) line1.append(el('span', 'evm-badge evm-badge--purple', 'sealed'))
     if (!row.read) line1.append(el('span', 'sh-unread', '●'))
+    // Per-row delete — usable WITHOUT opening the thing (you may not want to
+    // mount something before removing it). A span, not a button: the row
+    // itself is a button and buttons must not nest.
+    const del = el('span', 'sh-feed-del', '×')
+    del.title = 'Delete from library'
+    del.setAttribute('role', 'button')
+    del.setAttribute('data-testid', 'feed-delete')
+    del.addEventListener('click', (e) => {
+      e.stopPropagation()
+      void deleteWithConfirm(row.envelopeHash, row.type)
+    })
+    line1.append(el('span', 'sh-feed-flex'), del)
     const line2 = el('div', 'sh-feed-meta', fmtTime(row.receivedAt))
     item.append(line1, line2)
     item.addEventListener('click', () => void openThing(row.envelopeHash))
@@ -391,7 +469,31 @@ function renderHeader(h: HeaderFacts | null): void {
   }
   const typeBadge = el('span', 'evm-badge evm-badge--neutral', h.type)
   const hashEl = el('span', 'sh-hash evm-address evm-address--muted', short(h.envelopeHash, 8))
-  thingHeader.append(badge, el('span', 'sh-by', 'by'), authorEl, typeBadge, renderModeToggle(), el('span', 'sh-spacer'), el('span', 'sh-hint', 'hash'), hashEl)
+  // Copy: the shell-level "edit this object" primitive — things are immutable,
+  // so editing starts by making your own instance with the same program+args.
+  const copyBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Copy')
+  copyBtn.setAttribute('data-testid', 'header-copy')
+  copyBtn.addEventListener('click', async () => {
+    const outcome = await shell.copyThing(h.envelopeHash)
+    if (outcome.status === 'valid') showText('Copied — your new instance is in the feed', 'success')
+    else showText(`Copy failed: ${String(outcome.reason ?? outcome.status)}`, 'danger')
+    await refreshFeed()
+  })
+  const delBtn = el('button', 'evm-btn evm-btn--danger evm-btn--sm', 'Delete')
+  delBtn.setAttribute('data-testid', 'header-delete')
+  delBtn.addEventListener('click', () => void deleteWithConfirm(h.envelopeHash, h.type))
+  thingHeader.append(
+    badge,
+    el('span', 'sh-by', 'by'),
+    authorEl,
+    typeBadge,
+    renderModeToggle(),
+    el('span', 'sh-spacer'),
+    copyBtn,
+    delBtn,
+    el('span', 'sh-hint', 'hash'),
+    hashEl
+  )
   if (h.isFork) thingHeader.append(el('span', 'evm-badge evm-badge--danger', 'FORK — author history diverged'))
 }
 
@@ -427,7 +529,7 @@ shell.onConfirmRequest((req) => {
   footer.append(cancel, ok)
   modal.append(header, body, footer)
   overlay.append(modal)
-  document.body.append(overlay)
+  document.body.append(trackOverlay(overlay))
 })
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

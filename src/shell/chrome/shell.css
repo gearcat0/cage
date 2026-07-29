@@ -192,3 +192,18 @@ body {
   color: var(--evm-bg);
   font-weight: var(--evm-weight-semibold);
 }
+
+/* Feed-row delete (a span — the row itself is a button; buttons must not nest). */
+.sh-feed-flex {
+  flex: 1;
+}
+.sh-feed-del {
+  color: var(--evm-text-muted);
+  padding: 0 4px;
+  border-radius: var(--evm-radius-sm, 4px);
+  cursor: pointer;
+}
+.sh-feed-del:hover {
+  color: var(--evm-danger, #ff6b6b);
+  background: var(--evm-danger-faint, rgba(255, 107, 107, 0.15));
+}

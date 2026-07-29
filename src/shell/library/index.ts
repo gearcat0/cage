@@ -238,6 +238,54 @@ export class Library {
     this.db.prepare('UPDATE things SET read_state = ? WHERE envelope_hash = ?').run(read ? 1 : 0, envelopeHash)
   }
 
+  /** Content hashes a row references: program, manifest, and (decoded from the
+   *  manifest) every attachment. Blobs are content-addressed and SHARED across
+   *  things, so these are references, not ownership. */
+  private contentHashes(r: { progHash: string; manifestHash: string; sealed: boolean }): Set<string> {
+    const hashes = new Set<string>([r.progHash, r.manifestHash])
+    const store: AttachmentStore = r.sealed ? this.sealed : this.cas
+    const manifestBytes = store.readAll(r.manifestHash)
+    if (manifestBytes) {
+      try {
+        for (const att of decodeManifest(manifestBytes).att.values()) hashes.add(toHex(att.h))
+      } catch {
+        /* undecodable manifest — GC only what the row itself names */
+      }
+    }
+    return hashes
+  }
+
+  /**
+   * Delete a thing: drop its index row, then garbage-collect content blobs no
+   * longer referenced by ANY remaining thing (blobs are shared — every nametag
+   * instance references the same program blob, so a blob dies only with its
+   * last referrer). Returns false if the row was absent.
+   */
+  delete(envelopeHash: string): boolean {
+    const row = this.get(envelopeHash)
+    if (!row) return false
+    // Candidates BEFORE the row goes (the manifest must still be readable).
+    const candidates = this.contentHashes(row)
+    this.db.prepare('DELETE FROM things WHERE envelope_hash = ?').run(envelopeHash)
+    const referenced = new Set<string>()
+    const remaining = this.db.prepare('SELECT prog_hash, manifest_hash, sealed FROM things').all() as {
+      prog_hash: string
+      manifest_hash: string
+      sealed: number
+    }[]
+    for (const r of remaining) {
+      for (const h of this.contentHashes({ progHash: r.prog_hash, manifestHash: r.manifest_hash, sealed: r.sealed === 1 })) {
+        referenced.add(h)
+      }
+    }
+    for (const h of candidates) {
+      if (referenced.has(h)) continue
+      this.cas.delete(h)
+      this.sealed.delete(h)
+    }
+    return true
+  }
+
   count(): number {
     return (this.db.prepare('SELECT COUNT(*) AS n FROM things').get() as { n: number }).n
   }

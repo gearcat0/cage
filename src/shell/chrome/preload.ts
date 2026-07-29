@@ -28,6 +28,15 @@ const shell = {
   onModeChanged: (cb: (mode: 'view' | 'edit') => void): void => {
     ipcRenderer.on('shell:mode-changed', (_e, p: { mode: 'view' | 'edit' }) => cb(p.mode))
   },
+  /** Copy a thing: a new instance, same program/args, signed by this identity. */
+  copyThing: (envelopeHash: string): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:copy', envelopeHash),
+  /** Delete a thing from the library (index row + blob GC + seed removal). */
+  deleteThing: (envelopeHash: string): Promise<{ deleted: boolean }> => ipcRenderer.invoke('shell:delete', envelopeHash),
+  /** Announce a chrome modal overlay opening (+1) / closing (-1) so main can
+   *  hide the cage views, which would otherwise overpaint the modal. */
+  overlay: (delta: 1 | -1): void => {
+    ipcRenderer.send('shell:overlay', delta)
+  },
   /** Main pushes this after the feed changes (e.g. an ingest). */
   onFeedChanged: (cb: () => void): void => {
     ipcRenderer.on('shell:feed-changed', () => cb())
