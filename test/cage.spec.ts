@@ -462,7 +462,8 @@ test.describe('the bridge hands over data, not authority', () => {
     const r = (await cage.waitForEmit('done')) as Record<string, unknown>
     // Exactly the ThingArgs view: no author, signature, created, path, seq,
     // prev, prog — identity claims live in chrome pixels, never in the thing.
-    expect(r.topLevelKeys).toEqual(['args', 'attachments', 'type'])
+    // (`mode` is a shell-supplied render directive, not envelope data.)
+    expect(r.topLevelKeys).toEqual(['args', 'attachments', 'mode', 'type'])
     // Attachment rows expose name/mime/size — never the hash: things address
     // blobs by NAME, and must not be able to construct content claims.
     expect(r.attachmentKeys).toEqual([['mime', 'name', 'size']])

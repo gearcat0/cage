@@ -402,6 +402,7 @@ app.whenReady().then(async () => {
       preloadPath: CAGE_PRELOAD,
       stored,
       bounds: cageRect(),
+      mode: 'view',
       onBound: (wcId) => {
         mountedWcId = wcId
         mountedStored = stored

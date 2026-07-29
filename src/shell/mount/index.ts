@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { BaseWindow, WebContentsView, Rectangle } from 'electron'
 import { createCage } from '../../main/cage.js'
-import { bindCage, unbindCage, type ThingArgs } from '../../main/bridge.js'
+import { bindCage, unbindCage, type ThingArgs, type ThingMode } from '../../main/bridge.js'
 import type { CageResources, ResourceMap } from '../../main/protocol.js'
 import type { AttachmentTable } from '../../main/store.js'
 import { cborToJs, toHex } from '../../format/index.js'
@@ -52,6 +52,8 @@ export interface MountOptions {
   stored: StoredThing
   /** Rect the cage view occupies (below the chrome strip). */
   bounds: Rectangle
+  /** The render mode handed to the program via getArgs(). */
+  mode: ThingMode
   /** Called with the cage's webContents id once the bridge is bound — BEFORE
    *  the program loads, so anything keyed on the id (e.g. the publish confirm
    *  flow) is in place for emits that fire during the load itself. */
@@ -87,7 +89,8 @@ export async function mountThing(opts: MountOptions): Promise<MountedThing> {
     // Decoded args are CborMaps, which don't survive the context bridge into
     // the thing — hand over the plain-JS shape instead.
     args: cborToJs(stored.manifest.args),
-    attachments: [...attachments.entries()].map(([name, e]) => ({ name, mime: e.mime, size: e.size }))
+    attachments: [...attachments.entries()].map(([name, e]) => ({ name, mime: e.mime, size: e.size })),
+    mode: opts.mode
   }
   const wc = handle.view.webContents
   bindCage(wc.id, { thingId: id, thingArgs, attachments })

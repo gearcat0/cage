@@ -22,6 +22,8 @@ import { DEFAULT_DRAFT_CAPS, validateDraft, type Draft, type DraftCaps } from '.
  *     chrome's exclusive job; a thing that draws "signed by alice.eth" can lie
  *   - `prog` — the thing IS the program
  *   - attachment hashes — things address blobs by NAME via getBlob() */
+export type ThingMode = 'view' | 'edit'
+
 export interface ThingArgs {
   /** manifest.type — a display hint only (spec §4: MUST NOT be trusted). */
   type: string
@@ -29,6 +31,10 @@ export interface ThingArgs {
   args: unknown
   /** Names + metadata of the attachments that travelled with the thing. */
   attachments: AttInfo[]
+  /** Shell-chosen render mode. A render directive, not authority: programs
+   *  that ignore it render identically in both modes; the shell owns the
+   *  switching control, in chrome pixels the thing cannot reach. */
+  mode: ThingMode
 }
 
 export interface AttInfo {

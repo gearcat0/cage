@@ -278,7 +278,8 @@ async function mountCage(
       name,
       mime: e.mime,
       size: e.size
-    }))
+    })),
+    mode: process.env.CAGE_MODE === 'edit' ? 'edit' : 'view'
   }
   bindCage(handle.view.webContents.id, { thingId: id, thingArgs, attachments: table })
 
