@@ -207,3 +207,15 @@ body {
   color: var(--evm-danger, #ff6b6b);
   background: var(--evm-danger-faint, rgba(255, 107, 107, 0.15));
 }
+
+/* Status slot: "✓ signed" and the preview badge overlay in ONE grid cell, so
+   the slot is permanently sized to the wider badge and swapping them (via
+   visibility) never reflows the View/Edit/Publish controls after it. */
+.sh-status-slot {
+  display: inline-grid;
+}
+.sh-status-slot > * {
+  grid-area: 1 / 1;
+  justify-self: start;
+  white-space: nowrap;
+}

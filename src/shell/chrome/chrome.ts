@@ -433,9 +433,12 @@ function styleModeButtons(): void {
   modeButtons?.edit.classList.toggle('sh-mode-btn--active', currentMode === 'edit')
   // The trust badge must NEVER sit above unsigned draft content: when view
   // mode is showing the draft preview, swap "✓ signed" for the preview badge.
+  // Swapped via VISIBILITY inside a fixed-size status slot (not display), so
+  // the wider badge never reflows the controls to its right — buttons must
+  // stay put while the user is working.
   const showingPreview = previewActive && currentMode === 'view'
-  if (trustBadge) trustBadge.style.display = showingPreview ? 'none' : ''
-  if (previewBadge) previewBadge.style.display = showingPreview ? '' : 'none'
+  if (trustBadge) trustBadge.style.visibility = showingPreview ? 'hidden' : 'visible'
+  if (previewBadge) previewBadge.style.visibility = showingPreview ? 'visible' : 'hidden'
   // Publish enables once the program has streamed a draft — which is also how
   // the chrome detects that this program supports the edit contract at all.
   if (publishBtn) {
@@ -483,7 +486,11 @@ function renderHeader(h: HeaderFacts | null): void {
   // styleModeButtons) — then it REPLACES the trust badge.
   previewBadge = el('span', 'evm-badge evm-badge--warning', 'PREVIEW — unpublished draft')
   previewBadge.setAttribute('data-testid', 'preview-badge')
-  previewBadge.style.display = 'none'
+  previewBadge.style.visibility = 'hidden'
+  // Both badges share one grid cell; the slot is permanently sized to the
+  // wider of the two, so swapping them never moves the controls after it.
+  const statusSlot = el('span', 'sh-status-slot')
+  statusSlot.append(badge, previewBadge)
   // Author identity: a VERIFIED name (confirmed to map to the author key) is
   // shown as a name; otherwise the raw key, marked unverified. The name lives in
   // chrome pixels the thing cannot reach.
@@ -521,8 +528,7 @@ function renderHeader(h: HeaderFacts | null): void {
   })
   publishBtn = pub
   thingHeader.append(
-    badge,
-    previewBadge,
+    statusSlot,
     el('span', 'sh-by', 'by'),
     authorEl,
     typeBadge,

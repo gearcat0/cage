@@ -261,6 +261,15 @@ test('live preview: view mode shows the unpublished draft in final form', async 
   await switchMode('edit')
   await poll(() => thingEval<boolean>(`!!document.getElementById('name')`, 'edit'), (v) => v)
 
+  // Control positions BEFORE the badge swap — they must not move when the
+  // wider preview badge replaces "✓ signed" (fixed status slot).
+  const buttonX = (): Promise<{ view: number; publish: number }> =>
+    chromeEval(`({
+      view: document.querySelector('[data-testid=mode-view]').getBoundingClientRect().x,
+      publish: document.querySelector('[data-testid=header-publish]').getBoundingClientRect().x
+    })`)
+  const beforeSwap = await buttonX()
+
   // Type through the page's own input event — the program streams its
   // working state on the "draft" channel as you type. (An initial-state
   // preview may mount first; wait for the TYPED draft's preview.)
@@ -270,6 +279,8 @@ test('live preview: view mode shows the unpublished draft in final form', async 
   // View mode now shows the DRAFT rendered in final form...
   await switchMode('view')
   expect(await displayText('preview')).toBe('Previewed')
+  // ...and the View/Edit/Publish controls have NOT moved despite the badge swap.
+  expect(await buttonX()).toEqual(beforeSwap)
   // ...while the signed instance underneath is untouched (blank placeholder).
   expect(await thingEval<string | null>(`document.getElementById('display')?.textContent ?? null`, 'view')).toBe('—')
 
@@ -289,11 +300,11 @@ test('live preview: view mode shows the unpublished draft in final form', async 
   // The trust badge must not sit above unsigned draft content: chrome swaps
   // "✓ signed" for the preview badge.
   const badges = await chromeEval<{ preview: string; trust: string }>(`({
-    preview: document.querySelector('[data-testid=preview-badge]').style.display,
-    trust: document.querySelector('[data-trust=verified]').style.display
+    preview: document.querySelector('[data-testid=preview-badge]').style.visibility,
+    trust: document.querySelector('[data-trust=verified]').style.visibility
   })`)
-  expect(badges.preview).toBe('')
-  expect(badges.trust).toBe('none')
+  expect(badges.preview).toBe('visible')
+  expect(badges.trust).toBe('hidden')
 
   // Further edits keep streaming — even while view mode is showing: the edit
   // cage is alive underneath and its drafts remount the preview.
