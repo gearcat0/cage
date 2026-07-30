@@ -54,6 +54,10 @@ export interface MountOptions {
   bounds: Rectangle
   /** The render mode handed to the program via getArgs(). */
   mode: ThingMode
+  /** Attach the view hidden (default visible). A background mount — e.g. a
+   *  live-preview remount — must not steal focus or paint over the active
+   *  cage while it loads; the caller reveals it via setVisible later. */
+  visible?: boolean
   /** Called with the cage's webContents id once the bridge is bound — BEFORE
    *  the program loads, so anything keyed on the id (e.g. the publish confirm
    *  flow) is in place for emits that fire during the load itself. */
@@ -96,6 +100,9 @@ export async function mountThing(opts: MountOptions): Promise<MountedThing> {
   bindCage(wc.id, { thingId: id, thingArgs, attachments })
   opts.onBound?.(wc.id)
 
+  // Visibility is set BEFORE attaching: a hidden mount must never flash or
+  // grab focus during its load.
+  handle.view.setVisible(opts.visible ?? true)
   win.contentView.addChildView(handle.view)
   handle.view.setBounds(opts.bounds)
 

@@ -308,6 +308,70 @@ test('live preview: view mode shows the unpublished draft in final form', async 
   )
 })
 
+test('live preview works when editing an EXISTING instance, without stealing focus', async () => {
+  const focusedId = (): Promise<number | null> =>
+    shell.app.evaluate(async (electron) => (electron.webContents.getFocusedWebContents()?.id ?? null) as never)
+
+  await openViaChrome(namedHash)
+  await switchMode('edit')
+  await poll(() => thingEval<boolean>(`!!document.getElementById('name')`, 'edit'), (v) => v)
+
+  // Switching to edit hands the edit cage keyboard focus.
+  const editWcId = (await modeState())!.editWcId
+  expect(await focusedId()).toBe(editWcId)
+
+  // Type — drafts stream and previews remount UNDER the typing user.
+  await thingEval(
+    `
+    var i = document.getElementById('name');
+    i.value = 'Josephine';
+    i.dispatchEvent(new Event('input'));
+  `,
+    'edit'
+  )
+  await poll(modeState, (s) => s?.previewWcId != null)
+  // The remount must not steal focus from the edit cage (typing was unusable
+  // when every keystroke's preview grabbed the keyboard).
+  expect(await focusedId()).toBe(editWcId)
+
+  // A SECOND remount (fresh preview cage): focus still with the edit cage.
+  const firstPreview = (await modeState())!.previewWcId
+  await thingEval(
+    `
+    var i = document.getElementById('name');
+    i.value = 'Josephine II';
+    i.dispatchEvent(new Event('input'));
+  `,
+    'edit'
+  )
+  await poll(modeState, (s) => s?.previewWcId != null && s.previewWcId !== firstPreview)
+  expect(await focusedId()).toBe(editWcId)
+
+  // REAL keystrokes, spread across several preview remounts: every character
+  // must land (this is exactly the "focus lost constantly while typing" bug).
+  await thingEval(`var i = document.getElementById('name'); i.value = ''; i.focus();`, 'edit')
+  for (const ch of 'Real Name') {
+    await shell.app.evaluate(
+      async (electron, a) => {
+        const wc = electron.webContents.fromId(a.id)
+        if (!wc || wc.isDestroyed()) throw new Error('edit cage gone')
+        wc.sendInputEvent({ type: 'char', keyCode: a.ch })
+      },
+      { id: editWcId!, ch }
+    )
+    await new Promise((r) => setTimeout(r, 90))
+  }
+  expect(await thingEval<string>(`document.getElementById('name').value`, 'edit')).toBe('Real Name')
+  expect(await focusedId()).toBe(editWcId)
+
+  // And the preview really is the draft of the EXISTING instance's edit.
+  await switchMode('view')
+  await poll(
+    () => thingEval<string | null>(`document.getElementById('display')?.textContent ?? null`, 'preview'),
+    (v) => v === 'Real Name'
+  )
+})
+
 test('in-progress edits survive toggling between view and edit', async () => {
   await openViaChrome(blankHash)
   await switchMode('edit')

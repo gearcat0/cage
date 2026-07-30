@@ -1,4 +1,4 @@
-import { app, BaseWindow, WebContentsView, ipcMain, protocol, session, dialog } from 'electron'
+import { app, BaseWindow, WebContentsView, ipcMain, protocol, session, dialog, webContents } from 'electron'
 import { join } from 'node:path'
 import { appendFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
@@ -561,6 +561,10 @@ app.whenReady().then(async () => {
     o.activeMode = mode
     applyVisibility()
     applyZoom()
+    // Hand keyboard focus to the cage that just became visible, so e.g.
+    // switching to edit lets the user type immediately.
+    const active = mode === 'edit' ? o.edit : (o.preview ?? o.view)
+    if (active && !active.view.webContents.isDestroyed()) active.view.webContents.focus()
     notifyModeChanged(o.activeMode)
     return o.activeMode
   }
@@ -597,6 +601,10 @@ app.whenReady().then(async () => {
     if (!draft) return
     o.pendingDraft = null
     o.previewMounting = true
+    // The user is mid-typing in the edit cage while previews remount under
+    // them — note who holds focus so it can be handed back if the swap (view
+    // attach/destroy) steals it. Losing focus per keystroke is unusable.
+    const focusedBefore = webContents.getFocusedWebContents()?.id ?? null
     try {
       // jsToCbor may throw (e.g. float args) — keep the last good preview.
       const previewStored = previewStoredFrom(o.stored, draft)
@@ -606,22 +614,27 @@ app.whenReady().then(async () => {
         stored: previewStored,
         bounds: cageRect(),
         mode: 'view',
+        visible: false, // revealed by applyVisibility; a background load must not steal focus
         onBound: (wcId) => o.wcIds.add(wcId)
       })
       if (current !== o) {
         m.destroy()
         return
       }
+      const oldPreviewId = o.preview ? o.preview.view.webContents.id : null
       if (o.preview) {
-        const oldId = o.preview.view.webContents.id
         o.preview.destroy()
-        o.wcIds.delete(oldId)
+        if (oldPreviewId !== null) o.wcIds.delete(oldPreviewId)
       }
       o.preview = m
       watchZoomKeys(m.view.webContents)
       applyVisibility()
       applyZoom()
       notifyModeChanged(o.activeMode)
+      if (focusedBefore !== null) {
+        if (o.edit && focusedBefore === o.edit.view.webContents.id) o.edit.view.webContents.focus()
+        else if (focusedBefore === oldPreviewId) m.view.webContents.focus()
+      }
     } catch {
       /* invalid draft — previous preview (or the signed view) stays */
     } finally {
