@@ -219,13 +219,24 @@ export interface ShellLaunchOptions {
 
 async function waitReady(app: ElectronApplication, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
+  let lastErr: unknown = null
   for (;;) {
-    const ready = await app.evaluate(async (electron) => {
-      const s = (electron.app as unknown as { __shell?: { ready?: boolean } }).__shell
-      return Boolean(s?.ready)
-    })
-    if (ready) return
-    if (Date.now() > deadline) throw new Error('shell did not become ready')
+    try {
+      const ready = await app.evaluate(async (electron) => {
+        const s = (electron.app as unknown as { __shell?: { ready?: boolean } }).__shell
+        return Boolean(s?.ready)
+      })
+      if (ready) return
+      lastErr = null
+    } catch (e) {
+      // Transient inspector hiccups during startup are retried; if the app
+      // actually died this keeps failing until the deadline and the caller's
+      // relaunch takes over.
+      lastErr = e
+    }
+    if (Date.now() > deadline) {
+      throw lastErr instanceof Error ? lastErr : new Error('shell did not become ready')
+    }
     await new Promise((r) => setTimeout(r, 100))
   }
 }
@@ -265,8 +276,26 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
   env.SHELL_USER_DATA_DIR = userDataDir
   Object.assign(env, opts.extraEnv ?? {})
 
-  const app = await _electron.launch({ args: [SHELL_MAIN], env })
-  await waitReady(app)
+  // Electron occasionally dies during startup on CI runners (macOS
+  // especially). A launch flake is not a product failure — retry a fresh
+  // launch (same userData dir; a partial boot leaves nothing that matters)
+  // and make the retry visible in the log.
+  let launched: ElectronApplication | null = null
+  let lastErr: unknown = null
+  for (let attempt = 1; attempt <= 3 && !launched; attempt++) {
+    const candidate = await _electron.launch({ args: [SHELL_MAIN], env })
+    try {
+      await waitReady(candidate)
+      launched = candidate
+    } catch (e) {
+      lastErr = e
+      // eslint-disable-next-line no-console
+      console.warn(`[helpers] shell launch attempt ${attempt} failed (${(e as Error).message}); retrying`)
+      await candidate.close().catch(() => {})
+    }
+  }
+  if (!launched) throw lastErr instanceof Error ? lastErr : new Error('shell failed to launch')
+  const app = launched
   await ackSafetyNotice(app)
 
   return {
