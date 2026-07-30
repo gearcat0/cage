@@ -333,6 +333,30 @@ app.whenReady().then(async () => {
     if (o.editMounting) void o.editMounting.then((m) => m.destroy()).catch(() => {})
   }
 
+  /** Focus invariant: no HIDDEN cage may hold the keyboard. Focus lands on
+   *  freshly attached views at platform-dependent moments (during load on
+   *  some platforms, after it on others), so this is enforced from events +
+   *  settle points rather than sequenced once. Chrome focus is never touched.
+   */
+  function enforceCageFocus(): void {
+    const o = current
+    if (!o) return
+    const focused = webContents.getFocusedWebContents()
+    if (!focused || !o.wcIds.has(focused.id)) return // chrome or unrelated — leave alone
+    const active = o.activeMode === 'edit' ? o.edit : (o.preview ?? o.view)
+    if (!active || active.view.webContents.isDestroyed()) return
+    if (active.view.webContents.id === focused.id) return
+    active.view.webContents.focus()
+  }
+
+  /** Watch a cage's webContents from BIND time (before its load): any focus
+   *  it gains while not the active cage bounces to the active one. */
+  function guardCageFocus(wcId: number): void {
+    const wc = webContents.fromId(wcId)
+    // setImmediate: let the focus transition settle before inspecting it.
+    wc?.on('focus', () => setImmediate(enforceCageFocus))
+  }
+
   function applyVisibility(): void {
     if (!current) return
     // While a publish confirm is pending OR the chrome has a modal overlay
@@ -534,7 +558,10 @@ app.whenReady().then(async () => {
       stored,
       bounds: cageRect(),
       mode: 'view',
-      onBound: (wcId) => o.wcIds.add(wcId)
+      onBound: (wcId) => {
+        o.wcIds.add(wcId)
+        guardCageFocus(wcId)
+      }
     })
     if (current !== o) {
       // Raced by a newer open — this mount lost.
@@ -571,6 +598,7 @@ app.whenReady().then(async () => {
           mode: 'edit',
           onBound: (wcId) => {
             o.wcIds.add(wcId)
+            guardCageFocus(wcId)
             // Recorded BEFORE the program loads: an initial draft emitted
             // during the edit cage's own load must be accepted.
             o.editWcId = wcId
@@ -632,10 +660,6 @@ app.whenReady().then(async () => {
     if (!draft) return
     o.pendingDraft = null
     o.previewMounting = true
-    // The user is mid-typing in the edit cage while previews remount under
-    // them — note who holds focus so it can be handed back if the swap (view
-    // attach/destroy) steals it. Losing focus per keystroke is unusable.
-    const focusedBefore = webContents.getFocusedWebContents()?.id ?? null
     try {
       // jsToCbor may throw (e.g. float args) — keep the last good preview.
       const previewStored = previewStoredFrom(o.stored, draft)
@@ -646,7 +670,10 @@ app.whenReady().then(async () => {
         bounds: cageRect(),
         mode: 'view',
         visible: false, // revealed by applyVisibility; a background load must not steal focus
-        onBound: (wcId) => o.wcIds.add(wcId)
+        onBound: (wcId) => {
+          o.wcIds.add(wcId)
+          guardCageFocus(wcId)
+        }
       })
       if (current !== o) {
         m.destroy()
@@ -659,24 +686,18 @@ app.whenReady().then(async () => {
       }
       o.preview = m
       o.lastPreviewKey = draftKey(draft)
-      // A HIDDEN preview must never hold the keyboard. On some platforms the
-      // freshly loaded view grabs focus ASYNCHRONOUSLY — after the restore
-      // below has already run — so the guard has to be event-driven: whenever
-      // this preview gains focus while it is not the visible cage, hand the
-      // keyboard straight back to the edit cage the user is typing in.
-      m.view.webContents.on('focus', () => {
-        if (current !== o || o.preview !== m) return
-        if (o.activeMode === 'view') return // a visible preview may hold focus
-        if (o.edit && !o.edit.view.webContents.isDestroyed()) o.edit.view.webContents.focus()
-      })
       watchZoomKeys(m.view.webContents)
       applyVisibility()
       applyZoom()
       notifyModeChanged(o.activeMode)
-      if (focusedBefore !== null) {
-        if (o.edit && focusedBefore === o.edit.view.webContents.id) o.edit.view.webContents.focus()
-        else if (focusedBefore === oldPreviewId) m.view.webContents.focus()
-      }
+      // The user may be mid-typing in the edit cage while previews remount
+      // under them — losing focus per keystroke is unusable. The per-cage
+      // focus guard (guardCageFocus, attached at bind) bounces event-driven
+      // steals; these settle-point checks catch platforms where the steal
+      // emits no focus event or lands late after the swap.
+      enforceCageFocus()
+      const settle = setTimeout(enforceCageFocus, 250)
+      settle.unref?.()
     } catch {
       /* invalid draft — previous preview (or the signed view) stays */
     } finally {

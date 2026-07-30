@@ -329,7 +329,7 @@ test('live preview works when editing an EXISTING instance, without stealing foc
 
   // Switching to edit hands the edit cage keyboard focus.
   const editWcId = (await modeState())!.editWcId
-  expect(await focusedId()).toBe(editWcId)
+  await poll(focusedId, (id) => id === editWcId)
 
   // Type — drafts stream and previews remount UNDER the typing user.
   await thingEval(
@@ -343,7 +343,7 @@ test('live preview works when editing an EXISTING instance, without stealing foc
   await poll(modeState, (s) => s?.previewWcId != null)
   // The remount must not steal focus from the edit cage (typing was unusable
   // when every keystroke's preview grabbed the keyboard).
-  expect(await focusedId()).toBe(editWcId)
+  await poll(focusedId, (id) => id === editWcId)
 
   // A SECOND remount (fresh preview cage): focus still with the edit cage.
   const firstPreview = (await modeState())!.previewWcId
@@ -356,7 +356,7 @@ test('live preview works when editing an EXISTING instance, without stealing foc
     'edit'
   )
   await poll(modeState, (s) => s?.previewWcId != null && s.previewWcId !== firstPreview)
-  expect(await focusedId()).toBe(editWcId)
+  await poll(focusedId, (id) => id === editWcId)
 
   // REAL keystrokes, spread across several preview remounts: every character
   // must land (this is exactly the "focus lost constantly while typing" bug).
@@ -373,7 +373,7 @@ test('live preview works when editing an EXISTING instance, without stealing foc
     await new Promise((r) => setTimeout(r, 90))
   }
   expect(await thingEval<string>(`document.getElementById('name').value`, 'edit')).toBe('Real Name')
-  expect(await focusedId()).toBe(editWcId)
+  await poll(focusedId, (id) => id === editWcId)
 
   // And the preview really is the draft of the EXISTING instance's edit.
   await switchMode('view')
