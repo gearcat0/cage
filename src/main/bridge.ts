@@ -141,6 +141,31 @@ export function installBridge(): void {
       return
     }
 
+    // The draft path: same shape and caps as publish, but it GRANTS EVEN LESS
+    // — no confirm, no signing, nothing persisted. It only feeds the shell's
+    // live preview (render the same program in view mode with these args).
+    // Blob bytes are forwarded to the observer and retained nowhere here.
+    if (channel === 'draft') {
+      const result = validateDraft(data, draftCaps)
+      if (!result.ok) {
+        record({ type: 'emit-rejected', reason: result.reason })
+        return
+      }
+      record({
+        type: 'draft-preview',
+        draftType: result.draft.type,
+        argsBytes: result.argsBytes,
+        blobBytes: result.blobBytes
+      })
+      previewObserver?.({
+        senderId: event.sender.id,
+        draft: result.draft,
+        argsBytes: result.argsBytes,
+        blobBytes: result.blobBytes
+      })
+      return
+    }
+
     // Generic path: defensively measure size and swallow anything
     // unserialisable so the shell cannot be crashed from inside the cage.
     let json = ''
@@ -182,6 +207,13 @@ export type PublishObserver = (req: {
 let publishObserver: PublishObserver | null = null
 export function setPublishObserver(fn: PublishObserver | null): void {
   publishObserver = fn
+}
+
+/** Observer for emit("draft") — the live-preview path. Same payload shape as
+ *  publish; with no observer installed the draft is dropped here. */
+let previewObserver: PublishObserver | null = null
+export function setPreviewObserver(fn: PublishObserver | null): void {
+  previewObserver = fn
 }
 
 /** Receipt side of `emit("publish", …)`: validate the draft shape, enforce the

@@ -23,3 +23,9 @@ the program — switches to Edit mode: input + Save. Saving emits a `publish`
 request; approve it in the shell's dialog and a new instance — same program,
 `args: {name}` — appears in your feed. In-progress edits survive toggling back
 and forth: both modes stay mounted while the thing is open.
+
+While editing, the program streams its working state with
+`bridge.emit('draft', {type, args})` (same shape as `publish`; grants
+nothing). The shell renders it live: switch to View and you see the draft in
+its final form — the same program mounted in view mode with the draft's args —
+under a "PREVIEW — unpublished draft" badge instead of "✓ signed".

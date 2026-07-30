@@ -230,6 +230,31 @@ async function waitReady(app: ElectronApplication, timeoutMs = 15_000): Promise<
   }
 }
 
+/** Dismiss the first-run safety notice like a real user. It is a REAL modal:
+ *  while it is open the cage views are hidden beneath the chrome, so a spec
+ *  that never acks it sees permanently invisible cages. With the hermetic
+ *  profile (userData under SHELL_USER_DATA_DIR) the notice appears on every
+ *  fresh launch; a relaunch against a persisted dir has it acked already. */
+async function ackSafetyNotice(app: ElectronApplication, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const state = await app.evaluate(async (electron) => {
+      const wc = electron.webContents
+        .getAllWebContents()
+        .find((w) => !w.isDestroyed() && w.getURL().includes('shell/chrome'))
+      if (!wc) return 'no-chrome'
+      return wc.executeJavaScript(`(() => {
+        const b = document.querySelector('[data-testid=safety-ack]')
+        if (b) { b.click(); return 'clicked' }
+        return localStorage.getItem('sh-safety-ack') === '1' ? 'acked' : 'pending'
+      })()`) as Promise<string>
+    })
+    if (state === 'clicked' || state === 'acked') return
+    if (Date.now() > deadline) throw new Error(`safety notice never appeared (state: ${state})`)
+    await new Promise((r) => setTimeout(r, 100))
+  }
+}
+
 export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellHandle> {
   const userDataDir = mkdtempSync(join(tmpdir(), 'shell-userdata-'))
   const env: Record<string, string> = { ...process.env } as Record<string, string>
@@ -242,6 +267,7 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
 
   const app = await _electron.launch({ args: [SHELL_MAIN], env })
   await waitReady(app)
+  await ackSafetyNotice(app)
 
   return {
     app,

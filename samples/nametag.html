@@ -49,6 +49,12 @@
       row.append(label, input, save);
       var note = el('div'); note.className = 'note'; note.id = 'note';
       app.append(row, note);
+      // Live preview: stream the working state on the "draft" channel. It
+      // grants nothing — the shell just re-renders this same program in view
+      // mode with these args, so the preview IS the would-be published form.
+      input.addEventListener('input', function () {
+        window.bridge.emit('draft', { type: 'nametag', args: { name: input.value.trim() } });
+      });
       save.addEventListener('click', function () {
         var typed = input.value.trim();
         if (!typed) { note.textContent = 'Type a name first.'; return; }

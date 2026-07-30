@@ -19,7 +19,12 @@ test.afterAll(async () => {
   await shell?.close()
 })
 
-type ModeState = { activeMode: 'view' | 'edit'; viewWcId: number | null; editWcId: number | null } | null
+type ModeState = {
+  activeMode: 'view' | 'edit'
+  viewWcId: number | null
+  editWcId: number | null
+  previewWcId: number | null
+} | null
 
 const modeState = (): Promise<ModeState> =>
   shell.app.evaluate(
@@ -29,11 +34,11 @@ const modeState = (): Promise<ModeState> =>
 
 // Run in a specific cage of the open thing (two `thing:` webContents can
 // exist — one per mode — so URL-matching is ambiguous; target by wcId).
-async function thingEval<T>(js: string, which: 'view' | 'edit' = 'view'): Promise<T> {
+async function thingEval<T>(js: string, which: 'view' | 'edit' | 'preview' = 'view'): Promise<T> {
   return shell.app.evaluate(
     async (electron, a) => {
       const s = (electron.app as unknown as { __shell: { modeState: () => ModeState } }).__shell.modeState()
-      const id = a.which === 'edit' ? s?.editWcId : s?.viewWcId
+      const id = a.which === 'edit' ? s?.editWcId : a.which === 'preview' ? s?.previewWcId : s?.viewWcId
       if (id == null) throw new Error(`no ${a.which} cage`)
       const wc = electron.webContents.fromId(id)
       if (!wc || wc.isDestroyed()) throw new Error('cage wc gone')
@@ -236,6 +241,71 @@ test('edit mode re-publishes with a changed name', async () => {
   await openViaChrome(third!.envelopeHash)
   const display = await poll(() => displayText('view'), (t) => t !== null && t !== '—')
   expect(display).toBe('Joan Bloggs')
+})
+
+test('live preview: view mode shows the unpublished draft in final form', async () => {
+  await openViaChrome(blankHash)
+  await switchMode('edit')
+  await poll(() => thingEval<boolean>(`!!document.getElementById('name')`, 'edit'), (v) => v)
+
+  // Type through the page's own input event — the program streams its
+  // working state on the "draft" channel as you type.
+  await thingEval(
+    `
+    var i = document.getElementById('name');
+    i.value = 'Previewed';
+    i.dispatchEvent(new Event('input'));
+  `,
+    'edit'
+  )
+  await poll(modeState, (s) => s?.previewWcId != null)
+
+  // View mode now shows the DRAFT rendered in final form...
+  await switchMode('view')
+  const previewText = await poll(
+    () => thingEval<string | null>(`document.getElementById('display')?.textContent ?? null`, 'preview'),
+    (t) => t !== null
+  )
+  expect(previewText).toBe('Previewed')
+  // ...while the signed instance underneath is untouched (blank placeholder).
+  expect(await thingEval<string | null>(`document.getElementById('display')?.textContent ?? null`, 'view')).toBe('—')
+
+  // The preview cage is the visible one; the signed view stays hidden.
+  const vis = await shell.app.evaluate(async (electron) => {
+    const s = (electron.app as unknown as { __shell: { modeState: () => ModeState } }).__shell.modeState()
+    const win = electron.BaseWindow.getAllWindows()[0]!
+    const visOf = (id: number | null | undefined): boolean | null => {
+      if (id == null) return null
+      const v = win.contentView.children.find((c) => (c as Electron.WebContentsView).webContents?.id === id)
+      return v ? v.getVisible() : null
+    }
+    return { view: visOf(s?.viewWcId), preview: visOf(s?.previewWcId) } as never
+  }) as { view: boolean | null; preview: boolean | null }
+  expect(vis).toEqual({ view: false, preview: true })
+
+  // The trust badge must not sit above unsigned draft content: chrome swaps
+  // "✓ signed" for the preview badge.
+  const badges = await chromeEval<{ preview: string; trust: string }>(`({
+    preview: document.querySelector('[data-testid=preview-badge]').style.display,
+    trust: document.querySelector('[data-trust=verified]').style.display
+  })`)
+  expect(badges.preview).toBe('')
+  expect(badges.trust).toBe('none')
+
+  // Further edits keep streaming — even while view mode is showing: the edit
+  // cage is alive underneath and its drafts remount the preview.
+  await thingEval(
+    `
+    var i = document.getElementById('name');
+    i.value = 'Previewed Again';
+    i.dispatchEvent(new Event('input'));
+  `,
+    'edit'
+  )
+  await poll(
+    () => thingEval<string | null>(`document.getElementById('display')?.textContent ?? null`, 'preview'),
+    (t) => t === 'Previewed Again'
+  )
 })
 
 test('in-progress edits survive toggling between view and edit', async () => {

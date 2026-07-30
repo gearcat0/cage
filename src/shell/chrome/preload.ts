@@ -24,9 +24,10 @@ const shell = {
   close: (): Promise<void> => ipcRenderer.invoke('shell:close'),
   /** Switch the open thing's view/edit mode; main answers the applied mode. */
   setMode: (mode: 'view' | 'edit'): Promise<'view' | 'edit'> => ipcRenderer.invoke('shell:set-mode', mode),
-  /** Main pushes the authoritative mode (set on open and on every switch). */
-  onModeChanged: (cb: (mode: 'view' | 'edit') => void): void => {
-    ipcRenderer.on('shell:mode-changed', (_e, p: { mode: 'view' | 'edit' }) => cb(p.mode))
+  /** Main pushes the authoritative mode + whether an unpublished-draft preview
+   *  is mounted (set on open, on every switch, and when the preview changes). */
+  onModeChanged: (cb: (p: { mode: 'view' | 'edit'; preview: boolean }) => void): void => {
+    ipcRenderer.on('shell:mode-changed', (_e, p: { mode: 'view' | 'edit'; preview: boolean }) => cb(p))
   },
   /** Copy a thing: a new instance, same program/args, signed by this identity. */
   copyThing: (envelopeHash: string): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:copy', envelopeHash),

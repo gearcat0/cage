@@ -20,7 +20,7 @@ interface ShellApi {
   open(envelopeHash: string): Promise<HeaderFacts>
   close(): Promise<void>
   setMode(mode: 'view' | 'edit'): Promise<'view' | 'edit'>
-  onModeChanged(cb: (mode: 'view' | 'edit') => void): void
+  onModeChanged(cb: (p: { mode: 'view' | 'edit'; preview: boolean }) => void): void
   copyThing(envelopeHash: string): Promise<Record<string, unknown>>
   deleteThing(envelopeHash: string): Promise<{ deleted: boolean }>
   overlay(delta: 1 | -1): void
@@ -343,6 +343,7 @@ function safetyModal(keyStorage: 'os' | 'software'): void {
   )
   const footer = el('div', 'evm-modal-footer')
   const ok = el('button', 'evm-btn evm-btn--primary', 'I understand')
+  ok.setAttribute('data-testid', 'safety-ack')
   ok.addEventListener('click', () => {
     try {
       localStorage.setItem('sh-safety-ack', '1')
@@ -419,11 +420,19 @@ async function refreshFeed(): Promise<void> {
 // Main is the source of truth: it pushes shell:mode-changed on open and on
 // every switch, so this local state is only a render cache.
 let currentMode: 'view' | 'edit' = 'view'
+let previewActive = false
 let modeButtons: { view: HTMLElement; edit: HTMLElement } | null = null
+let trustBadge: HTMLElement | null = null
+let previewBadge: HTMLElement | null = null
 
 function styleModeButtons(): void {
   modeButtons?.view.classList.toggle('sh-mode-btn--active', currentMode === 'view')
   modeButtons?.edit.classList.toggle('sh-mode-btn--active', currentMode === 'edit')
+  // The trust badge must NEVER sit above unsigned draft content: when view
+  // mode is showing the draft preview, swap "✓ signed" for the preview badge.
+  const showingPreview = previewActive && currentMode === 'view'
+  if (trustBadge) trustBadge.style.display = showingPreview ? 'none' : ''
+  if (previewBadge) previewBadge.style.display = showingPreview ? '' : 'none'
 }
 
 function renderModeToggle(): HTMLElement {
@@ -447,6 +456,8 @@ function renderHeader(h: HeaderFacts | null): void {
   thingHeader.replaceChildren()
   if (!h) {
     modeButtons = null
+    trustBadge = null
+    previewBadge = null
     thingHeader.append(el('span', 'sh-hint', 'Select a thing from the feed.'))
     return
   }
@@ -455,6 +466,12 @@ function renderHeader(h: HeaderFacts | null): void {
   // this is the trust signal the thing must never be able to forge.
   const badge = el('span', 'evm-badge evm-badge--success sh-verified', '✓ signed')
   badge.setAttribute('data-trust', 'verified')
+  trustBadge = badge
+  // Hidden until view mode shows an unpublished-draft preview (see
+  // styleModeButtons) — then it REPLACES the trust badge.
+  previewBadge = el('span', 'evm-badge evm-badge--warning', 'PREVIEW — unpublished draft')
+  previewBadge.setAttribute('data-testid', 'preview-badge')
+  previewBadge.style.display = 'none'
   // Author identity: a VERIFIED name (confirmed to map to the author key) is
   // shown as a name; otherwise the raw key, marked unverified. The name lives in
   // chrome pixels the thing cannot reach.
@@ -484,6 +501,7 @@ function renderHeader(h: HeaderFacts | null): void {
   delBtn.addEventListener('click', () => void deleteWithConfirm(h.envelopeHash, h.type))
   thingHeader.append(
     badge,
+    previewBadge,
     el('span', 'sh-by', 'by'),
     authorEl,
     typeBadge,
@@ -545,8 +563,9 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 shell.onFeedChanged(() => void refreshFeed())
-shell.onModeChanged((m) => {
-  currentMode = m
+shell.onModeChanged((p) => {
+  currentMode = p.mode
+  previewActive = p.preview
   styleModeButtons()
 })
 shell.onPublishResult((o) => {
