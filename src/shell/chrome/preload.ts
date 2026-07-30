@@ -22,6 +22,29 @@ const shell = {
   }): Promise<{ outcome: Record<string, unknown>; path: string | null }> => ipcRenderer.invoke('shell:compose', input),
   open: (envelopeHash: string): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:open', envelopeHash),
   close: (): Promise<void> => ipcRenderer.invoke('shell:close'),
+  /** Switch the open thing's view/edit mode; main answers the applied mode. */
+  setMode: (mode: 'view' | 'edit'): Promise<'view' | 'edit'> => ipcRenderer.invoke('shell:set-mode', mode),
+  /** Main pushes the authoritative mode, whether an unpublished-draft preview
+   *  is mounted, and whether a draft exists to publish (set on open, on every
+   *  switch, and whenever the draft/preview state changes). */
+  onModeChanged: (cb: (p: { mode: 'view' | 'edit'; preview: boolean; publishable: boolean }) => void): void => {
+    ipcRenderer.on(
+      'shell:mode-changed',
+      (_e, p: { mode: 'view' | 'edit'; preview: boolean; publishable: boolean }) => cb(p)
+    )
+  },
+  /** Raise the publish confirm for the open thing's LATEST streamed draft —
+   *  exactly what the preview shows. The human decides in the confirm modal. */
+  publishDraft: (): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:publish'),
+  /** Copy a thing: a new instance, same program/args, signed by this identity. */
+  copyThing: (envelopeHash: string): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:copy', envelopeHash),
+  /** Delete a thing from the library (index row + blob GC + seed removal). */
+  deleteThing: (envelopeHash: string): Promise<{ deleted: boolean }> => ipcRenderer.invoke('shell:delete', envelopeHash),
+  /** Announce a chrome modal overlay opening (+1) / closing (-1) so main can
+   *  hide the cage views, which would otherwise overpaint the modal. */
+  overlay: (delta: 1 | -1): void => {
+    ipcRenderer.send('shell:overlay', delta)
+  },
   /** Main pushes this after the feed changes (e.g. an ingest). */
   onFeedChanged: (cb: () => void): void => {
     ipcRenderer.on('shell:feed-changed', () => cb())
@@ -32,6 +55,10 @@ const shell = {
   },
   respondConfirm: (id: number, approved: boolean): void => {
     ipcRenderer.send('shell:confirm-response', id, approved)
+  },
+  /** Main pushes the outcome of an approved publish (admission summary). */
+  onPublishResult: (cb: (outcome: Record<string, unknown>) => void): void => {
+    ipcRenderer.on('shell:publish-result', (_e, outcome) => cb(outcome))
   }
 }
 

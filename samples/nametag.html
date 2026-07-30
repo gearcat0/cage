@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>name tag</title>
+<style>
+  body { margin: 0; font: 16px/1.5 system-ui, sans-serif; background: #f5f0e6; color: #222;
+         display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  .tag { background: #fff; border: 2px solid #c0392b; border-radius: 10px; padding: 28px 36px;
+         box-shadow: 0 4px 14px rgba(0, 0, 0, .15); text-align: center; }
+  .tag h1 { margin: 0 0 12px; font-size: 14px; letter-spacing: .2em; text-transform: uppercase; color: #c0392b; }
+  .row { display: flex; gap: 8px; align-items: baseline; justify-content: center; }
+  label { font-weight: 600; }
+  input { font: inherit; padding: 4px 8px; border: 1px solid #bbb; border-radius: 4px; }
+  button { font: inherit; padding: 5px 14px; border: 0; border-radius: 4px;
+           background: #c0392b; color: #fff; cursor: pointer; }
+  #display { font-size: 28px; font-weight: 700; }
+  .note { margin-top: 10px; font-size: 12px; color: #777; }
+</style>
+</head>
+<body>
+  <div class="tag">
+    <h1>Hello, my name is</h1>
+    <div id="app"></div>
+  </div>
+  <script>
+    'use strict';
+    // The convention this sample demonstrates: the PROGRAM supplies its own
+    // composition UI, and the SHELL decides which mode to render (a.mode) —
+    // the switching control lives in trusted chrome, not in this page. State
+    // is passed in as an argument, never fetched.
+    var a = window.bridge.getArgs() || {};
+    var args = (a && typeof a.args === 'object' && a.args !== null) ? a.args : {};
+    var name = (typeof args.name === 'string' && args.name.length > 0) ? args.name : '';
+    var app = document.getElementById('app');
+
+    function el(tag, text) {
+      var e = document.createElement(tag);
+      if (text !== undefined) e.textContent = text;
+      return e;
+    }
+
+    function editMode() {
+      app.replaceChildren();
+      var row = el('div'); row.className = 'row';
+      var label = el('label', 'Name:');
+      var input = el('input'); input.id = 'name'; input.value = name;
+      row.append(label, input);
+      var note = el('div', 'Preview in View — publish from the shell header when you’re ready.');
+      note.className = 'note'; note.id = 'note';
+      app.append(row, note);
+      // The whole edit contract: stream the working state on the "draft"
+      // channel. It grants nothing — the shell renders this same program in
+      // view mode with these args as the live preview, and its Publish button
+      // signs EXACTLY the latest draft. No Save button here: all controls
+      // (mode, publish) live in the shell's trusted chrome.
+      function streamDraft() {
+        window.bridge.emit('draft', { type: 'nametag', args: { name: input.value.trim() } });
+      }
+      input.addEventListener('input', streamDraft);
+      streamDraft(); // initial state, so the shell's Publish enables immediately
+      input.focus();
+    }
+
+    function viewMode() {
+      app.replaceChildren();
+      var row = el('div'); row.className = 'row';
+      var display = el('span', name || '—'); display.id = 'display';
+      row.append(el('label', 'Name:'), display);
+      app.append(row);
+    }
+
+    if (a.mode === 'edit') editMode(); else viewMode();
+  </script>
+</body>
+</html>

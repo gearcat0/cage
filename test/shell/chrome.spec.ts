@@ -97,9 +97,10 @@ test('a thing cannot forge or overpaint the chrome trust badge (N6)', async () =
   expect(caps.chrome!.magenta).toBe(0)
 })
 
-test('a thing\'s publish request is surfaced for a human decision, not auto-granted', async () => {
-  // A thing that asks to publish on load. The bridge grants nothing; the shell
-  // surfaces the request to chrome, where the human decides.
+test('a thing cannot initiate a publish — emit("publish") is retired', async () => {
+  // Publish is SHELL-owned: the chrome button signs the latest streamed draft
+  // after a human confirms. A thing emitting the retired publish channel must
+  // raise NO confirm dialog and be rejected at the bridge.
   const program = `<!doctype html><html><body><script>
     window.bridge.emit('publish', { type: 'event', args: { title: 'bbq' } });
   <\/script></body></html>`
@@ -111,11 +112,16 @@ test('a thing\'s publish request is surfaced for a human decision, not auto-gran
   await shell.openThing(r.envelopeHash as string) // mounts + the thing emits publish
   await new Promise((res) => setTimeout(res, 800))
 
-  const lastConfirm = (await shell.app.evaluate(async (electron) => {
-    const s = (electron.app as unknown as { __shell: { lastConfirm: unknown } }).__shell
-    return s.lastConfirm as never
-  })) as { kind: string; summary: { type: string } } | null
-  expect(lastConfirm).toBeTruthy()
-  expect(lastConfirm!.kind).toBe('publish')
-  expect(lastConfirm!.summary.type).toBe('event')
+  const state = (await shell.app.evaluate(async (electron) => {
+    const a = electron.app as unknown as {
+      __shell: { lastConfirm: unknown }
+      __cage?: { events: { type: string; reason?: string }[] }
+    }
+    return {
+      lastConfirm: a.__shell.lastConfirm,
+      rejected: a.__cage?.events.some((e) => e.type === 'emit-rejected' && /retired/.test(e.reason ?? '')) ?? false
+    } as never
+  })) as { lastConfirm: unknown; rejected: boolean }
+  expect(state.lastConfirm).toBeNull()
+  expect(state.rejected).toBe(true)
 })

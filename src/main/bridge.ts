@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { cage as cageGlobals, record, recordTestEmit } from './events.js'
 import { attachmentUrl } from './protocol.js'
 import type { AttachmentTable } from './store.js'
-import { DEFAULT_DRAFT_CAPS, validateDraft, type DraftCaps } from './draft.js'
+import { DEFAULT_DRAFT_CAPS, validateDraft, type Draft, type DraftCaps } from './draft.js'
 
 // ── The bridge (shell side) ──────────────────────────────────────────────────
 // The trusted half of the four-method bridge. Every method either hands the
@@ -22,6 +22,8 @@ import { DEFAULT_DRAFT_CAPS, validateDraft, type DraftCaps } from './draft.js'
  *     chrome's exclusive job; a thing that draws "signed by alice.eth" can lie
  *   - `prog` — the thing IS the program
  *   - attachment hashes — things address blobs by NAME via getBlob() */
+export type ThingMode = 'view' | 'edit'
+
 export interface ThingArgs {
   /** manifest.type — a display hint only (spec §4: MUST NOT be trusted). */
   type: string
@@ -29,6 +31,10 @@ export interface ThingArgs {
   args: unknown
   /** Names + metadata of the attachments that travelled with the thing. */
   attachments: AttInfo[]
+  /** Shell-chosen render mode. A render directive, not authority: programs
+   *  that ignore it render identically in both modes; the shell owns the
+   *  switching control, in chrome pixels the thing cannot reach. */
+  mode: ThingMode
 }
 
 export interface AttInfo {
@@ -122,16 +128,58 @@ export function installBridge(): void {
 
   // emit(channel, data): a request that grants nothing. Fire-and-forget — the
   // thing cannot observe whether a human confirmed anything.
-  ipcMain.on('cage:emit', (_event, channel: unknown, data: unknown) => {
+  ipcMain.on('cage:emit', (event, channel: unknown, data: unknown) => {
     if (typeof channel !== 'string') {
       record({ type: 'emit-rejected', reason: 'channel not a string' })
       return
     }
 
-    // The publish path carries binary blobs, so it gets its own validation and
-    // caps (per-blob AND total — see draft.ts) instead of the JSON measure.
+    // RETIRED: programs no longer request publishes. The shell owns publish —
+    // it signs the LATEST DRAFT (what the preview shows) when the human clicks
+    // Publish in trusted chrome. Rejected here explicitly (the generic path
+    // below would try to JSON-stringify blob bytes).
     if (channel === 'publish') {
-      handlePublish(data, draftCaps)
+      record({ type: 'emit-rejected', reason: 'publish channel retired — the shell publishes your latest draft' })
+      return
+    }
+
+    // The draft channel: a program streams its working state {type, args,
+    // blobs} here. It grants NOTHING — no confirm, no signing, nothing
+    // persisted. The shell uses it for the live preview and as the payload a
+    // human may later choose to publish from chrome. Carries binary blobs, so
+    // it gets its own validation and caps (per-blob AND total — see draft.ts)
+    // instead of the JSON measure. Metadata only is retained here, in a
+    // bounded ring (P0-3: a thing can stream valid drafts in a loop); the full
+    // draft goes to the observer, which owns bounding it — with no observer
+    // installed (the bare cage harness), the bytes are dropped right here.
+    if (channel === 'draft') {
+      const result = validateDraft(data, draftCaps)
+      if (!result.ok) {
+        record({ type: 'emit-rejected', reason: result.reason })
+        return
+      }
+      cageGlobals.drafts.push({
+        type: result.draft.type,
+        att: result.draft.att,
+        argsBytes: result.argsBytes,
+        blobBytes: result.blobBytes
+      })
+      if (cageGlobals.drafts.length > MAX_RETAINED_DRAFTS) {
+        cageGlobals.drafts.splice(0, cageGlobals.drafts.length - MAX_RETAINED_DRAFTS)
+      }
+      record({
+        type: 'draft-recorded',
+        draftType: result.draft.type,
+        att: result.draft.att,
+        argsBytes: result.argsBytes,
+        blobBytes: result.blobBytes
+      })
+      draftObserver?.({
+        senderId: event.sender.id,
+        draft: result.draft,
+        argsBytes: result.argsBytes,
+        blobBytes: result.blobBytes
+      })
       return
     }
 
@@ -159,61 +207,22 @@ export function installBridge(): void {
   })
 }
 
-/** An optional observer the shell installs to drive the human-confirmation flow:
- *  a thing's publish REQUEST is surfaced in trusted chrome and decided there,
- *  never auto-granted. The bridge still grants nothing itself. */
-export type PublishObserver = (draft: {
-  type: string
-  att: Record<string, { h: string; m: string; n: number }>
+/** An optional observer the shell installs on the draft stream. The bridge
+ *  grants nothing and retains no bytes — the observer receives the full
+ *  validated draft (blob bytes included) and owns its bounding and lifetime
+ *  from there (live preview; the payload a human may later publish). */
+export type DraftObserver = (req: {
+  /** webContents id of the emitting cage — lets the shell match the draft
+   *  to the thing it mounted there. */
+  senderId: number
+  draft: Draft
   argsBytes: number
   blobBytes: number
 }) => void
 
-let publishObserver: PublishObserver | null = null
-export function setPublishObserver(fn: PublishObserver | null): void {
-  publishObserver = fn
-}
-
-/** Receipt side of `emit("publish", …)`: validate the draft shape, enforce the
- *  caps, hash inline blobs into an attachment table, and record the draft.
- *  Nothing is granted: signing, sealing, and the review/confirm UI are later
- *  phases; the thing never learns whether anything was accepted. */
-function handlePublish(data: unknown, caps: DraftCaps): void {
-  const result = validateDraft(data, caps)
-  if (!result.ok) {
-    record({ type: 'emit-rejected', reason: result.reason })
-    return
-  }
-  // Retain METADATA ONLY, in a bounded ring — never the raw blob bytes (P0-3
-  // discipline for the draft path). A thing can send valid drafts in a loop,
-  // each up to the total-blob cap; holding every draft's bytes forever would be
-  // an unbounded memory sink. The attachment table (name → hash/mime/size) is
-  // enough for phase 2; the inline bytes are dropped here.
-  // LATER: the real persist/sign flow writes the bytes to an on-disk drafts
-  // area (not memory) and hands the draft to the review UI.
-  cageGlobals.drafts.push({
-    type: result.draft.type,
-    att: result.draft.att,
-    argsBytes: result.argsBytes,
-    blobBytes: result.blobBytes
-  })
-  if (cageGlobals.drafts.length > MAX_RETAINED_DRAFTS) {
-    cageGlobals.drafts.splice(0, cageGlobals.drafts.length - MAX_RETAINED_DRAFTS)
-  }
-  record({
-    type: 'draft-recorded',
-    draftType: result.draft.type,
-    att: result.draft.att,
-    argsBytes: result.argsBytes,
-    blobBytes: result.blobBytes
-  })
-  // Surface the request to the shell's confirm flow (decided in chrome).
-  publishObserver?.({
-    type: result.draft.type,
-    att: result.draft.att,
-    argsBytes: result.argsBytes,
-    blobBytes: result.blobBytes
-  })
+let draftObserver: DraftObserver | null = null
+export function setDraftObserver(fn: DraftObserver | null): void {
+  draftObserver = fn
 }
 
 /** Bind a cage's bridge data at mount time. */

@@ -1,26 +1,34 @@
-import { app, BaseWindow, WebContentsView, ipcMain, protocol, session, dialog } from 'electron'
+import { app, BaseWindow, WebContentsView, ipcMain, protocol, session, dialog, webContents } from 'electron'
 import { join } from 'node:path'
 import { appendFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { AdmissionService } from './admission/index.js'
 import { Keyring } from './keyring/index.js'
-import { Library, type ThingRow } from './library/index.js'
+import { Library, type StoredThing, type ThingRow } from './library/index.js'
 import { mountThing, type MountedThing } from './mount/index.js'
 import { TransportService, FileTransport, SeedTransport, WebtorrentTransport } from './transport/index.js'
 import { NamingService, DirectResolver, EnsResolver, NostrResolver, type EnsClient } from './naming/index.js'
 import { createMockEnsClient } from './naming/mock-ens.js'
 import { createViemEnsClient } from './naming/ens-viem.js'
-import { CasStore } from '../main/store.js'
-import { installBridge, setPublishObserver } from '../main/bridge.js'
+import { CasStore, EphemeralStore } from '../main/store.js'
+import { installBridge, setDraftObserver, type ThingMode } from '../main/bridge.js'
+import { cage as cageGlobals } from '../main/events.js'
+import type { Draft } from '../main/draft.js'
 import {
   admitBundle,
   buildBundle,
   encodeEnvelope,
   encodeManifest,
+  fromHex,
   hash,
+  jsToCbor,
+  parseBundle,
+  toHex,
   DEFAULT_BUNDLE_LIMITS,
   type AdmissionResult,
+  type Attachment,
   type BundleLimits,
+  type CborValue,
   type Manifest
 } from '../format/index.js'
 
@@ -54,6 +62,23 @@ protocol.registerSchemesAsPrivileged([
 ])
 app.commandLine.appendSwitch('force-webrtc-ip-handling-policy', 'disable_non_proxied_udp')
 app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns')
+
+// Hermetic profile: when SHELL_USER_DATA_DIR is set (tests, alternate
+// profiles), move Electron's OWN userData there too. Otherwise the default
+// session's storage (e.g. the chrome's safety-ack localStorage) lands in the
+// shared ~/.config profile and leaks state between every run on the machine —
+// which made test outcomes depend on whether a human had ever clicked
+// "I understand" in some unrelated session.
+if (process.env.SHELL_USER_DATA_DIR) app.setPath('userData', process.env.SHELL_USER_DATA_DIR)
+
+// Display scale. Ctrl+/- zoom is per-webContents, so it scales the trusted
+// chrome and the cage content independently and can never resize the app as a
+// whole; forcing the DEVICE scale factor scales every view uniformly while all
+// bounds math stays in DIP (chrome strip and cage rect keep their alignment).
+// Linux defaults to 2x (no usable systemwide HiDPI signal there); SHELL_SCALE
+// overrides on any platform.
+const SCALE = process.env.SHELL_SCALE ?? (process.platform === 'linux' ? '2' : null)
+if (SCALE) app.commandLine.appendSwitch('force-device-scale-factor', SCALE)
 
 function hex(bytes: Uint8Array): string {
   let s = ''
@@ -157,10 +182,30 @@ interface ShellSurface {
   /** TEST: does the seed store hold this bundle tar-hash? */
   seedHas?: (hashHex: string) => boolean
   lastConfirm?: { id: number; kind: string; summary: Record<string, unknown> } | null
+  /** TEST: outcome of the most recent decided publish ({status:'denied'} on deny). */
+  lastPublish?: Record<string, unknown> | null
+  /** Switch the open thing's mode (same path as the chrome toggle). */
+  setMode?: (mode: 'view' | 'edit') => Promise<'view' | 'edit'>
+  /** TEST: active mode + the wcIds of the cages, for spec targeting. */
+  modeState?: () => {
+    activeMode: 'view' | 'edit'
+    viewWcId: number | null
+    editWcId: number | null
+    previewWcId: number | null
+  } | null
+  /** Raise the publish confirm for the open thing's latest draft. */
+  publishDraft?: () => Record<string, unknown>
+  /** Copy a thing (new instance, same program/type/args/attachments, your key). */
+  copyThing?: (envelopeHash: string) => Promise<Record<string, unknown>>
+  /** Delete a thing from the library (+ blob GC + seed removal). */
+  deleteThing?: (envelopeHash: string) => Record<string, unknown>
 }
 
-const shell: ShellSurface = { ready: false, lastConfirm: null }
+const shell: ShellSurface = { ready: false, lastConfirm: null, lastPublish: null }
 ;(app as unknown as { __shell: ShellSurface }).__shell = shell
+// The bridge/cage event log, readable from OUTSIDE the renderer via
+// `evaluate(({ app }) => app.__cage)` — same surface the cage harness exposes.
+;(app as unknown as { __cage: typeof cageGlobals }).__cage = cageGlobals
 
 // Optional file-based startup tracing (SHELL_DEBUG_FILE) — off by default. Kept
 // because a hang in whenReady is otherwise invisible under a headless launcher.
@@ -237,25 +282,153 @@ app.whenReady().then(async () => {
   })
   win.contentView.addChildView(chrome)
 
-  let mounted: MountedThing | null = null
+  // ── The open thing: up to TWO cages, one per mode ──────────────────────────
+  // The shell owns view/edit switching; the program renders whichever mode it
+  // is told via getArgs().mode. Both cages stay alive while the thing is open
+  // (only one visible) so in-progress edit state survives toggling — cages are
+  // ephemeral by design, so a remount would wipe the form. The edit cage
+  // mounts lazily on first switch. wcIds is recorded at BIND time (before the
+  // program loads — a thing can emit publish during its own load, well before
+  // mountThing resolves) so an emit from either cage is confirmable.
+  interface OpenThing {
+    stored: StoredThing
+    envelopeHash: string
+    /** Header facts (+ verified name) cached for same-hash reopen. */
+    header: Record<string, unknown>
+    view: MountedThing | null // null only while the initial mount is in flight
+    edit: MountedThing | null // lazily mounted on first switch to edit
+    editMounting: Promise<MountedThing> | null
+    /** Live preview of the UNPUBLISHED draft: the same program mounted in view
+     *  mode with the args the edit cage last emitted on the "draft" channel.
+     *  Shown in place of the signed view while it exists — under a chrome
+     *  badge that says so, never under "✓ signed". */
+    preview: MountedThing | null
+    previewMounting: boolean
+    pendingDraft: Draft | null
+    draftTimer: ReturnType<typeof setTimeout> | null
+    /** The edit cage's wcId, recorded at BIND time — drafts are accepted from
+     *  it even while it is still loading (programs emit an initial draft). */
+    editWcId: number | null
+    /** The most recent draft the edit cage streamed — what the preview shows,
+     *  and EXACTLY what the chrome Publish button signs on approval. */
+    latestDraft: Draft | null
+    latestDraftMeta: { argsBytes: number; blobBytes: number } | null
+    /** Identity key of the currently mounted preview (dedupe: identical
+     *  drafts must not remount — that is visible flicker). */
+    lastPreviewKey: string | null
+    activeMode: ThingMode
+    wcIds: Set<number>
+  }
+  let current: OpenThing | null = null
+
+  function destroyCurrent(): void {
+    if (!current) return
+    const o = current
+    current = null
+    if (o.draftTimer) clearTimeout(o.draftTimer)
+    o.view?.destroy()
+    o.edit?.destroy()
+    o.preview?.destroy()
+    // An edit mount still in flight is destroyed when it lands.
+    if (o.editMounting) void o.editMounting.then((m) => m.destroy()).catch(() => {})
+  }
+
+  /** Focus invariant: no HIDDEN cage may hold the keyboard. Focus lands on
+   *  freshly attached views at platform-dependent moments (during load on
+   *  some platforms, after it on others), so this is enforced from events +
+   *  settle points rather than sequenced once. Chrome focus is never touched.
+   */
+  function enforceCageFocus(): void {
+    const o = current
+    if (!o) return
+    const focused = webContents.getFocusedWebContents()
+    if (!focused || !o.wcIds.has(focused.id)) return // chrome or unrelated — leave alone
+    const active = o.activeMode === 'edit' ? o.edit : (o.preview ?? o.view)
+    if (!active || active.view.webContents.isDestroyed()) return
+    if (active.view.webContents.id === focused.id) return
+    active.view.webContents.focus()
+  }
+
+  /** Watch a cage's webContents from BIND time (before its load): any focus
+   *  it gains while not the active cage bounces to the active one. */
+  function guardCageFocus(wcId: number): void {
+    const wc = webContents.fromId(wcId)
+    // setImmediate: let the focus transition settle before inspecting it.
+    wc?.on('focus', () => setImmediate(enforceCageFocus))
+  }
+
+  function applyVisibility(): void {
+    if (!current) return
+    // While a publish confirm is pending OR the chrome has a modal overlay
+    // open (compose, delete confirm, safety notice), hide BOTH cages: modals
+    // live in chrome pixels, and the cage views are native siblings composited
+    // ABOVE the chrome — they would overpaint the modal, leaving the user a
+    // dimmed, unclickable shell with no visible prompt.
+    const occluded = pendingConfirms.size > 0 || chromeOverlays > 0
+    const showPreview = current.activeMode === 'view' && current.preview !== null
+    current.view?.view.setVisible(!occluded && current.activeMode === 'view' && !showPreview)
+    current.preview?.view.setVisible(!occluded && showPreview)
+    current.edit?.view.setVisible(!occluded && current.activeMode === 'edit')
+  }
+
+  // Chrome-side modal overlays announce themselves so the cages can yield.
+  let chromeOverlays = 0
+  ipcMain.on('shell:overlay', (_e, delta: unknown) => {
+    if (delta !== 1 && delta !== -1) return
+    chromeOverlays = Math.max(0, chromeOverlays + delta)
+    applyVisibility()
+  })
+
+  // ── Lockstep zoom (Ctrl +/−/0) ─────────────────────────────────────────────
+  // Per-webContents zoom would scale the chrome and the cage content
+  // independently (the original complaint) — so zoom is a single app-level
+  // state applied to BOTH views, and the native layout follows: the chrome's
+  // CSS pixels grow with its zoom factor, so the cage rect must scale by the
+  // same factor to stay aligned with the feed/header the chrome draws.
+  let zoomLevel = 0
+  const zoomFactor = (): number => Math.pow(1.2, zoomLevel)
 
   function cageRect(): Electron.Rectangle {
     const { width, height } = win.getContentBounds()
-    return { x: FEED_WIDTH, y: TOP_BAR + THING_HEADER, width: width - FEED_WIDTH, height: height - TOP_BAR - THING_HEADER }
+    const z = zoomFactor()
+    const x = Math.round(FEED_WIDTH * z)
+    const y = Math.round((TOP_BAR + THING_HEADER) * z)
+    return { x, y, width: width - x, height: height - y }
   }
   function layout(): void {
     const { width, height } = win.getContentBounds()
     chrome.setBounds({ x: 0, y: 0, width, height })
-    if (mounted) mounted.view.setBounds(cageRect())
+    // ALL cages get bounds — hidden ones must be right-sized when revealed.
+    const rect = cageRect()
+    current?.view?.view.setBounds(rect)
+    current?.edit?.view.setBounds(rect)
+    current?.preview?.view.setBounds(rect)
   }
   win.on('resize', layout)
 
-  dbg('chrome-load')
-  const rendererUrl = process.env.ELECTRON_RENDERER_URL
-  if (rendererUrl) await chrome.webContents.loadURL(`${rendererUrl}/shell/chrome/index.html`)
-  else await chrome.webContents.loadFile(join(__dirname, '../../renderer/shell/chrome/index.html'))
-  dbg('chrome-loaded')
-  layout()
+  function applyZoom(): void {
+    const z = zoomFactor()
+    chrome.webContents.setZoomFactor(z)
+    for (const m of [current?.view, current?.edit, current?.preview]) {
+      if (m && !m.view.webContents.isDestroyed()) m.view.webContents.setZoomFactor(z)
+    }
+    layout()
+  }
+  /** Take over Ctrl +/−/0 for this view. preventDefault also stops the default
+   *  menu accelerators, so the per-webContents zoom never fires. Real input
+   *  only — a thing's synthetic key events do not raise before-input-event. */
+  function watchZoomKeys(wc: Electron.WebContents): void {
+    wc.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown' || !input.control || input.alt || input.meta) return
+      if (input.key === '+' || input.key === '=') zoomLevel = Math.min(zoomLevel + 1, 5)
+      else if (input.key === '-') zoomLevel = Math.max(zoomLevel - 1, -5)
+      else if (input.key === '0') zoomLevel = 0
+      else return
+      event.preventDefault()
+      applyZoom()
+    })
+  }
+  watchZoomKeys(chrome.webContents)
 
   function notifyFeedChanged(): void {
     chrome.webContents.send('shell:feed-changed')
@@ -337,41 +510,411 @@ app.whenReady().then(async () => {
     return library.feed(q)
   }
 
+  function notifyModeChanged(mode: ThingMode): void {
+    chrome.webContents.send('shell:mode-changed', {
+      mode,
+      preview: current?.preview != null,
+      // Publish is enabled exactly when a draft exists to sign — which is also
+      // how the chrome detects that the program supports the edit contract.
+      publishable: current?.latestDraft != null
+    })
+  }
+
   async function openThing(envelopeHash: string): Promise<Record<string, unknown>> {
+    // Same-hash reopen is a mode reset, NOT a remount — unsaved edit state
+    // survives, and "open always lands in view" still holds.
+    if (current && current.envelopeHash === envelopeHash && current.view) {
+      await setMode('view')
+      library.markRead(envelopeHash)
+      notifyFeedChanged()
+      return { ...current.header, mode: 'view' }
+    }
     const stored = library.load(envelopeHash)
     if (!stored) return { error: 'not found or not mountable (sealed)' }
-    if (mounted) mounted.destroy()
-    mounted = await mountThing({
+    destroyCurrent()
+    const o: OpenThing = {
+      stored,
+      envelopeHash,
+      header: {},
+      view: null,
+      edit: null,
+      editMounting: null,
+      preview: null,
+      previewMounting: false,
+      pendingDraft: null,
+      draftTimer: null,
+      editWcId: null,
+      latestDraft: null,
+      latestDraftMeta: null,
+      lastPreviewKey: null,
+      activeMode: 'view',
+      wcIds: new Set()
+    }
+    // Set BEFORE the await: a publish emitted during load must find `current`.
+    current = o
+    const m = await mountThing({
       win,
       preloadPath: CAGE_PRELOAD,
       stored,
-      bounds: cageRect()
+      bounds: cageRect(),
+      mode: 'view',
+      onBound: (wcId) => {
+        o.wcIds.add(wcId)
+        guardCageFocus(wcId)
+      }
     })
+    if (current !== o) {
+      // Raced by a newer open — this mount lost.
+      m.destroy()
+      return { error: 'superseded' }
+    }
+    o.view = m
+    // The new cage joins the app-level zoom: same factor, zoom keys watched.
+    watchZoomKeys(m.view.webContents)
+    applyVisibility()
+    applyZoom()
     library.markRead(envelopeHash)
     notifyFeedChanged()
     // The verified primary name for the author — a chrome trust signal. Shown
     // ONLY when it forward+reverse-confirms against the thing's author key.
-    const nv = await naming.primaryName(mounted.header.authorScheme, mounted.header.authorKey)
-    return { ...mounted.header, name: nv.status === 'verified' ? nv.name : null, nameStatus: nv.status }
+    const nv = await naming.primaryName(m.header.authorScheme, m.header.authorKey)
+    o.header = { ...m.header, name: nv.status === 'verified' ? nv.name : null, nameStatus: nv.status }
+    notifyModeChanged('view')
+    return { ...o.header, mode: 'view' }
+  }
+
+  /** Switch the open thing's mode. The edit cage mounts lazily on first use
+   *  and then stays alive (hidden) so its state survives further toggles. */
+  async function setMode(mode: ThingMode): Promise<ThingMode> {
+    const o = current
+    if (!o || !o.view) return 'view'
+    if (mode === 'edit' && !o.edit) {
+      if (!o.editMounting) {
+        o.editMounting = mountThing({
+          win,
+          preloadPath: CAGE_PRELOAD,
+          stored: o.stored,
+          bounds: cageRect(),
+          mode: 'edit',
+          onBound: (wcId) => {
+            o.wcIds.add(wcId)
+            guardCageFocus(wcId)
+            // Recorded BEFORE the program loads: an initial draft emitted
+            // during the edit cage's own load must be accepted.
+            o.editWcId = wcId
+          }
+        })
+      }
+      const m = await o.editMounting
+      if (current !== o) {
+        // The thing was closed/replaced while mounting; destroyCurrent's
+        // in-flight cleanup owns `m` — nothing more to do here.
+        return current?.activeMode ?? 'view'
+      }
+      if (!o.edit) {
+        o.edit = m
+        o.editMounting = null
+        watchZoomKeys(m.view.webContents)
+      }
+    }
+    o.activeMode = mode
+    applyVisibility()
+    applyZoom()
+    // Hand keyboard focus to the cage that just became visible, so e.g.
+    // switching to edit lets the user type immediately.
+    const active = mode === 'edit' ? o.edit : (o.preview ?? o.view)
+    if (active && !active.view.webContents.isDestroyed()) active.view.webContents.focus()
+    notifyModeChanged(o.activeMode)
+    return o.activeMode
+  }
+
+  // ── Live preview: render the unpublished draft in final form ───────────────
+  // The edit cage emits its working state on the "draft" channel (same shape
+  // as publish; grants nothing, confirms nothing). The shell mounts the SAME
+  // program in view mode with the draft's args — the preview goes through the
+  // identical path a published instance would, so what you preview is exactly
+  // what you would publish.
+
+  /** Synthesize the StoredThing a draft WOULD be if published: same program,
+   *  the draft's type/args/attachments, blobs served from an ephemeral store
+   *  (they exist nowhere on disk — nothing was signed or persisted). */
+  function previewStoredFrom(stored: StoredThing, draft: Draft): StoredThing {
+    const store = new EphemeralStore()
+    const att = new Map<string, Attachment>()
+    for (const [name, bytes] of Object.entries(draft.blobs)) {
+      store.put(bytes)
+      const a = draft.att[name]!
+      att.set(name, { h: fromHex(a.h), m: a.m, n: a.n })
+    }
+    return {
+      row: stored.row,
+      program: stored.program,
+      manifest: { v: 1, prog: stored.manifest.prog, type: draft.type, args: jsToCbor(draft.args), att },
+      store
+    }
+  }
+
+  async function mountPreview(o: OpenThing): Promise<void> {
+    if (o.previewMounting) return // the running mount re-checks pendingDraft when done
+    const draft = o.pendingDraft
+    if (!draft) return
+    o.pendingDraft = null
+    o.previewMounting = true
+    try {
+      // jsToCbor may throw (e.g. float args) — keep the last good preview.
+      const previewStored = previewStoredFrom(o.stored, draft)
+      const m = await mountThing({
+        win,
+        preloadPath: CAGE_PRELOAD,
+        stored: previewStored,
+        bounds: cageRect(),
+        mode: 'view',
+        visible: false, // revealed by applyVisibility; a background load must not steal focus
+        onBound: (wcId) => {
+          o.wcIds.add(wcId)
+          guardCageFocus(wcId)
+        }
+      })
+      if (current !== o) {
+        m.destroy()
+        return
+      }
+      const oldPreviewId = o.preview ? o.preview.view.webContents.id : null
+      if (o.preview) {
+        o.preview.destroy()
+        if (oldPreviewId !== null) o.wcIds.delete(oldPreviewId)
+      }
+      o.preview = m
+      o.lastPreviewKey = draftKey(draft)
+      watchZoomKeys(m.view.webContents)
+      applyVisibility()
+      applyZoom()
+      notifyModeChanged(o.activeMode)
+      // The user may be mid-typing in the edit cage while previews remount
+      // under them — losing focus per keystroke is unusable. The per-cage
+      // focus guard (guardCageFocus, attached at bind) bounces event-driven
+      // steals; these settle-point checks catch platforms where the steal
+      // emits no focus event or lands late after the swap.
+      enforceCageFocus()
+      const settle = setTimeout(enforceCageFocus, 250)
+      settle.unref?.()
+    } catch {
+      /* invalid draft — previous preview (or the signed view) stays */
+    } finally {
+      o.previewMounting = false
+      if (o.pendingDraft && current === o) void mountPreview(o)
+    }
+  }
+
+  /** Identity of a draft for preview dedupe: type + args + the attachment
+   *  TABLE (name → hash/mime/size covers the blob bytes). */
+  function draftKey(draft: Draft): string {
+    return JSON.stringify([draft.type, draft.args, draft.att])
+  }
+
+  // Coalesce keystroke-rate drafts into one remount per quiet period.
+  const PREVIEW_DEBOUNCE_MS = 600
+  setDraftObserver((req) => {
+    const o = current
+    // Drafts drive the editing session: accept them only from the edit cage
+    // (recorded at bind time, so a program's initial draft during its own
+    // load counts). The preview cage runs the same program in view mode —
+    // accepting drafts from any cage would let a program remount its own
+    // preview in a loop.
+    if (!o || o.editWcId === null || req.senderId !== o.editWcId) return
+    const publishableBefore = o.latestDraft != null
+    // The latest draft is what the chrome Publish button signs.
+    o.latestDraft = req.draft
+    o.latestDraftMeta = { argsBytes: req.argsBytes, blobBytes: req.blobBytes }
+    if (!publishableBefore) notifyModeChanged(o.activeMode) // enable Publish
+    // Identical draft → identical preview: skip the remount (visible flicker).
+    if (o.lastPreviewKey !== null && draftKey(req.draft) === o.lastPreviewKey) {
+      o.pendingDraft = null
+      return
+    }
+    o.pendingDraft = req.draft
+    if (o.draftTimer) return
+    o.draftTimer = setTimeout(() => {
+      o.draftTimer = null
+      if (current === o) void mountPreview(o)
+    }, PREVIEW_DEBOUNCE_MS)
+    o.draftTimer.unref?.()
+  })
+
+  /** Drop the draft state (approved publish: the draft is now a real, signed
+   *  instance in the feed — the preview badge would be lying, and Publish
+   *  disables until the program streams a new draft). */
+  function clearPreview(): void {
+    const o = current
+    if (!o) return
+    if (o.draftTimer) {
+      clearTimeout(o.draftTimer)
+      o.draftTimer = null
+    }
+    o.pendingDraft = null
+    o.latestDraft = null
+    o.latestDraftMeta = null
+    o.lastPreviewKey = null
+    if (o.preview) {
+      const oldId = o.preview.view.webContents.id
+      o.preview.destroy()
+      o.wcIds.delete(oldId)
+      o.preview = null
+      applyVisibility()
+    }
+    notifyModeChanged(o.activeMode)
+  }
+
+  /** Copy: a NEW instance signed by THIS identity carrying the exact same
+   *  program, type, args (the byte-faithful CBOR value — no JS round trip),
+   *  and attachments. This is the shell-level "edit the selected object"
+   *  primitive: things are immutable, so editing starts by making your own
+   *  copy — including of things authored by someone else. Sealed things are
+   *  refused: silently republishing private content as public is a footgun. */
+  async function copyThing(envelopeHash: string): Promise<Record<string, unknown>> {
+    const stored = library.load(envelopeHash)
+    if (!stored) return { status: 'invalid', reason: 'not found or not mountable (sealed, undecrypted)' }
+    if (stored.row.sealed) return { status: 'invalid', reason: 'refusing to copy a sealed thing into a public one' }
+    const attachments = new Map<string, { bytes: Uint8Array; mime?: string }>()
+    for (const [name, att] of stored.manifest.att) {
+      const bytes = stored.store.readAll(toHex(att.h))
+      if (!bytes) return { status: 'invalid', reason: `attachment missing from store: ${name}` }
+      attachments.set(name, { bytes, mime: att.m })
+    }
+    const tar = await buildBundle(keyring.signer, {
+      program: stored.program,
+      type: stored.manifest.type,
+      args: stored.manifest.args,
+      attachments
+    })
+    return ingestBytes(tar)
+  }
+
+  /** The seed store is keyed by TAR hash with no envelope index — scan and
+   *  parse to find the bundle(s) whose envelope matches. Seeds are few. */
+  function removeSeedsFor(envelopeHashHex: string): void {
+    for (const tarHash of seedStore.list()) {
+      const bytes = seedStore.readAll(tarHash)
+      if (!bytes) continue
+      try {
+        if (toHex(hash(parseBundle(bytes).envelope)) === envelopeHashHex) seedStore.delete(tarHash)
+      } catch {
+        /* unparseable seed — leave it */
+      }
+    }
+  }
+
+  /** Delete a thing everywhere the shell holds it: close it if open, drop the
+   *  library row (+ GC of now-unreferenced content blobs), and stop seeding
+   *  its bundle. Copies held by others are of course unaffected — a signed
+   *  thing is public and permanent once shared. */
+  function deleteThing(envelopeHash: string): Record<string, unknown> {
+    if (current?.envelopeHash === envelopeHash) destroyCurrent()
+    const deleted = library.delete(envelopeHash)
+    if (deleted) {
+      removeSeedsFor(envelopeHash)
+      notifyFeedChanged()
+    }
+    return { deleted }
   }
 
   // ── Confirm flow: a thing's publish request is decided HERE, in chrome ─────
+  // A pending publish holds the full draft (blob bytes included) plus the
+  // program bytes captured at request time, so approval publishes exactly what
+  // was mounted when the human saw the dialog — even across a remount. Bounded:
+  // few pending, short TTL, deleted on response. Blob bytes never cross to the
+  // chrome renderer; the dialog gets type/args/att metadata only.
+  interface PendingPublish {
+    draft: Draft
+    program: Uint8Array
+    timer: ReturnType<typeof setTimeout>
+  }
   let nextConfirmId = 1
-  const pendingConfirms = new Map<number, (approved: boolean) => void>()
-  setPublishObserver((draft) => {
-    const id = nextConfirmId++
-    const req = { id, kind: 'publish', summary: draft as Record<string, unknown> }
-    shell.lastConfirm = req
-    chrome.webContents.send('shell:confirm-request', req)
-    pendingConfirms.set(id, (approved) => {
-      // Phase 3: approval is recorded, not yet acted on (signing/sealing LATER).
-      // The point proven here is that the grant is a human decision in chrome.
-      void approved
+  const pendingConfirms = new Map<number, PendingPublish>()
+  const MAX_PENDING_PUBLISH = 4
+  const PUBLISH_CONFIRM_TTL_MS = 5 * 60_000
+
+  /** Approved publish: rebuild a bundle with the SAME program as the mounted
+   *  thing + the draft's type/args/blobs, sign with the keyring, and ingest it
+   *  (admission → library → seed → feed refresh). No save dialog, no envelope
+   *  chaining (path/seq/prev) — the new instance is a standalone thing in the
+   *  author's own feed. */
+  async function persistApprovedDraft(p: PendingPublish): Promise<Record<string, unknown>> {
+    let args: CborValue
+    try {
+      // A draft can pass validateDraft (JSON-measured) yet not be canonical
+      // CBOR — floats, say. Surface that as a failed publish, not a crash.
+      args = jsToCbor(p.draft.args)
+    } catch (e) {
+      return { status: 'invalid', reason: `publish: ${(e as Error).message}` }
+    }
+    const attachments = new Map<string, { bytes: Uint8Array; mime?: string }>()
+    for (const [name, bytes] of Object.entries(p.draft.blobs)) {
+      // Draft blobs carry no MIME (FORMAT_SPEC_NOTES §4); validateDraft already
+      // recorded application/octet-stream in the att table — reuse it.
+      attachments.set(name, { bytes, mime: p.draft.att[name]?.m })
+    }
+    const tar = await buildBundle(keyring.signer, {
+      program: p.program,
+      type: p.draft.type,
+      args,
+      attachments
     })
-  })
-  ipcMain.on('shell:confirm-response', (_e, id: number, approved: boolean) => {
-    pendingConfirms.get(id)?.(approved)
+    return ingestBytes(tar)
+  }
+
+  /** The chrome Publish button: raise a confirm for the LATEST DRAFT — the
+   *  exact payload the preview is rendering (publish-what-you-preview).
+   *  Programs cannot initiate this (emit("publish") is retired); the human
+   *  clicks, the human confirms, the shell signs. */
+  function publishLatestDraft(): Record<string, unknown> {
+    const o = current
+    if (!o || !o.latestDraft || !o.latestDraftMeta) {
+      return { status: 'invalid', reason: 'nothing to publish — the program has not streamed a draft yet' }
+    }
+    while (pendingConfirms.size >= MAX_PENDING_PUBLISH) {
+      const oldest = pendingConfirms.keys().next().value as number
+      clearTimeout(pendingConfirms.get(oldest)!.timer)
+      pendingConfirms.delete(oldest)
+    }
+    const id = nextConfirmId++
+    // What the human decides on: type + args + attachment table — args is
+    // JSON-serializable and ≤256 KB by validateDraft.
+    const summary: Record<string, unknown> = {
+      type: o.latestDraft.type,
+      args: o.latestDraft.args,
+      att: o.latestDraft.att,
+      argsBytes: o.latestDraftMeta.argsBytes,
+      blobBytes: o.latestDraftMeta.blobBytes
+    }
+    const timer = setTimeout(() => {
+      pendingConfirms.delete(id)
+      applyVisibility()
+    }, PUBLISH_CONFIRM_TTL_MS)
+    timer.unref?.()
+    pendingConfirms.set(id, { draft: o.latestDraft, program: o.stored.program, timer })
+    applyVisibility() // cages hide while the human decides in chrome
+    const confirmReq = { id, kind: 'publish', summary }
+    shell.lastConfirm = confirmReq
+    chrome.webContents.send('shell:confirm-request', confirmReq)
+    return { status: 'pending', id }
+  }
+  ipcMain.on('shell:confirm-response', (_e, id: unknown, approved: unknown) => {
+    if (typeof id !== 'number' || typeof approved !== 'boolean') return
+    const p = pendingConfirms.get(id)
     pendingConfirms.delete(id)
+    applyVisibility() // restore the cages once nothing is pending
+    if (!p) return
+    clearTimeout(p.timer)
+    if (!approved) {
+      shell.lastPublish = { status: 'denied' }
+      return
+    }
+    clearPreview()
+    void persistApprovedDraft(p).then((outcome) => {
+      shell.lastPublish = outcome
+      chrome.webContents.send('shell:publish-result', outcome)
+    })
   })
 
   // ── IPC surface for the chrome ─────────────────────────────────────────────
@@ -380,6 +923,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('shell:ingest', (_e, base64: string) => ingestBytes(base64ToBytes(base64)))
   ipcMain.handle('shell:fetch', (_e, locator: string) => fetchNameOrLocator(locator))
   ipcMain.handle('shell:open', (_e, envelopeHash: string) => openThing(envelopeHash))
+  ipcMain.handle('shell:set-mode', (_e, mode: unknown) => setMode(mode === 'edit' ? 'edit' : 'view'))
+  ipcMain.handle('shell:publish', () => publishLatestDraft())
+  ipcMain.handle('shell:copy', (_e, h: unknown) =>
+    typeof h === 'string' ? copyThing(h) : { status: 'invalid', reason: 'bad hash' }
+  )
+  ipcMain.handle('shell:delete', (_e, h: unknown) => (typeof h === 'string' ? deleteThing(h) : { deleted: false }))
   ipcMain.handle(
     'shell:compose',
     async (_e, input: { programBase64: string; type: string; attachments?: ComposeAttachment[] }) => {
@@ -400,10 +949,7 @@ app.whenReady().then(async () => {
     }
   )
   ipcMain.handle('shell:close', () => {
-    if (mounted) {
-      mounted.destroy()
-      mounted = null
-    }
+    destroyCurrent()
   })
 
   // ── Public + test surface ──────────────────────────────────────────────────
@@ -423,6 +969,19 @@ app.whenReady().then(async () => {
   shell.seedHas = (hashHex) => seedStore.has(hashHex)
   shell.feed = (query) => getFeed(query)
   shell.open = (envelopeHash) => openThing(envelopeHash)
+  shell.setMode = (m) => setMode(m)
+  shell.publishDraft = () => publishLatestDraft()
+  shell.copyThing = (h) => copyThing(h)
+  shell.deleteThing = (h) => deleteThing(h)
+  shell.modeState = () =>
+    current
+      ? {
+          activeMode: current.activeMode,
+          viewWcId: current.view ? current.view.view.webContents.id : null,
+          editWcId: current.edit ? current.edit.view.webContents.id : null,
+          previewWcId: current.preview ? current.preview.view.webContents.id : null
+        }
+      : null
   shell.signAndAdmit = async (type: string) => {
     const program = new TextEncoder().encode('<!doctype html><h1>self-signed</h1>')
     const manifest: Manifest = { v: 1, prog: hash(program), type, args: null, att: new Map() }
@@ -430,6 +989,18 @@ app.whenReady().then(async () => {
     const envelope = await encodeEnvelope({ man: hash(manifestBytes), created: 1 }, keyring.signer)
     return summarize(admitBundle({ envelope, manifest: manifestBytes, program, blobs: new Map() }))
   }
+  // Load the chrome only AFTER every IPC handler and surface datum above is
+  // live: the chrome's boot script invokes shell:identity + shell:feed while
+  // the page is still loading, and an unregistered handler (or an undefined
+  // identity) kills that boot script — which is exactly a blank feed on
+  // startup, populated only by the next feed-changed event.
+  dbg('chrome-load')
+  const rendererUrl = process.env.ELECTRON_RENDERER_URL
+  if (rendererUrl) await chrome.webContents.loadURL(`${rendererUrl}/shell/chrome/index.html`)
+  else await chrome.webContents.loadFile(join(__dirname, '../../renderer/shell/chrome/index.html'))
+  dbg('chrome-loaded')
+  layout()
+
   shell.ready = true
   dbg('ready-done')
 }).catch((e) => dbg(`whenReady FAILED ${String(e)}\n${(e as Error).stack}`))

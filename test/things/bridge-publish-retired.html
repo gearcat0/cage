@@ -1,0 +1,10 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>retired: emit("publish")</title>
+<!-- The publish channel is RETIRED: the shell owns publish — it signs the
+     LATEST DRAFT (what the preview shows) after a human confirms in chrome.
+     A program-initiated publish must be rejected and grant nothing. -->
+<script>
+  window.bridge.emit('publish', { type: 'event', args: { title: 'nope' } });
+  window.bridge.emit('done', { sent: true });
+</script>

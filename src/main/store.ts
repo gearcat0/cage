@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 
@@ -98,6 +98,26 @@ export class CasStore implements AttachmentStore {
       return null
     }
   }
+
+  /** Remove a blob (deletion/GC path). Idempotent; false if it was absent. */
+  delete(hashHex: string): boolean {
+    if (!HEX_HASH.test(hashHex)) return false
+    try {
+      rmSync(join(this.blobsDir, hashHex))
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /** Every stored blob hash. Small stores only (deletion scans, tests). */
+  list(): string[] {
+    try {
+      return readdirSync(this.blobsDir).filter((n) => HEX_HASH.test(n))
+    } catch {
+      return []
+    }
+  }
 }
 
 export class EphemeralStore implements AttachmentStore {
@@ -123,6 +143,11 @@ export class EphemeralStore implements AttachmentStore {
   /** Read a whole blob into memory by hex hash, or null if absent. */
   readAll(hashHex: string): Uint8Array | null {
     return this.blobs.get(hashHex) ?? null
+  }
+
+  /** Remove one decrypted blob (deletion/GC path). */
+  delete(hashHex: string): boolean {
+    return this.blobs.delete(hashHex)
   }
 
   read(hashHex: string, start: number, end: number): ReadableStream<Uint8Array> | null {

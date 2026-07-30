@@ -19,9 +19,16 @@ interface ShellApi {
   }): Promise<{ outcome: Outcome; path: string | null }>
   open(envelopeHash: string): Promise<HeaderFacts>
   close(): Promise<void>
+  setMode(mode: 'view' | 'edit'): Promise<'view' | 'edit'>
+  onModeChanged(cb: (p: { mode: 'view' | 'edit'; preview: boolean; publishable: boolean }) => void): void
+  publishDraft(): Promise<Record<string, unknown>>
+  copyThing(envelopeHash: string): Promise<Record<string, unknown>>
+  deleteThing(envelopeHash: string): Promise<{ deleted: boolean }>
+  overlay(delta: 1 | -1): void
   onFeedChanged(cb: () => void): void
   onConfirmRequest(cb: (req: { id: number; kind: string; summary: Record<string, unknown> }) => void): void
   respondConfirm(id: number, approved: boolean): void
+  onPublishResult(cb: (outcome: Record<string, unknown>) => void): void
 }
 interface ThingRow {
   envelopeHash: string
@@ -174,6 +181,69 @@ function showText(msg: string, tone: 'success' | 'danger' | 'neutral'): void {
   }, 8000)
 }
 
+/** Announce a modal overlay to main — the cage views hide while any chrome
+ *  modal is open (they are native siblings composited ABOVE the chrome and
+ *  would overpaint it). Patches remove() so every close path announces the
+ *  close without per-modal bookkeeping. */
+function trackOverlay(overlay: HTMLElement): HTMLElement {
+  shell.overlay(1)
+  const origRemove = overlay.remove.bind(overlay)
+  let closed = false
+  overlay.remove = () => {
+    if (!closed) {
+      closed = true
+      shell.overlay(-1)
+    }
+    origRemove()
+  }
+  return overlay
+}
+
+/** A small chrome-local confirm for destructive actions. Resolves the choice. */
+function confirmDanger(title: string, text: string, action: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = el('div', 'evm-modal-overlay')
+    const modal = el('div', 'evm-modal')
+    const header = el('div', 'evm-modal-header')
+    header.append(el('span', 'evm-modal-title', title))
+    const body = el('div', 'evm-modal-body')
+    body.append(el('p', 'sh-hint', text))
+    const footer = el('div', 'evm-modal-footer')
+    const cancel = el('button', 'evm-btn evm-btn--ghost', 'Cancel')
+    const ok = el('button', 'evm-btn evm-btn--danger', action)
+    ok.setAttribute('data-testid', 'danger-confirm')
+    cancel.setAttribute('data-testid', 'danger-cancel')
+    const done = (v: boolean): void => {
+      overlay.remove()
+      resolve(v)
+    }
+    cancel.addEventListener('click', () => done(false))
+    ok.addEventListener('click', () => done(true))
+    footer.append(cancel, ok)
+    modal.append(header, body, footer)
+    overlay.append(modal)
+    document.body.append(trackOverlay(overlay))
+  })
+}
+
+/** Delete via either the header button or a feed row: confirm, delete, and
+ *  clear the header if the deleted thing was the open one. */
+async function deleteWithConfirm(envelopeHash: string, type: string): Promise<void> {
+  const ok = await confirmDanger(
+    'Delete thing',
+    `Delete this ${type} from your library? Its bundle stops being seeded from this machine. Copies already shared are unaffected — a signed thing is public and permanent once shared.`,
+    'Delete'
+  )
+  if (!ok) return
+  await shell.deleteThing(envelopeHash)
+  if (selected === envelopeHash) {
+    selected = null
+    renderHeader(null)
+  }
+  showText('Deleted from your library', 'neutral')
+  await refreshFeed()
+}
+
 function openComposeModal(): void {
   const overlay = el('div', 'evm-modal-overlay')
   const modal = el('div', 'evm-modal')
@@ -217,7 +287,7 @@ function openComposeModal(): void {
   footer.append(cancel, create)
   modal.append(header, body, footer)
   overlay.append(modal)
-  document.body.append(overlay)
+  document.body.append(trackOverlay(overlay))
 
   cancel.addEventListener('click', () => overlay.remove())
   create.addEventListener('click', async () => {
@@ -274,6 +344,7 @@ function safetyModal(keyStorage: 'os' | 'software'): void {
   )
   const footer = el('div', 'evm-modal-footer')
   const ok = el('button', 'evm-btn evm-btn--primary', 'I understand')
+  ok.setAttribute('data-testid', 'safety-ack')
   ok.addEventListener('click', () => {
     try {
       localStorage.setItem('sh-safety-ack', '1')
@@ -285,7 +356,7 @@ function safetyModal(keyStorage: 'os' | 'software'): void {
   footer.append(ok)
   modal.append(header, body, footer)
   overlay.append(modal)
-  document.body.append(overlay)
+  document.body.append(trackOverlay(overlay))
 }
 
 function renderSafety(keyStorage: 'os' | 'software'): void {
@@ -325,6 +396,18 @@ async function refreshFeed(): Promise<void> {
     if (row.isFork) line1.append(el('span', 'evm-badge evm-badge--danger', 'FORK'))
     if (row.sealed) line1.append(el('span', 'evm-badge evm-badge--purple', 'sealed'))
     if (!row.read) line1.append(el('span', 'sh-unread', '●'))
+    // Per-row delete — usable WITHOUT opening the thing (you may not want to
+    // mount something before removing it). A span, not a button: the row
+    // itself is a button and buttons must not nest.
+    const del = el('span', 'sh-feed-del', '×')
+    del.title = 'Delete from library'
+    del.setAttribute('role', 'button')
+    del.setAttribute('data-testid', 'feed-delete')
+    del.addEventListener('click', (e) => {
+      e.stopPropagation()
+      void deleteWithConfirm(row.envelopeHash, row.type)
+    })
+    line1.append(el('span', 'sh-feed-flex'), del)
     const line2 = el('div', 'sh-feed-meta', fmtTime(row.receivedAt))
     item.append(line1, line2)
     item.addEventListener('click', () => void openThing(row.envelopeHash))
@@ -332,10 +415,64 @@ async function refreshFeed(): Promise<void> {
   }
 }
 
+// ── View | Edit mode toggle ──────────────────────────────────────────────────
+// The SHELL owns mode switching — this control lives in chrome pixels the
+// thing cannot reach; the program just renders whichever mode it is told.
+// Main is the source of truth: it pushes shell:mode-changed on open and on
+// every switch, so this local state is only a render cache.
+let currentMode: 'view' | 'edit' = 'view'
+let previewActive = false
+let publishable = false
+let modeButtons: { view: HTMLElement; edit: HTMLElement } | null = null
+let trustBadge: HTMLElement | null = null
+let previewBadge: HTMLElement | null = null
+let publishBtn: HTMLButtonElement | null = null
+
+function styleModeButtons(): void {
+  modeButtons?.view.classList.toggle('sh-mode-btn--active', currentMode === 'view')
+  modeButtons?.edit.classList.toggle('sh-mode-btn--active', currentMode === 'edit')
+  // The trust badge must NEVER sit above unsigned draft content: when view
+  // mode is showing the draft preview, swap "✓ signed" for the preview badge.
+  // Swapped via VISIBILITY inside a fixed-size status slot (not display), so
+  // the wider badge never reflows the controls to its right — buttons must
+  // stay put while the user is working.
+  const showingPreview = previewActive && currentMode === 'view'
+  if (trustBadge) trustBadge.style.visibility = showingPreview ? 'hidden' : 'visible'
+  if (previewBadge) previewBadge.style.visibility = showingPreview ? 'visible' : 'hidden'
+  // Publish enables once the program has streamed a draft — which is also how
+  // the chrome detects that this program supports the edit contract at all.
+  if (publishBtn) {
+    publishBtn.disabled = !publishable
+    publishBtn.title = publishable
+      ? 'Sign the previewed draft as a new instance'
+      : 'Nothing to publish yet — edit the thing first (the program streams its state as you edit)'
+  }
+}
+
+function renderModeToggle(): HTMLElement {
+  const wrap = el('span', 'sh-mode')
+  const mk = (m: 'view' | 'edit', label: string, testid: string): HTMLElement => {
+    const b = el('button', 'evm-btn evm-btn--ghost evm-btn--sm sh-mode-btn', label)
+    b.setAttribute('data-testid', testid)
+    b.addEventListener('click', () => void shell.setMode(m)) // main pushes mode-changed back
+    return b
+  }
+  const view = mk('view', 'View', 'mode-view')
+  const edit = mk('edit', 'Edit', 'mode-edit')
+  modeButtons = { view, edit }
+  wrap.append(view, edit)
+  styleModeButtons()
+  return wrap
+}
+
 // ── Per-thing trust header ───────────────────────────────────────────────────
 function renderHeader(h: HeaderFacts | null): void {
   thingHeader.replaceChildren()
   if (!h) {
+    modeButtons = null
+    trustBadge = null
+    previewBadge = null
+    publishBtn = null
     thingHeader.append(el('span', 'sh-hint', 'Select a thing from the feed.'))
     return
   }
@@ -344,6 +481,16 @@ function renderHeader(h: HeaderFacts | null): void {
   // this is the trust signal the thing must never be able to forge.
   const badge = el('span', 'evm-badge evm-badge--success sh-verified', '✓ signed')
   badge.setAttribute('data-trust', 'verified')
+  trustBadge = badge
+  // Hidden until view mode shows an unpublished-draft preview (see
+  // styleModeButtons) — then it REPLACES the trust badge.
+  previewBadge = el('span', 'evm-badge evm-badge--warning', 'PREVIEW — unpublished draft')
+  previewBadge.setAttribute('data-testid', 'preview-badge')
+  previewBadge.style.visibility = 'hidden'
+  // Both badges share one grid cell; the slot is permanently sized to the
+  // wider of the two, so swapping them never moves the controls after it.
+  const statusSlot = el('span', 'sh-status-slot')
+  statusSlot.append(badge, previewBadge)
   // Author identity: a VERIFIED name (confirmed to map to the author key) is
   // shown as a name; otherwise the raw key, marked unverified. The name lives in
   // chrome pixels the thing cannot reach.
@@ -358,13 +505,58 @@ function renderHeader(h: HeaderFacts | null): void {
   }
   const typeBadge = el('span', 'evm-badge evm-badge--neutral', h.type)
   const hashEl = el('span', 'sh-hash evm-address evm-address--muted', short(h.envelopeHash, 8))
-  thingHeader.append(badge, el('span', 'sh-by', 'by'), authorEl, typeBadge, el('span', 'sh-spacer'), el('span', 'sh-hint', 'hash'), hashEl)
+  // Copy: the shell-level "edit this object" primitive — things are immutable,
+  // so editing starts by making your own instance with the same program+args.
+  const copyBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Copy')
+  copyBtn.setAttribute('data-testid', 'header-copy')
+  copyBtn.addEventListener('click', async () => {
+    const outcome = await shell.copyThing(h.envelopeHash)
+    if (outcome.status === 'valid') showText('Copied — your new instance is in the feed', 'success')
+    else showText(`Copy failed: ${String(outcome.reason ?? outcome.status)}`, 'danger')
+    await refreshFeed()
+  })
+  const delBtn = el('button', 'evm-btn evm-btn--danger evm-btn--sm', 'Delete')
+  delBtn.setAttribute('data-testid', 'header-delete')
+  delBtn.addEventListener('click', () => void deleteWithConfirm(h.envelopeHash, h.type))
+  // Publish: signs the LATEST streamed draft — exactly what the preview shows.
+  // Disabled until the program streams one (see styleModeButtons).
+  const pub = el('button', 'evm-btn evm-btn--primary evm-btn--sm', 'Publish') as HTMLButtonElement
+  pub.setAttribute('data-testid', 'header-publish')
+  pub.addEventListener('click', async () => {
+    const r = await shell.publishDraft()
+    if (r.status === 'invalid') showText(String(r.reason), 'danger')
+  })
+  publishBtn = pub
+  thingHeader.append(
+    statusSlot,
+    el('span', 'sh-by', 'by'),
+    authorEl,
+    typeBadge,
+    renderModeToggle(),
+    pub,
+    el('span', 'sh-spacer'),
+    copyBtn,
+    delBtn,
+    el('span', 'sh-hint', 'hash'),
+    hashEl
+  )
   if (h.isFork) thingHeader.append(el('span', 'evm-badge evm-badge--danger', 'FORK — author history diverged'))
+  // Main pushes mode-changed BEFORE shell.open returns, i.e. before these
+  // elements existed — apply the cached state to the freshly built controls.
+  styleModeButtons()
 }
 
 async function openThing(envelopeHash: string): Promise<void> {
   selected = envelopeHash
   const header = await shell.open(envelopeHash)
+  // An open can fail (e.g. a stale feed row, or a sealed thing after restart)
+  // — surface it instead of rendering an error object as header facts.
+  if ((header as unknown as { error?: string }).error) {
+    selected = null
+    renderHeader(null)
+    showText(`Open failed: ${(header as unknown as { error: string }).error}`, 'danger')
+    return
+  }
   renderHeader(header)
   await refreshFeed()
 }
@@ -374,15 +566,28 @@ shell.onConfirmRequest((req) => {
   const overlay = el('div', 'evm-modal-overlay')
   const modal = el('div', 'evm-modal')
   const header = el('div', 'evm-modal-header')
-  header.append(el('span', 'evm-modal-title', `A thing wants to ${req.kind}`))
+  // 'publish' is user-initiated (the chrome Publish button signing the
+  // previewed draft); anything else would be a thing's own request.
+  const title = req.kind === 'publish' ? 'Publish a new instance?' : `A thing wants to ${req.kind}`
+  header.append(el('span', 'evm-modal-title', title))
   const body = el('div', 'evm-modal-body')
-  body.append(el('p', 'sh-hint', 'This request grants nothing until you approve it here.'))
+  body.append(
+    el(
+      'p',
+      'sh-hint',
+      req.kind === 'publish'
+        ? 'This signs the previewed draft with your identity as a new thing in your feed. Nothing happens until you approve it here.'
+        : 'This request grants nothing until you approve it here.'
+    )
+  )
   const pre = el('pre', 'sh-draft') as HTMLPreElement
   pre.textContent = JSON.stringify(req.summary, null, 2)
   body.append(pre)
   const footer = el('div', 'evm-modal-footer')
   const cancel = el('button', 'evm-btn evm-btn--ghost', 'Reject')
+  cancel.setAttribute('data-testid', 'confirm-reject')
   const ok = el('button', 'evm-btn evm-btn--primary', `Approve ${req.kind}`)
+  ok.setAttribute('data-testid', 'confirm-approve')
   const closeModal = (approved: boolean): void => {
     shell.respondConfirm(req.id, approved)
     overlay.remove()
@@ -392,7 +597,7 @@ shell.onConfirmRequest((req) => {
   footer.append(cancel, ok)
   modal.append(header, body, footer)
   overlay.append(modal)
-  document.body.append(overlay)
+  document.body.append(trackOverlay(overlay))
 })
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -408,6 +613,16 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 shell.onFeedChanged(() => void refreshFeed())
+shell.onModeChanged((p) => {
+  currentMode = p.mode
+  previewActive = p.preview
+  publishable = p.publishable
+  styleModeButtons()
+})
+shell.onPublishResult((o) => {
+  if (o.status === 'valid') showText('Published to your feed', 'success')
+  else showText(`Publish failed: ${String(o.reason ?? o.status)}`, 'danger')
+})
 ;(async () => {
   const id = await shell.identity()
   identityEl.textContent = `${short(id.address)}`
