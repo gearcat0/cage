@@ -659,6 +659,16 @@ app.whenReady().then(async () => {
       }
       o.preview = m
       o.lastPreviewKey = draftKey(draft)
+      // A HIDDEN preview must never hold the keyboard. On some platforms the
+      // freshly loaded view grabs focus ASYNCHRONOUSLY — after the restore
+      // below has already run — so the guard has to be event-driven: whenever
+      // this preview gains focus while it is not the visible cage, hand the
+      // keyboard straight back to the edit cage the user is typing in.
+      m.view.webContents.on('focus', () => {
+        if (current !== o || o.preview !== m) return
+        if (o.activeMode === 'view') return // a visible preview may hold focus
+        if (o.edit && !o.edit.view.webContents.isDestroyed()) o.edit.view.webContents.focus()
+      })
       watchZoomKeys(m.view.webContents)
       applyVisibility()
       applyZoom()

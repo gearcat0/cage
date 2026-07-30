@@ -549,6 +549,14 @@ function renderHeader(h: HeaderFacts | null): void {
 async function openThing(envelopeHash: string): Promise<void> {
   selected = envelopeHash
   const header = await shell.open(envelopeHash)
+  // An open can fail (e.g. a stale feed row, or a sealed thing after restart)
+  // — surface it instead of rendering an error object as header facts.
+  if ((header as unknown as { error?: string }).error) {
+    selected = null
+    renderHeader(null)
+    showText(`Open failed: ${(header as unknown as { error: string }).error}`, 'danger')
+    return
+  }
   renderHeader(header)
   await refreshFeed()
 }
