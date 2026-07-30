@@ -10,7 +10,7 @@
   const r = { attack: 'publish-flood', count: 100 };
   const svg = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>');
   for (let i = 0; i < r.count; i++) {
-    window.bridge.emit('publish', { type: 'event', args: { i }, blobs: { poster: svg } });
+    window.bridge.emit('draft', { type: 'event', args: { i }, blobs: { poster: svg } });
   }
   window.bridge.emit('done', r);
 </script>

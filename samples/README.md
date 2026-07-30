@@ -19,13 +19,14 @@ is part of the program and the name comes from `args`.
 Try it: launch the shell → **Create…** → choose `nametag.html`, type `nametag`
 → Sign & save. Open it from the feed: it lands in **View** mode (a blank tag
 shows `—`). The **View | Edit** toggle in the shell's trusted header — not in
-the program — switches to Edit mode: input + Save. Saving emits a `publish`
-request; approve it in the shell's dialog and a new instance — same program,
-`args: {name}` — appears in your feed. In-progress edits survive toggling back
-and forth: both modes stay mounted while the thing is open.
+the program — switches to Edit mode. As you edit, the program streams its
+working state with `bridge.emit('draft', {type, args})` (grants nothing); the
+shell renders it live — switch to View and you see the draft in its final
+form, under a "PREVIEW — unpublished draft" badge instead of "✓ signed" — and
+the header's **Publish** button signs EXACTLY that latest draft after you
+confirm. A new instance — same program, `args: {name}` — appears in your feed.
+In-progress edits survive toggling back and forth: both modes stay mounted
+while the thing is open.
 
-While editing, the program streams its working state with
-`bridge.emit('draft', {type, args})` (same shape as `publish`; grants
-nothing). The shell renders it live: switch to View and you see the draft in
-its final form — the same program mounted in view mode with the draft's args —
-under a "PREVIEW — unpublished draft" badge instead of "✓ signed".
+Programs have no Save/Publish buttons of their own (`emit('publish')` is
+retired): rendering and state are the program's; every control is the shell's.

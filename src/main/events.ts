@@ -29,8 +29,6 @@ export type CageEvent =
       argsBytes: number
       blobBytes: number
     }
-  // A live-preview draft (emit("draft")): metadata only, nothing retained.
-  | { type: 'draft-preview'; draftType: string; argsBytes: number; blobBytes: number }
   | { type: 'sandbox-state'; envDisabled: boolean; argvNoSandbox: boolean }
 
 /** TEST-ONLY payload capture. A separate buffer that DOES retain emit payloads

@@ -9,7 +9,7 @@
 <script>
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="tomato"/></svg>';
   const bytes = new TextEncoder().encode(svg);
-  window.bridge.emit('publish', {
+  window.bridge.emit('draft', {
     type: 'event',
     args: { title: 'bbq at ours', when: 'saturday' },
     blobs: { poster: bytes }

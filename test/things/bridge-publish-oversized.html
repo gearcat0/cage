@@ -8,7 +8,7 @@
      with the caps dialled down via env so the payloads stay small. -->
 <script>
   // Per-blob cap breach (cap set to 4096 by the test).
-  window.bridge.emit('publish', {
+  window.bridge.emit('draft', {
     type: 'event',
     args: {},
     blobs: { big: new Uint8Array(8192) }
@@ -16,6 +16,6 @@
   // Total cap breach via many small blobs (total cap 16384 by the test).
   const blobs = {};
   for (let i = 0; i < 10; i++) blobs['b' + i] = new Uint8Array(2048);
-  window.bridge.emit('publish', { type: 'event', args: {}, blobs });
+  window.bridge.emit('draft', { type: 'event', args: {}, blobs });
   window.bridge.emit('done', { sent: 2 });
 </script>

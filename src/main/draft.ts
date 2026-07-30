@@ -75,33 +75,33 @@ export function validBlobName(name: string, maxLen: number): boolean {
 
 export function validateDraft(data: unknown, caps: DraftCaps = DEFAULT_DRAFT_CAPS): DraftResult {
   if (typeof data !== 'object' || data === null || Array.isArray(data)) {
-    return { ok: false, reason: 'publish: payload must be an object' }
+    return { ok: false, reason: 'draft: payload must be an object' }
   }
   const obj = data as Record<string, unknown>
 
   for (const key of Object.keys(obj)) {
-    if (!ALLOWED_KEYS.has(key)) return { ok: false, reason: `publish: unknown key "${key}"` }
+    if (!ALLOWED_KEYS.has(key)) return { ok: false, reason: `draft: unknown key "${key}"` }
   }
 
   const type = obj.type
   if (typeof type !== 'string' || type.length === 0) {
-    return { ok: false, reason: 'publish: type must be a non-empty string' }
+    return { ok: false, reason: 'draft: type must be a non-empty string' }
   }
   if (type.length > caps.maxTypeLen) {
-    return { ok: false, reason: 'publish: type too long' }
+    return { ok: false, reason: 'draft: type too long' }
   }
 
-  if (!('args' in obj)) return { ok: false, reason: 'publish: args missing' }
+  if (!('args' in obj)) return { ok: false, reason: 'draft: args missing' }
   let argsBytes = 0
   try {
     const json = JSON.stringify(obj.args ?? null)
     if (typeof json !== 'string') throw new Error('unserialisable')
     argsBytes = Buffer.byteLength(json)
   } catch {
-    return { ok: false, reason: 'publish: args not serialisable' }
+    return { ok: false, reason: 'draft: args not serialisable' }
   }
   if (argsBytes > caps.maxArgsBytes) {
-    return { ok: false, reason: `publish: args too large (${argsBytes} bytes)` }
+    return { ok: false, reason: `draft: args too large (${argsBytes} bytes)` }
   }
 
   const att: Record<string, DraftAtt> = {}
@@ -111,26 +111,26 @@ export function validateDraft(data: unknown, caps: DraftCaps = DEFAULT_DRAFT_CAP
   if (obj.blobs !== undefined) {
     const raw = obj.blobs
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-      return { ok: false, reason: 'publish: blobs must be a name->bytes object' }
+      return { ok: false, reason: 'draft: blobs must be a name->bytes object' }
     }
     const names = Object.keys(raw as Record<string, unknown>)
     if (names.length > caps.maxBlobCount) {
-      return { ok: false, reason: `publish: too many blobs (${names.length})` }
+      return { ok: false, reason: `draft: too many blobs (${names.length})` }
     }
     for (const name of names) {
       if (!validBlobName(name, caps.maxNameLen)) {
-        return { ok: false, reason: `publish: invalid blob name` }
+        return { ok: false, reason: `draft: invalid blob name` }
       }
       const bytes = (raw as Record<string, unknown>)[name]
       if (!(bytes instanceof Uint8Array)) {
-        return { ok: false, reason: `publish: blob "${name}" is not a Uint8Array` }
+        return { ok: false, reason: `draft: blob "${name}" is not a Uint8Array` }
       }
       if (bytes.byteLength > caps.maxBlobBytes) {
-        return { ok: false, reason: `publish: blob "${name}" too large (${bytes.byteLength} bytes)` }
+        return { ok: false, reason: `draft: blob "${name}" too large (${bytes.byteLength} bytes)` }
       }
       blobBytes += bytes.byteLength
       if (blobBytes > caps.maxTotalBlobBytes) {
-        return { ok: false, reason: `publish: total blob bytes exceed cap` }
+        return { ok: false, reason: `draft: total blob bytes exceed cap` }
       }
       const h = createHash('sha256').update(bytes).digest('hex')
       att[name] = { h, m: 'application/octet-stream', n: bytes.byteLength }

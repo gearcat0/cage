@@ -55,9 +55,11 @@ it cannot forge or overpaint the trust chrome. This is proven at the pixel level
 paints a fake "✓ signed" badge leaves the chrome layer's real badge intact and
 its own colour entirely absent from the chrome capture.
 
-A thing's `emit("publish", …)` is a *request*: it grants nothing. The shell
-surfaces it to chrome, where the human approves or rejects it — never
-auto-granted.
+A thing's `emit("draft", …)` streams its working state: it grants nothing.
+The shell renders it as the live preview, and the chrome **Publish** button
+signs exactly the latest draft — after the human confirms in chrome, never
+auto-granted. Programs cannot initiate a publish (`emit("publish")` is
+retired); all controls live in trusted chrome.
 
 ## Ingestion & authoring
 

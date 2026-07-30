@@ -20,7 +20,8 @@ interface ShellApi {
   open(envelopeHash: string): Promise<HeaderFacts>
   close(): Promise<void>
   setMode(mode: 'view' | 'edit'): Promise<'view' | 'edit'>
-  onModeChanged(cb: (p: { mode: 'view' | 'edit'; preview: boolean }) => void): void
+  onModeChanged(cb: (p: { mode: 'view' | 'edit'; preview: boolean; publishable: boolean }) => void): void
+  publishDraft(): Promise<Record<string, unknown>>
   copyThing(envelopeHash: string): Promise<Record<string, unknown>>
   deleteThing(envelopeHash: string): Promise<{ deleted: boolean }>
   overlay(delta: 1 | -1): void
@@ -421,9 +422,11 @@ async function refreshFeed(): Promise<void> {
 // every switch, so this local state is only a render cache.
 let currentMode: 'view' | 'edit' = 'view'
 let previewActive = false
+let publishable = false
 let modeButtons: { view: HTMLElement; edit: HTMLElement } | null = null
 let trustBadge: HTMLElement | null = null
 let previewBadge: HTMLElement | null = null
+let publishBtn: HTMLButtonElement | null = null
 
 function styleModeButtons(): void {
   modeButtons?.view.classList.toggle('sh-mode-btn--active', currentMode === 'view')
@@ -433,6 +436,14 @@ function styleModeButtons(): void {
   const showingPreview = previewActive && currentMode === 'view'
   if (trustBadge) trustBadge.style.display = showingPreview ? 'none' : ''
   if (previewBadge) previewBadge.style.display = showingPreview ? '' : 'none'
+  // Publish enables once the program has streamed a draft — which is also how
+  // the chrome detects that this program supports the edit contract at all.
+  if (publishBtn) {
+    publishBtn.disabled = !publishable
+    publishBtn.title = publishable
+      ? 'Sign the previewed draft as a new instance'
+      : 'Nothing to publish yet — edit the thing first (the program streams its state as you edit)'
+  }
 }
 
 function renderModeToggle(): HTMLElement {
@@ -458,6 +469,7 @@ function renderHeader(h: HeaderFacts | null): void {
     modeButtons = null
     trustBadge = null
     previewBadge = null
+    publishBtn = null
     thingHeader.append(el('span', 'sh-hint', 'Select a thing from the feed.'))
     return
   }
@@ -499,6 +511,15 @@ function renderHeader(h: HeaderFacts | null): void {
   const delBtn = el('button', 'evm-btn evm-btn--danger evm-btn--sm', 'Delete')
   delBtn.setAttribute('data-testid', 'header-delete')
   delBtn.addEventListener('click', () => void deleteWithConfirm(h.envelopeHash, h.type))
+  // Publish: signs the LATEST streamed draft — exactly what the preview shows.
+  // Disabled until the program streams one (see styleModeButtons).
+  const pub = el('button', 'evm-btn evm-btn--primary evm-btn--sm', 'Publish') as HTMLButtonElement
+  pub.setAttribute('data-testid', 'header-publish')
+  pub.addEventListener('click', async () => {
+    const r = await shell.publishDraft()
+    if (r.status === 'invalid') showText(String(r.reason), 'danger')
+  })
+  publishBtn = pub
   thingHeader.append(
     badge,
     previewBadge,
@@ -506,6 +527,7 @@ function renderHeader(h: HeaderFacts | null): void {
     authorEl,
     typeBadge,
     renderModeToggle(),
+    pub,
     el('span', 'sh-spacer'),
     copyBtn,
     delBtn,
@@ -513,6 +535,9 @@ function renderHeader(h: HeaderFacts | null): void {
     hashEl
   )
   if (h.isFork) thingHeader.append(el('span', 'evm-badge evm-badge--danger', 'FORK — author history diverged'))
+  // Main pushes mode-changed BEFORE shell.open returns, i.e. before these
+  // elements existed — apply the cached state to the freshly built controls.
+  styleModeButtons()
 }
 
 async function openThing(envelopeHash: string): Promise<void> {
@@ -527,9 +552,20 @@ shell.onConfirmRequest((req) => {
   const overlay = el('div', 'evm-modal-overlay')
   const modal = el('div', 'evm-modal')
   const header = el('div', 'evm-modal-header')
-  header.append(el('span', 'evm-modal-title', `A thing wants to ${req.kind}`))
+  // 'publish' is user-initiated (the chrome Publish button signing the
+  // previewed draft); anything else would be a thing's own request.
+  const title = req.kind === 'publish' ? 'Publish a new instance?' : `A thing wants to ${req.kind}`
+  header.append(el('span', 'evm-modal-title', title))
   const body = el('div', 'evm-modal-body')
-  body.append(el('p', 'sh-hint', 'This request grants nothing until you approve it here.'))
+  body.append(
+    el(
+      'p',
+      'sh-hint',
+      req.kind === 'publish'
+        ? 'This signs the previewed draft with your identity as a new thing in your feed. Nothing happens until you approve it here.'
+        : 'This request grants nothing until you approve it here.'
+    )
+  )
   const pre = el('pre', 'sh-draft') as HTMLPreElement
   pre.textContent = JSON.stringify(req.summary, null, 2)
   body.append(pre)
@@ -566,6 +602,7 @@ shell.onFeedChanged(() => void refreshFeed())
 shell.onModeChanged((p) => {
   currentMode = p.mode
   previewActive = p.preview
+  publishable = p.publishable
   styleModeButtons()
 })
 shell.onPublishResult((o) => {

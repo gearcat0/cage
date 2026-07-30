@@ -480,7 +480,7 @@ test.describe('the bridge hands over data, not authority', () => {
     expect(['light', 'dark']).toContain(r.colorScheme)
   })
 
-  test('emit("publish") records a validated draft with an assembled attachment table', async ({ open }) => {
+  test('emit("draft") records a validated draft with an assembled attachment table', async ({ open }) => {
     const cage = await open({ thing: 'bridge-publish-valid.html' })
     const done = (await cage.waitForEmit('done')) as Record<string, unknown>
     const events = await cage.events()
@@ -496,7 +496,7 @@ test.describe('the bridge hands over data, not authority', () => {
     expect(draft.blobBytes).toBe(done.blobLength)
   })
 
-  test('a flood of valid publish drafts stays bounded and retains no blob bytes', async ({ open }) => {
+  test('a flood of valid drafts stays bounded and retains no blob bytes', async ({ open }) => {
     const cage = await open({ thing: 'bridge-publish-flood.html' })
     const r = (await cage.waitForEmit('done')) as Record<string, number>
     expect(r.count).toBe(100)
@@ -514,7 +514,7 @@ test.describe('the bridge hands over data, not authority', () => {
     expect(info.lastKeys).not.toContain('blobs')
   })
 
-  test('oversized publish drafts are rejected (per-blob AND total caps)', async ({ open }) => {
+  test('oversized drafts are rejected (per-blob AND total caps)', async ({ open }) => {
     const cage = await open({
       thing: 'bridge-publish-oversized.html',
       extraEnv: {
@@ -531,15 +531,23 @@ test.describe('the bridge hands over data, not authority', () => {
     expect(events.some((e) => e.type === 'draft-recorded')).toBe(false)
   })
 
-  test('malformed publish drafts are rejected', async ({ open }) => {
+  test('malformed drafts are rejected', async ({ open }) => {
     const cage = await open({ thing: 'bridge-publish-malformed.html' })
     const done = (await cage.waitForEmit('done')) as Record<string, unknown>
     const events = await cage.events()
     const rejected = events.filter(
-      (e) => e.type === 'emit-rejected' && (e.reason as string).startsWith('publish:')
+      (e) => e.type === 'emit-rejected' && (e.reason as string).startsWith('draft:')
     )
     // Every malformed attempt was rejected; none became a draft.
     expect(rejected.length).toBe(done.sent)
+    expect(events.some((e) => e.type === 'draft-recorded')).toBe(false)
+  })
+
+  test('emit("publish") is retired and rejected (the shell owns publish)', async ({ open }) => {
+    const cage = await open({ thing: 'bridge-publish-retired.html' })
+    await cage.waitForEmit('done')
+    const events = await cage.events()
+    expect(events.some((e) => e.type === 'emit-rejected' && /retired/.test((e as { reason: string }).reason))).toBe(true)
     expect(events.some((e) => e.type === 'draft-recorded')).toBe(false)
   })
 

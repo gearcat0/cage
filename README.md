@@ -51,10 +51,11 @@ until a human confirms it in trusted chrome:
 - `viewerInfo()` — coarse and non-identifying: `locale` + `colorScheme`,
   nothing that fingerprints.
 - `emit(channel, data)` — fire-and-forget request that grants nothing.
-  `emit("publish", {type, args, blobs})` hands the shell a draft
-  manifest-to-be; the shell validates the shape, enforces per-blob AND
-  total-bytes caps, hashes inline blobs into an attachment table, and records
-  the draft. Signing/sealing/review UI are later phases.
+  `emit("draft", {type, args, blobs})` streams the program's working state;
+  the shell validates the shape, enforces per-blob AND total-bytes caps,
+  hashes inline blobs into an attachment table, renders it as the live
+  preview, and lets the human sign EXACTLY that latest draft via the chrome
+  Publish button. (`emit("publish")` is retired — publish is shell-owned.)
 
 Attachment bytes live in a **content-addressed store** (`<cas>/blobs/<hex>`)
 for public things, or an **ephemeral in-memory store** for sealed things —
@@ -76,8 +77,8 @@ src/main/
   store.ts      CasStore (persistent, content-addressed, on-disk) and
                 EphemeralStore (memory-only, for sealed things)
   bridge.ts     shell side of the bridge: ThingArgs view, name→URL resolution,
-                coarse viewerInfo, emit + publish-draft validation
-  draft.ts      pure receipt-side validation of emit("publish") drafts (caps,
+                coarse viewerInfo, emit + draft validation
+  draft.ts      pure receipt-side validation of emit("draft") payloads (caps,
                 shape, attachment-table assembly)
   events.ts     main-process event log the tests read from OUTSIDE the renderer
 src/preload/

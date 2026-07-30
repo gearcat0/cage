@@ -11,7 +11,8 @@ import { NamingService, DirectResolver, EnsResolver, NostrResolver, type EnsClie
 import { createMockEnsClient } from './naming/mock-ens.js'
 import { createViemEnsClient } from './naming/ens-viem.js'
 import { CasStore, EphemeralStore } from '../main/store.js'
-import { installBridge, setPublishObserver, setPreviewObserver, type ThingMode } from '../main/bridge.js'
+import { installBridge, setDraftObserver, type ThingMode } from '../main/bridge.js'
+import { cage as cageGlobals } from '../main/events.js'
 import type { Draft } from '../main/draft.js'
 import {
   admitBundle,
@@ -192,6 +193,8 @@ interface ShellSurface {
     editWcId: number | null
     previewWcId: number | null
   } | null
+  /** Raise the publish confirm for the open thing's latest draft. */
+  publishDraft?: () => Record<string, unknown>
   /** Copy a thing (new instance, same program/type/args/attachments, your key). */
   copyThing?: (envelopeHash: string) => Promise<Record<string, unknown>>
   /** Delete a thing from the library (+ blob GC + seed removal). */
@@ -200,6 +203,9 @@ interface ShellSurface {
 
 const shell: ShellSurface = { ready: false, lastConfirm: null, lastPublish: null }
 ;(app as unknown as { __shell: ShellSurface }).__shell = shell
+// The bridge/cage event log, readable from OUTSIDE the renderer via
+// `evaluate(({ app }) => app.__cage)` — same surface the cage harness exposes.
+;(app as unknown as { __cage: typeof cageGlobals }).__cage = cageGlobals
 
 // Optional file-based startup tracing (SHELL_DEBUG_FILE) — off by default. Kept
 // because a hang in whenReady is otherwise invisible under a headless launcher.
@@ -300,6 +306,16 @@ app.whenReady().then(async () => {
     previewMounting: boolean
     pendingDraft: Draft | null
     draftTimer: ReturnType<typeof setTimeout> | null
+    /** The edit cage's wcId, recorded at BIND time — drafts are accepted from
+     *  it even while it is still loading (programs emit an initial draft). */
+    editWcId: number | null
+    /** The most recent draft the edit cage streamed — what the preview shows,
+     *  and EXACTLY what the chrome Publish button signs on approval. */
+    latestDraft: Draft | null
+    latestDraftMeta: { argsBytes: number; blobBytes: number } | null
+    /** Identity key of the currently mounted preview (dedupe: identical
+     *  drafts must not remount — that is visible flicker). */
+    lastPreviewKey: string | null
     activeMode: ThingMode
     wcIds: Set<number>
   }
@@ -471,7 +487,13 @@ app.whenReady().then(async () => {
   }
 
   function notifyModeChanged(mode: ThingMode): void {
-    chrome.webContents.send('shell:mode-changed', { mode, preview: current?.preview != null })
+    chrome.webContents.send('shell:mode-changed', {
+      mode,
+      preview: current?.preview != null,
+      // Publish is enabled exactly when a draft exists to sign — which is also
+      // how the chrome detects that the program supports the edit contract.
+      publishable: current?.latestDraft != null
+    })
   }
 
   async function openThing(envelopeHash: string): Promise<Record<string, unknown>> {
@@ -497,6 +519,10 @@ app.whenReady().then(async () => {
       previewMounting: false,
       pendingDraft: null,
       draftTimer: null,
+      editWcId: null,
+      latestDraft: null,
+      latestDraftMeta: null,
+      lastPreviewKey: null,
       activeMode: 'view',
       wcIds: new Set()
     }
@@ -543,7 +569,12 @@ app.whenReady().then(async () => {
           stored: o.stored,
           bounds: cageRect(),
           mode: 'edit',
-          onBound: (wcId) => o.wcIds.add(wcId)
+          onBound: (wcId) => {
+            o.wcIds.add(wcId)
+            // Recorded BEFORE the program loads: an initial draft emitted
+            // during the edit cage's own load must be accepted.
+            o.editWcId = wcId
+          }
         })
       }
       const m = await o.editMounting
@@ -627,6 +658,7 @@ app.whenReady().then(async () => {
         if (oldPreviewId !== null) o.wcIds.delete(oldPreviewId)
       }
       o.preview = m
+      o.lastPreviewKey = draftKey(draft)
       watchZoomKeys(m.view.webContents)
       applyVisibility()
       applyZoom()
@@ -643,15 +675,32 @@ app.whenReady().then(async () => {
     }
   }
 
+  /** Identity of a draft for preview dedupe: type + args + the attachment
+   *  TABLE (name → hash/mime/size covers the blob bytes). */
+  function draftKey(draft: Draft): string {
+    return JSON.stringify([draft.type, draft.args, draft.att])
+  }
+
   // Coalesce keystroke-rate drafts into one remount per quiet period.
-  const PREVIEW_DEBOUNCE_MS = 250
-  setPreviewObserver((req) => {
+  const PREVIEW_DEBOUNCE_MS = 600
+  setDraftObserver((req) => {
     const o = current
-    // Drafts drive the preview of the EDITING session: accept them only from
-    // the edit cage. (The preview cage runs the same program in view mode —
+    // Drafts drive the editing session: accept them only from the edit cage
+    // (recorded at bind time, so a program's initial draft during its own
+    // load counts). The preview cage runs the same program in view mode —
     // accepting drafts from any cage would let a program remount its own
-    // preview in a loop.)
-    if (!o || !o.edit || req.senderId !== o.edit.view.webContents.id) return
+    // preview in a loop.
+    if (!o || o.editWcId === null || req.senderId !== o.editWcId) return
+    const publishableBefore = o.latestDraft != null
+    // The latest draft is what the chrome Publish button signs.
+    o.latestDraft = req.draft
+    o.latestDraftMeta = { argsBytes: req.argsBytes, blobBytes: req.blobBytes }
+    if (!publishableBefore) notifyModeChanged(o.activeMode) // enable Publish
+    // Identical draft → identical preview: skip the remount (visible flicker).
+    if (o.lastPreviewKey !== null && draftKey(req.draft) === o.lastPreviewKey) {
+      o.pendingDraft = null
+      return
+    }
     o.pendingDraft = req.draft
     if (o.draftTimer) return
     o.draftTimer = setTimeout(() => {
@@ -661,8 +710,9 @@ app.whenReady().then(async () => {
     o.draftTimer.unref?.()
   })
 
-  /** Drop the draft preview (approved publish: the draft is now a real, signed
-   *  instance in the feed — the preview badge would be lying). */
+  /** Drop the draft state (approved publish: the draft is now a real, signed
+   *  instance in the feed — the preview badge would be lying, and Publish
+   *  disables until the program streams a new draft). */
   function clearPreview(): void {
     const o = current
     if (!o) return
@@ -671,14 +721,17 @@ app.whenReady().then(async () => {
       o.draftTimer = null
     }
     o.pendingDraft = null
+    o.latestDraft = null
+    o.latestDraftMeta = null
+    o.lastPreviewKey = null
     if (o.preview) {
       const oldId = o.preview.view.webContents.id
       o.preview.destroy()
       o.wcIds.delete(oldId)
       o.preview = null
       applyVisibility()
-      notifyModeChanged(o.activeMode)
     }
+    notifyModeChanged(o.activeMode)
   }
 
   /** Copy: a NEW instance signed by THIS identity carrying the exact same
@@ -779,11 +832,15 @@ app.whenReady().then(async () => {
     return ingestBytes(tar)
   }
 
-  setPublishObserver((req) => {
-    // Only a cage of the currently open thing may raise a confirmable publish
-    // — either mode's cage: same stored program, same human confirm.
-    if (!current || !current.wcIds.has(req.senderId)) return
-    const stored = current.stored
+  /** The chrome Publish button: raise a confirm for the LATEST DRAFT — the
+   *  exact payload the preview is rendering (publish-what-you-preview).
+   *  Programs cannot initiate this (emit("publish") is retired); the human
+   *  clicks, the human confirms, the shell signs. */
+  function publishLatestDraft(): Record<string, unknown> {
+    const o = current
+    if (!o || !o.latestDraft || !o.latestDraftMeta) {
+      return { status: 'invalid', reason: 'nothing to publish — the program has not streamed a draft yet' }
+    }
     while (pendingConfirms.size >= MAX_PENDING_PUBLISH) {
       const oldest = pendingConfirms.keys().next().value as number
       clearTimeout(pendingConfirms.get(oldest)!.timer)
@@ -793,23 +850,24 @@ app.whenReady().then(async () => {
     // What the human decides on: type + args + attachment table — args is
     // JSON-serializable and ≤256 KB by validateDraft.
     const summary: Record<string, unknown> = {
-      type: req.draft.type,
-      args: req.draft.args,
-      att: req.draft.att,
-      argsBytes: req.argsBytes,
-      blobBytes: req.blobBytes
+      type: o.latestDraft.type,
+      args: o.latestDraft.args,
+      att: o.latestDraft.att,
+      argsBytes: o.latestDraftMeta.argsBytes,
+      blobBytes: o.latestDraftMeta.blobBytes
     }
     const timer = setTimeout(() => {
       pendingConfirms.delete(id)
       applyVisibility()
     }, PUBLISH_CONFIRM_TTL_MS)
     timer.unref?.()
-    pendingConfirms.set(id, { draft: req.draft, program: stored.program, timer })
+    pendingConfirms.set(id, { draft: o.latestDraft, program: o.stored.program, timer })
     applyVisibility() // cages hide while the human decides in chrome
     const confirmReq = { id, kind: 'publish', summary }
     shell.lastConfirm = confirmReq
     chrome.webContents.send('shell:confirm-request', confirmReq)
-  })
+    return { status: 'pending', id }
+  }
   ipcMain.on('shell:confirm-response', (_e, id: unknown, approved: unknown) => {
     if (typeof id !== 'number' || typeof approved !== 'boolean') return
     const p = pendingConfirms.get(id)
@@ -835,6 +893,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('shell:fetch', (_e, locator: string) => fetchNameOrLocator(locator))
   ipcMain.handle('shell:open', (_e, envelopeHash: string) => openThing(envelopeHash))
   ipcMain.handle('shell:set-mode', (_e, mode: unknown) => setMode(mode === 'edit' ? 'edit' : 'view'))
+  ipcMain.handle('shell:publish', () => publishLatestDraft())
   ipcMain.handle('shell:copy', (_e, h: unknown) =>
     typeof h === 'string' ? copyThing(h) : { status: 'invalid', reason: 'bad hash' }
   )
@@ -880,6 +939,7 @@ app.whenReady().then(async () => {
   shell.feed = (query) => getFeed(query)
   shell.open = (envelopeHash) => openThing(envelopeHash)
   shell.setMode = (m) => setMode(m)
+  shell.publishDraft = () => publishLatestDraft()
   shell.copyThing = (h) => copyThing(h)
   shell.deleteThing = (h) => deleteThing(h)
   shell.modeState = () =>

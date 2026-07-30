@@ -100,7 +100,7 @@ async function switchMode(mode: 'view' | 'edit'): Promise<void> {
   await poll(modeState, (s) => s?.activeMode === mode)
 }
 
-const displayText = (which: 'view' | 'edit' = 'view'): Promise<string | null> =>
+const displayText = (which: 'view' | 'edit' | 'preview' = 'view'): Promise<string | null> =>
   thingEval<string | null>(`document.getElementById('display')?.textContent ?? null`, which)
 
 // Visibility of every live cage view. While a publish confirm is pending both
@@ -120,27 +120,50 @@ const cageVisibility = (): Promise<boolean[]> =>
 let blankHash = '' // E1: the blank nametag (args: null)
 let namedHash = '' // E2: the instance carrying {name: 'Joe Bloggs'}
 
+// Type into the edit cage through the page's own input event — the program
+// streams its working state on the "draft" channel on every input.
+const typeName = (value: string): Promise<void> =>
+  thingEval(
+    `
+    var i = document.getElementById('name');
+    i.value = ${JSON.stringify(value)};
+    i.dispatchEvent(new Event('input'));
+  `,
+    'edit'
+  )
+
+const publishEnabled = (): Promise<boolean> =>
+  chromeEval<boolean>(`!document.querySelector('[data-testid=header-publish]').disabled`)
+
+/** Publish via the SHELL: wait until the preview reflects the draft (so the
+ *  latest draft is known-arrived), then click the chrome Publish button. */
+async function clickPublish(expectedName: string): Promise<void> {
+  await poll(() => displayText('preview'), (t) => t === expectedName)
+  await chromeEval(`document.querySelector('[data-testid=header-publish]').click()`)
+}
+
 test('opens in view, edit mode publishes, approval creates a named instance of the same program', async () => {
   const { outcome } = await shell.compose(NAMETAG_HTML.toString('base64'), 'nametag')
   expect(outcome.status).toBe('valid')
   blankHash = outcome.envelopeHash as string
 
-  // Always lands in VIEW: the blank tag renders its placeholder, no edit UI.
+  // Always lands in VIEW: the blank tag renders its placeholder, no edit UI,
+  // and NOTHING to publish (no draft yet) — the Publish button is disabled.
   await openViaChrome(blankHash)
   const placeholder = await poll(() => displayText('view'), (t) => t !== null)
   expect(placeholder).toBe('—')
   expect(await thingEval<boolean>(`!!document.getElementById('name')`, 'view')).toBe(false)
+  expect(await publishEnabled()).toBe(false)
 
-  // The shell's toggle — not the program — enters edit mode.
+  // The shell's toggle — not the program — enters edit mode. The program
+  // streams its initial draft on load, which ENABLES Publish (this is how the
+  // chrome detects the program supports the edit contract at all).
   await switchMode('edit')
   await poll(() => thingEval<boolean>(`!!document.getElementById('name')`, 'edit'), (v) => v)
-  await thingEval(
-    `
-    document.getElementById('name').value = 'Joe Bloggs';
-    document.getElementById('save').click();
-  `,
-    'edit'
-  )
+  await poll(publishEnabled, (v) => v)
+
+  await typeName('Joe Bloggs')
+  await clickPublish('Joe Bloggs')
 
   const confirm = await poll(
     () => shellSurface<{ kind: string; summary: { type: string; args: { name?: string } } } | null>('lastConfirm'),
@@ -187,13 +210,8 @@ test('a denied publish is dropped', async () => {
   await poll(() => thingEval<boolean>(`!!document.getElementById('name')`, 'edit'), (v) => v)
   const before = (await shell.feed()).length
 
-  await thingEval(
-    `
-    document.getElementById('name').value = 'Nobody';
-    document.getElementById('save').click();
-  `,
-    'edit'
-  )
+  await typeName('Nobody')
+  await clickPublish('Nobody')
   await poll(
     () => shellSurface<{ summary: { args: { name?: string } } } | null>('lastConfirm'),
     (c) => c?.summary.args?.name === 'Nobody'
@@ -218,13 +236,8 @@ test('edit mode re-publishes with a changed name', async () => {
   )
   expect(prefill).toBe('Joe Bloggs')
 
-  await thingEval(
-    `
-    document.getElementById('name').value = 'Joan Bloggs';
-    document.getElementById('save').click();
-  `,
-    'edit'
-  )
+  await typeName('Joan Bloggs')
+  await clickPublish('Joan Bloggs')
   await poll(
     () => shellSurface<{ summary: { args: { name?: string } } } | null>('lastConfirm'),
     (c) => c?.summary.args?.name === 'Joan Bloggs'
@@ -249,24 +262,14 @@ test('live preview: view mode shows the unpublished draft in final form', async 
   await poll(() => thingEval<boolean>(`!!document.getElementById('name')`, 'edit'), (v) => v)
 
   // Type through the page's own input event — the program streams its
-  // working state on the "draft" channel as you type.
-  await thingEval(
-    `
-    var i = document.getElementById('name');
-    i.value = 'Previewed';
-    i.dispatchEvent(new Event('input'));
-  `,
-    'edit'
-  )
-  await poll(modeState, (s) => s?.previewWcId != null)
+  // working state on the "draft" channel as you type. (An initial-state
+  // preview may mount first; wait for the TYPED draft's preview.)
+  await typeName('Previewed')
+  await poll(() => displayText('preview'), (t) => t === 'Previewed')
 
   // View mode now shows the DRAFT rendered in final form...
   await switchMode('view')
-  const previewText = await poll(
-    () => thingEval<string | null>(`document.getElementById('display')?.textContent ?? null`, 'preview'),
-    (t) => t !== null
-  )
-  expect(previewText).toBe('Previewed')
+  expect(await displayText('preview')).toBe('Previewed')
   // ...while the signed instance underneath is untouched (blank placeholder).
   expect(await thingEval<string | null>(`document.getElementById('display')?.textContent ?? null`, 'view')).toBe('—')
 
@@ -294,18 +297,15 @@ test('live preview: view mode shows the unpublished draft in final form', async 
 
   // Further edits keep streaming — even while view mode is showing: the edit
   // cage is alive underneath and its drafts remount the preview.
-  await thingEval(
-    `
-    var i = document.getElementById('name');
-    i.value = 'Previewed Again';
-    i.dispatchEvent(new Event('input'));
-  `,
-    'edit'
-  )
-  await poll(
-    () => thingEval<string | null>(`document.getElementById('display')?.textContent ?? null`, 'preview'),
-    (t) => t === 'Previewed Again'
-  )
+  await typeName('Previewed Again')
+  await poll(() => displayText('preview'), (t) => t === 'Previewed Again')
+
+  // Dedupe: re-emitting an IDENTICAL draft must NOT remount the preview
+  // (remounts are visible flicker).
+  const stableId = (await modeState())!.previewWcId
+  await typeName('Previewed Again')
+  await new Promise((r) => setTimeout(r, 900)) // past the debounce window
+  expect((await modeState())!.previewWcId).toBe(stableId)
 })
 
 test('live preview works when editing an EXISTING instance, without stealing focus', async () => {

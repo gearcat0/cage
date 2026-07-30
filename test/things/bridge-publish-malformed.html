@@ -16,6 +16,6 @@
     { type: 'event', args: {}, blobs: { '..': new Uint8Array(1) } },      // dot-dot
     { type: 'event', args: {}, extra: 'unknown-key' }
   ];
-  for (const a of attempts) window.bridge.emit('publish', a);
+  for (const a of attempts) window.bridge.emit('draft', a);
   window.bridge.emit('done', { sent: attempts.length });
 </script>

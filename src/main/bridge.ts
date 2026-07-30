@@ -134,30 +134,47 @@ export function installBridge(): void {
       return
     }
 
-    // The publish path carries binary blobs, so it gets its own validation and
-    // caps (per-blob AND total — see draft.ts) instead of the JSON measure.
+    // RETIRED: programs no longer request publishes. The shell owns publish —
+    // it signs the LATEST DRAFT (what the preview shows) when the human clicks
+    // Publish in trusted chrome. Rejected here explicitly (the generic path
+    // below would try to JSON-stringify blob bytes).
     if (channel === 'publish') {
-      handlePublish(event.sender.id, data, draftCaps)
+      record({ type: 'emit-rejected', reason: 'publish channel retired — the shell publishes your latest draft' })
       return
     }
 
-    // The draft path: same shape and caps as publish, but it GRANTS EVEN LESS
-    // — no confirm, no signing, nothing persisted. It only feeds the shell's
-    // live preview (render the same program in view mode with these args).
-    // Blob bytes are forwarded to the observer and retained nowhere here.
+    // The draft channel: a program streams its working state {type, args,
+    // blobs} here. It grants NOTHING — no confirm, no signing, nothing
+    // persisted. The shell uses it for the live preview and as the payload a
+    // human may later choose to publish from chrome. Carries binary blobs, so
+    // it gets its own validation and caps (per-blob AND total — see draft.ts)
+    // instead of the JSON measure. Metadata only is retained here, in a
+    // bounded ring (P0-3: a thing can stream valid drafts in a loop); the full
+    // draft goes to the observer, which owns bounding it — with no observer
+    // installed (the bare cage harness), the bytes are dropped right here.
     if (channel === 'draft') {
       const result = validateDraft(data, draftCaps)
       if (!result.ok) {
         record({ type: 'emit-rejected', reason: result.reason })
         return
       }
-      record({
-        type: 'draft-preview',
-        draftType: result.draft.type,
+      cageGlobals.drafts.push({
+        type: result.draft.type,
+        att: result.draft.att,
         argsBytes: result.argsBytes,
         blobBytes: result.blobBytes
       })
-      previewObserver?.({
+      if (cageGlobals.drafts.length > MAX_RETAINED_DRAFTS) {
+        cageGlobals.drafts.splice(0, cageGlobals.drafts.length - MAX_RETAINED_DRAFTS)
+      }
+      record({
+        type: 'draft-recorded',
+        draftType: result.draft.type,
+        att: result.draft.att,
+        argsBytes: result.argsBytes,
+        blobBytes: result.blobBytes
+      })
+      draftObserver?.({
         senderId: event.sender.id,
         draft: result.draft,
         argsBytes: result.argsBytes,
@@ -190,13 +207,12 @@ export function installBridge(): void {
   })
 }
 
-/** An optional observer the shell installs to drive the human-confirmation flow:
- *  a thing's publish REQUEST is surfaced in trusted chrome and decided there,
- *  never auto-granted. The bridge still grants nothing itself, and retains no
- *  bytes — the observer receives the full validated draft (blob bytes
- *  included) and owns its bounding and lifetime from there. */
-export type PublishObserver = (req: {
-  /** webContents id of the emitting cage — lets the shell match the request
+/** An optional observer the shell installs on the draft stream. The bridge
+ *  grants nothing and retains no bytes — the observer receives the full
+ *  validated draft (blob bytes included) and owns its bounding and lifetime
+ *  from there (live preview; the payload a human may later publish). */
+export type DraftObserver = (req: {
+  /** webContents id of the emitting cage — lets the shell match the draft
    *  to the thing it mounted there. */
   senderId: number
   draft: Draft
@@ -204,57 +220,9 @@ export type PublishObserver = (req: {
   blobBytes: number
 }) => void
 
-let publishObserver: PublishObserver | null = null
-export function setPublishObserver(fn: PublishObserver | null): void {
-  publishObserver = fn
-}
-
-/** Observer for emit("draft") — the live-preview path. Same payload shape as
- *  publish; with no observer installed the draft is dropped here. */
-let previewObserver: PublishObserver | null = null
-export function setPreviewObserver(fn: PublishObserver | null): void {
-  previewObserver = fn
-}
-
-/** Receipt side of `emit("publish", …)`: validate the draft shape, enforce the
- *  caps, hash inline blobs into an attachment table, and record the draft.
- *  Nothing is granted: signing, sealing, and the review/confirm UI are later
- *  phases; the thing never learns whether anything was accepted. */
-function handlePublish(senderId: number, data: unknown, caps: DraftCaps): void {
-  const result = validateDraft(data, caps)
-  if (!result.ok) {
-    record({ type: 'emit-rejected', reason: result.reason })
-    return
-  }
-  // Retain METADATA ONLY, in a bounded ring — never the raw blob bytes (P0-3
-  // discipline for the draft path). A thing can send valid drafts in a loop,
-  // each up to the total-blob cap; holding every draft's bytes forever would be
-  // an unbounded memory sink. The full draft (bytes included) goes only to the
-  // observer below, which owns bounding it; with no observer installed (the
-  // bare cage harness), the bytes are dropped right here.
-  cageGlobals.drafts.push({
-    type: result.draft.type,
-    att: result.draft.att,
-    argsBytes: result.argsBytes,
-    blobBytes: result.blobBytes
-  })
-  if (cageGlobals.drafts.length > MAX_RETAINED_DRAFTS) {
-    cageGlobals.drafts.splice(0, cageGlobals.drafts.length - MAX_RETAINED_DRAFTS)
-  }
-  record({
-    type: 'draft-recorded',
-    draftType: result.draft.type,
-    att: result.draft.att,
-    argsBytes: result.argsBytes,
-    blobBytes: result.blobBytes
-  })
-  // Surface the request to the shell's confirm flow (decided in chrome).
-  publishObserver?.({
-    senderId,
-    draft: result.draft,
-    argsBytes: result.argsBytes,
-    blobBytes: result.blobBytes
-  })
+let draftObserver: DraftObserver | null = null
+export function setDraftObserver(fn: DraftObserver | null): void {
+  draftObserver = fn
 }
 
 /** Bind a cage's bridge data at mount time. */

@@ -74,7 +74,9 @@ async function sendZoomKey(target: 'chrome' | 'thing', keyCode: '+' | '-' | '0')
 
 function expectLockstep(s: ZoomState, factor: number, baseX: number): void {
   expect(s.chromeZoom).toBeCloseTo(factor)
-  expect(s.thingZooms.length).toBe(2)
+  // View + edit cages at minimum; the nametag's initial draft may add a
+  // preview cage — EVERY live cage must track the app-level zoom.
+  expect(s.thingZooms.length).toBeGreaterThanOrEqual(2)
   for (const z of s.thingZooms) expect(z).toBeCloseTo(factor)
   for (const x of s.cageXs) expect(x).toBe(Math.round(baseX * factor))
 }
@@ -92,7 +94,7 @@ test('Ctrl +/−/0 zooms chrome and BOTH cages in lockstep, from either view', a
   await new Promise((r) => setTimeout(r, 500))
 
   const base = await state()
-  expect(base.thingZooms.length).toBe(2)
+  expect(base.thingZooms.length).toBeGreaterThanOrEqual(2)
   const baseX = base.cageXs[0]!
   expectLockstep(base, 1, baseX)
 
