@@ -1,0 +1,111 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>memo</title>
+<style>
+  body { margin: 0; font: 15px/1.5 Georgia, 'Times New Roman', serif; background: #eceae4; color: #1c1c1c;
+         display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; box-sizing: border-box; }
+  .memo { background: #fffef9; border: 1px solid #c9c4b4; border-top: 6px solid #37474f; width: 34em; max-width: 100%;
+          padding: 26px 32px 30px; box-shadow: 0 4px 16px rgba(0, 0, 0, .12); }
+  .memo h1 { margin: 0 0 16px; font-size: 22px; letter-spacing: .45em; text-transform: uppercase; color: #37474f; }
+  .field { display: grid; grid-template-columns: 6em 1fr; gap: 8px; align-items: baseline;
+           border-bottom: 1px solid #e2ddcd; padding: 5px 0; }
+  .field > label { font-weight: 700; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: #5c5c54; }
+  input, textarea { font: inherit; width: 100%; box-sizing: border-box; border: 1px solid #cfcaba;
+                    border-radius: 3px; padding: 3px 6px; background: #fffef9; }
+  textarea { min-height: 7em; resize: vertical; }
+  .value { min-height: 1em; }
+  .body { margin-top: 14px; }
+  .body .value { white-space: pre-wrap; }
+  .note { margin-top: 12px; font-size: 12px; color: #8a8677; font-family: system-ui, sans-serif; }
+</style>
+</head>
+<body>
+  <div class="memo">
+    <h1>Memo</h1>
+    <div id="app"></div>
+  </div>
+  <script>
+    'use strict';
+    // Same convention as the nametag, with structured state: the program
+    // renders the shell-chosen mode (a.mode) and streams its working state on
+    // the "draft" channel — the shell previews it live and its Publish button
+    // signs exactly the latest draft. No controls here; all controls are the
+    // shell's. State is passed in as an argument, never fetched.
+    var FIELDS = [
+      { key: 'to', label: 'To' },
+      { key: 'from', label: 'From' },
+      { key: 'subject', label: 'Subject' }
+    ];
+    var a = window.bridge.getArgs() || {};
+    var args = (a && typeof a.args === 'object' && a.args !== null) ? a.args : {};
+    var app = document.getElementById('app');
+
+    function str(v) { return typeof v === 'string' ? v : ''; }
+
+    function el(tag, text) {
+      var e = document.createElement(tag);
+      if (text !== undefined) e.textContent = text;
+      return e;
+    }
+
+    function fieldRow(label, child) {
+      var row = el('div'); row.className = 'field';
+      row.append(el('label', label), child);
+      return row;
+    }
+
+    function viewMode() {
+      app.replaceChildren();
+      FIELDS.forEach(function (f) {
+        var v = el('div', str(args[f.key]) || '—');
+        v.className = 'value'; v.id = 'view-' + f.key;
+        app.append(fieldRow(f.label, v));
+      });
+      var body = el('div'); body.className = 'body';
+      var msg = el('div', str(args.message) || '—');
+      msg.className = 'value'; msg.id = 'view-message';
+      body.append(msg);
+      app.append(body);
+    }
+
+    function editMode() {
+      app.replaceChildren();
+      var inputs = {};
+      FIELDS.forEach(function (f) {
+        var input = el('input'); input.id = 'edit-' + f.key; input.value = str(args[f.key]);
+        inputs[f.key] = input;
+        app.append(fieldRow(f.label, input));
+      });
+      var body = el('div'); body.className = 'body';
+      var msg = el('textarea'); msg.id = 'edit-message'; msg.value = str(args.message);
+      inputs.message = msg;
+      body.append(msg);
+      app.append(body);
+      var note = el('div', 'Preview in View — publish from the shell header when you’re ready.');
+      note.className = 'note';
+      app.append(note);
+
+      function streamDraft() {
+        window.bridge.emit('draft', {
+          type: 'memo',
+          args: {
+            to: inputs.to.value.trim(),
+            from: inputs.from.value.trim(),
+            subject: inputs.subject.value.trim(),
+            message: inputs.message.value
+          }
+        });
+      }
+      Object.keys(inputs).forEach(function (k) {
+        inputs[k].addEventListener('input', streamDraft);
+      });
+      streamDraft(); // initial state, so the shell's Publish enables immediately
+      inputs.to.focus();
+    }
+
+    if (a.mode === 'edit') editMode(); else viewMode();
+  </script>
+</body>
+</html>

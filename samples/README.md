@@ -30,3 +30,10 @@ while the thing is open.
 
 Programs have no Save/Publish buttons of their own (`emit('publish')` is
 retired): rendering and state are the program's; every control is the shell's.
+
+## memo.html
+
+The same contract with structured state: `args: {to, from, subject, message}`.
+View mode renders a classic memo sheet (em-dash placeholders for unset fields,
+line breaks preserved in the message); edit mode is four fields, each streaming
+a draft on input. Create it via **Create…** with type `memo`.
