@@ -1,6 +1,6 @@
-import { app, BaseWindow, WebContentsView, ipcMain, protocol, session, dialog, webContents } from 'electron'
+import { app, BaseWindow, Menu, WebContentsView, ipcMain, protocol, session, dialog, webContents } from 'electron'
 import { join } from 'node:path'
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, readFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { AdmissionService } from './admission/index.js'
 import { Keyring } from './keyring/index.js'
@@ -78,6 +78,19 @@ if (process.env.SHELL_USER_DATA_DIR) app.setPath('userData', process.env.SHELL_U
 // overrides on any platform.
 const SCALE = process.env.SHELL_SCALE ?? (process.platform === 'linux' ? '2' : null)
 if (SCALE) app.commandLine.appendSwitch('force-device-scale-factor', SCALE)
+
+/** Our own version, read from package.json (three levels up from
+ *  out/main/shell — the same relative shape inside a packaged asar). In dev
+ *  the app runs as a bare file under Electron, so app.getVersion() would
+ *  report ELECTRON's version, not ours. */
+function appVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '../../../package.json'), 'utf8')) as { version?: string }
+    return pkg.version ?? app.getVersion()
+  } catch {
+    return app.getVersion()
+  }
+}
 
 function hex(bytes: Uint8Array): string {
   let s = ''
@@ -280,6 +293,38 @@ app.whenReady().then(async () => {
     webPreferences: { preload: CHROME_PRELOAD, contextIsolation: true, sandbox: true, nodeIntegration: false }
   })
   win.contentView.addChildView(chrome)
+
+  // ── Application menu ───────────────────────────────────────────────────────
+  // Deliberately minimal: appMenu (macOS conventions), editMenu (clipboard
+  // shortcuts in chrome inputs), Help → About. NO viewMenu — its zoom roles
+  // would fight the app-level lockstep zoom, its reload would reload views
+  // out from under the shell, and devtools must never open into a cage.
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      ...(process.platform === 'darwin' ? [{ role: 'appMenu' as const }] : []),
+      { role: 'fileMenu' },
+      { role: 'editMenu' },
+      {
+        role: 'help',
+        submenu: [
+          {
+            label: 'About',
+            click: () => {
+              void dialog.showMessageBox(win, {
+                type: 'info',
+                title: 'About',
+                message: 'the shell',
+                detail: [
+                  `version ${appVersion()}`,
+                  `Electron ${process.versions.electron} · Chromium ${process.versions.chrome}`
+                ].join('\n')
+              })
+            }
+          }
+        ]
+      }
+    ])
+  )
 
   // ── The open thing: up to TWO cages, one per mode ──────────────────────────
   // The shell owns view/edit switching; the program renders whichever mode it
