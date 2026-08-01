@@ -40,12 +40,27 @@ read the bytes back, so its drafts either include freshly picked bytes
 current image" — which the shell resolves from the instance's own store.
 Create it via **Create…** with type `poster`; pick the image in Edit mode.
 
+## todo.html
+
+The contract with **array state**: `args {title, items: [{text, done}]}`.
+View mode is the signed artifact, read-only — checking things off is editing,
+done in Edit mode (add / remove / toggle / retext, every change streaming a
+draft) and made real by publishing. Create it via **Create…** with type
+`todo`.
+
 ## memo.html
 
 The same contract with structured state: `args: {to, from, subject, message}`.
 View mode renders a classic memo sheet (em-dash placeholders for unset fields,
 line breaks preserved in the message); edit mode is four fields, each streaming
 a draft on input. Create it via **Create…** with type `memo`.
+
+## card.html
+
+A contact / business card: `args {name, role, org, email, phone, url}` —
+pure scalars. View mode renders a card that shows only the fields that are
+set (a real card has no empty labels); edit mode is six inputs, each
+streaming a draft. Create it via **Create…** with type `card`.
 
 ## invite.html
 

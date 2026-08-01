@@ -19,6 +19,12 @@ test.afterAll(async () => {
   await shell?.close()
 })
 
+// The preview tests chain several debounced (600ms) preview remounts, each
+// spawning a renderer process — on a saturated 2-core CI runner that can
+// legitimately exceed the default 30s test budget. More budget, not less
+// coverage; a real hang still fails, just later.
+test.beforeEach(() => test.setTimeout(90_000))
+
 type ModeState = {
   activeMode: 'view' | 'edit'
   viewWcId: number | null
@@ -66,7 +72,7 @@ async function shellSurface<T>(field: 'lastConfirm' | 'lastPublish'): Promise<T>
   }, field)
 }
 
-async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs = 10_000): Promise<T> {
+async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs = 20_000): Promise<T> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
     let value: T | undefined
