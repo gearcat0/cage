@@ -19,7 +19,6 @@ import {
   buildBundle,
   encodeEnvelope,
   encodeManifest,
-  fromHex,
   hash,
   jsToCbor,
   parseBundle,
@@ -635,16 +634,34 @@ app.whenReady().then(async () => {
   // identical path a published instance would, so what you preview is exactly
   // what you would publish.
 
+  /** Resolve a draft's full attachment set: inline blobs as sent (mime from
+   *  the validated att table), carry-over names from the mounted instance's
+   *  own manifest + store — "keep my current image", declared by name because
+   *  a program can display its attachments but cannot read their bytes.
+   *  Throws when a carried name does not exist on the instance. */
+  function resolveDraftAttachments(stored: StoredThing, draft: Draft): Map<string, { bytes: Uint8Array; mime?: string }> {
+    const out = new Map<string, { bytes: Uint8Array; mime?: string }>()
+    for (const [name, bytes] of Object.entries(draft.blobs)) {
+      out.set(name, { bytes, mime: draft.att[name]?.m })
+    }
+    for (const name of draft.carry) {
+      const att = stored.manifest.att.get(name)
+      const bytes = att ? stored.store.readAll(toHex(att.h)) : null
+      if (!att || !bytes) throw new Error(`carry-over attachment is not on this instance: ${name}`)
+      out.set(name, { bytes, mime: att.m })
+    }
+    return out
+  }
+
   /** Synthesize the StoredThing a draft WOULD be if published: same program,
    *  the draft's type/args/attachments, blobs served from an ephemeral store
    *  (they exist nowhere on disk — nothing was signed or persisted). */
   function previewStoredFrom(stored: StoredThing, draft: Draft): StoredThing {
     const store = new EphemeralStore()
     const att = new Map<string, Attachment>()
-    for (const [name, bytes] of Object.entries(draft.blobs)) {
+    for (const [name, { bytes, mime }] of resolveDraftAttachments(stored, draft)) {
       store.put(bytes)
-      const a = draft.att[name]!
-      att.set(name, { h: fromHex(a.h), m: a.m, n: a.n })
+      att.set(name, { h: hash(bytes), m: mime ?? 'application/octet-stream', n: bytes.length })
     }
     return {
       row: stored.row,
@@ -707,9 +724,9 @@ app.whenReady().then(async () => {
   }
 
   /** Identity of a draft for preview dedupe: type + args + the attachment
-   *  TABLE (name → hash/mime/size covers the blob bytes). */
+   *  TABLE (name → hash/mime/size covers the blob bytes) + carry-over names. */
   function draftKey(draft: Draft): string {
-    return JSON.stringify([draft.type, draft.args, draft.att])
+    return JSON.stringify([draft.type, draft.args, draft.att, draft.carry])
   }
 
   // Coalesce keystroke-rate drafts into one remount per quiet period.
@@ -826,6 +843,10 @@ app.whenReady().then(async () => {
   // chrome renderer; the dialog gets type/args/att metadata only.
   interface PendingPublish {
     draft: Draft
+    /** The full attachment set, resolved (carry-overs included) at CONFIRM
+     *  time — approval must publish what the dialog described, even if the
+     *  open thing changes before the human decides. */
+    attachments: Map<string, { bytes: Uint8Array; mime?: string }>
     program: Uint8Array
     timer: ReturnType<typeof setTimeout>
   }
@@ -848,17 +869,11 @@ app.whenReady().then(async () => {
     } catch (e) {
       return { status: 'invalid', reason: `publish: ${(e as Error).message}` }
     }
-    const attachments = new Map<string, { bytes: Uint8Array; mime?: string }>()
-    for (const [name, bytes] of Object.entries(p.draft.blobs)) {
-      // Draft blobs carry no MIME (FORMAT_SPEC_NOTES §4); validateDraft already
-      // recorded application/octet-stream in the att table — reuse it.
-      attachments.set(name, { bytes, mime: p.draft.att[name]?.m })
-    }
     const tar = await buildBundle(keyring.signer, {
       program: p.program,
       type: p.draft.type,
       args,
-      attachments
+      attachments: p.attachments
     })
     return ingestBytes(tar)
   }
@@ -872,6 +887,14 @@ app.whenReady().then(async () => {
     if (!o || !o.latestDraft || !o.latestDraftMeta) {
       return { status: 'invalid', reason: 'nothing to publish — the program has not streamed a draft yet' }
     }
+    // Resolve carry-over attachments NOW, against the instance the human is
+    // looking at — a failed carry is a failed publish, before any dialog.
+    let attachments: Map<string, { bytes: Uint8Array; mime?: string }>
+    try {
+      attachments = resolveDraftAttachments(o.stored, o.latestDraft)
+    } catch (e) {
+      return { status: 'invalid', reason: `publish: ${(e as Error).message}` }
+    }
     while (pendingConfirms.size >= MAX_PENDING_PUBLISH) {
       const oldest = pendingConfirms.keys().next().value as number
       clearTimeout(pendingConfirms.get(oldest)!.timer)
@@ -884,6 +907,7 @@ app.whenReady().then(async () => {
       type: o.latestDraft.type,
       args: o.latestDraft.args,
       att: o.latestDraft.att,
+      carry: o.latestDraft.carry,
       argsBytes: o.latestDraftMeta.argsBytes,
       blobBytes: o.latestDraftMeta.blobBytes
     }
@@ -892,7 +916,7 @@ app.whenReady().then(async () => {
       applyVisibility()
     }, PUBLISH_CONFIRM_TTL_MS)
     timer.unref?.()
-    pendingConfirms.set(id, { draft: o.latestDraft, program: o.stored.program, timer })
+    pendingConfirms.set(id, { draft: o.latestDraft, attachments, program: o.stored.program, timer })
     applyVisibility() // cages hide while the human decides in chrome
     const confirmReq = { id, kind: 'publish', summary }
     shell.lastConfirm = confirmReq

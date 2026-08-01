@@ -56,6 +56,10 @@ until a human confirms it in trusted chrome:
   hashes inline blobs into an attachment table, renders it as the live
   preview, and lets the human sign EXACTLY that latest draft via the chrome
   Publish button. (`emit("publish")` is retired — publish is shell-owned.)
+  Blob values: raw bytes, `{bytes, mime}` (typed attachments survive nosniff
+  serving), or `{carry: true}` — keep the mounted instance's attachment of
+  that name, resolved shell-side (a program can display its attachments but
+  cannot read their bytes back).
 
 Attachment bytes live in a **content-addressed store** (`<cas>/blobs/<hex>`)
 for public things, or an **ephemeral in-memory store** for sealed things —

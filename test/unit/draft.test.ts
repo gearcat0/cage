@@ -109,3 +109,56 @@ describe('validBlobName', () => {
     }
   })
 })
+
+describe('validateDraft — blob value forms', () => {
+  const caps = {
+    ...DEFAULT_DRAFT_CAPS,
+    maxBlobBytes: 1024,
+    maxTotalBlobBytes: 2048,
+    maxBlobCount: 4,
+    maxArgsBytes: 512
+  }
+
+  it('accepts { bytes, mime } and records the mime in the att table', () => {
+    const bytes = new TextEncoder().encode('png-ish')
+    const r = validateDraft({ type: 'poster', args: null, blobs: { image: { bytes, mime: 'image/png' } } }, caps)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.draft.att.image.m).toBe('image/png')
+    expect(r.draft.blobs.image).toBe(bytes)
+    expect(r.draft.carry).toEqual([])
+  })
+
+  it('accepts { carry: true } and lists the name for shell-side resolution', () => {
+    const r = validateDraft({ type: 'poster', args: null, blobs: { image: { carry: true } } }, caps)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.draft.carry).toEqual(['image'])
+    expect(r.draft.att.image).toBeUndefined()
+    expect(r.blobBytes).toBe(0)
+  })
+
+  it('rejects malformed mimes, extra carry keys, and junk values', () => {
+    const bytes = new Uint8Array([1])
+    for (const blob of [
+      { bytes, mime: 'not a mime' },
+      { bytes, mime: 'image/png; charset=x' },
+      { bytes, mime: 'x'.repeat(200) + '/y' },
+      { carry: true, bytes },
+      { carry: 1 },
+      { bytesish: bytes },
+      'text',
+      42
+    ]) {
+      const r = validateDraft({ type: 'poster', args: null, blobs: { image: blob } }, caps)
+      expect(r.ok).toBe(false)
+    }
+  })
+
+  it('counts carry names toward the blob-count cap', () => {
+    const blobs: Record<string, unknown> = {}
+    for (let i = 0; i < 5; i++) blobs[`b${i}`] = { carry: true }
+    const r = validateDraft({ type: 'poster', args: null, blobs }, caps)
+    expect(r.ok).toBe(false)
+  })
+})

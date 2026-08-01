@@ -1,0 +1,111 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>poster</title>
+<style>
+  body { margin: 0; font: 15px/1.4 Futura, 'Trebuchet MS', system-ui, sans-serif; background: #20242b; color: #eee;
+         display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; box-sizing: border-box; }
+  .poster { background: #f4efe3; color: #22252b; width: 26em; max-width: 100%; padding: 22px 22px 26px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, .45); }
+  .frame { background: #dcd5c3; min-height: 12em; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .frame img { max-width: 100%; max-height: 22em; display: block; }
+  .frame .empty { color: #8b8471; font-size: 13px; letter-spacing: .15em; text-transform: uppercase; }
+  h1 { margin: 18px 0 6px; font-size: 26px; line-height: 1.15; text-transform: uppercase; letter-spacing: .06em; }
+  .caption { margin: 0; color: #565043; }
+  input[type='text'] { font: inherit; width: 100%; box-sizing: border-box; border: 1px solid #b9b19c;
+                       border-radius: 3px; padding: 5px 8px; background: #fffdf6; margin-top: 10px; }
+  .note { margin-top: 12px; font-size: 12px; color: #8b8471; }
+</style>
+</head>
+<body>
+  <div class="poster">
+    <div id="app"></div>
+  </div>
+  <script>
+    'use strict';
+    // The draft contract with an ATTACHMENT. This program can DISPLAY its
+    // image (getBlob → thing:// URL) but cannot read the bytes back (CSP), so
+    // its drafts either include freshly picked bytes ({bytes, mime}) or
+    // declare "keep my current image" with {carry: true} — the shell resolves
+    // that from the instance's own store. As always: the shell previews the
+    // latest draft live and its Publish button signs exactly that draft.
+    var a = window.bridge.getArgs() || {};
+    var args = (a && typeof a.args === 'object' && a.args !== null) ? a.args : {};
+    var hasImage = (a.attachments || []).some(function (x) { return x.name === 'image'; });
+    var app = document.getElementById('app');
+
+    function str(v) { return typeof v === 'string' ? v : ''; }
+
+    function el(tag, text) {
+      var e = document.createElement(tag);
+      if (text !== undefined) e.textContent = text;
+      return e;
+    }
+
+    function frame() {
+      var f = el('div'); f.className = 'frame';
+      var url = hasImage ? window.bridge.getBlob('image') : null;
+      if (url) {
+        var img = el('img'); img.id = 'poster-image'; img.src = url; img.alt = str(args.title);
+        f.append(img);
+      } else {
+        var empty = el('div', 'no image'); empty.className = 'empty'; empty.id = 'poster-empty';
+        f.append(empty);
+      }
+      return f;
+    }
+
+    function viewMode() {
+      app.replaceChildren();
+      app.append(frame());
+      var title = el('h1', str(args.title) || '—'); title.id = 'view-title';
+      var caption = el('p', str(args.caption) || '—'); caption.className = 'caption'; caption.id = 'view-caption';
+      app.append(title, caption);
+    }
+
+    function editMode() {
+      app.replaceChildren();
+      app.append(frame()); // shows the CURRENT image (a new pick previews via the shell)
+      var title = el('input'); title.type = 'text'; title.id = 'edit-title'; title.value = str(args.title);
+      title.placeholder = 'Title';
+      var caption = el('input'); caption.type = 'text'; caption.id = 'edit-caption'; caption.value = str(args.caption);
+      caption.placeholder = 'Caption';
+      var file = el('input'); file.type = 'file'; file.id = 'edit-image'; file.accept = 'image/*';
+      file.style.marginTop = '12px';
+      var note = el('div', hasImage ? 'Keeping the current image unless you pick a new one.' : 'Pick an image.');
+      note.className = 'note'; note.id = 'note';
+      app.append(title, caption, file, note);
+
+      var picked = null; // { bytes, mime } once the user chooses a file
+
+      function streamDraft() {
+        var blobs = {};
+        if (picked) blobs.image = picked;
+        else if (hasImage) blobs.image = { carry: true };
+        window.bridge.emit('draft', {
+          type: 'poster',
+          args: { title: title.value.trim(), caption: caption.value.trim() },
+          blobs: blobs
+        });
+      }
+
+      title.addEventListener('input', streamDraft);
+      caption.addEventListener('input', streamDraft);
+      file.addEventListener('change', function () {
+        var f = file.files && file.files[0];
+        if (!f) return;
+        f.arrayBuffer().then(function (buf) {
+          picked = { bytes: new Uint8Array(buf), mime: f.type || 'application/octet-stream' };
+          note.textContent = 'Picked: ' + f.name + ' — check the View preview.';
+          streamDraft();
+        });
+      });
+      streamDraft(); // initial state, so the shell's Publish enables immediately
+      title.focus();
+    }
+
+    if (a.mode === 'edit') editMode(); else viewMode();
+  </script>
+</body>
+</html>

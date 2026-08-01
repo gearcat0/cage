@@ -49,8 +49,14 @@ export interface DraftAtt {
 export interface Draft {
   type: string
   args: unknown
+  /** Attachment table for the INLINE blobs (name → hash/mime/size). */
   att: Record<string, DraftAtt>
   blobs: Record<string, Uint8Array>
+  /** Names to CARRY OVER from the mounted instance's own attachments. A
+   *  program can display its attachments but cannot read their bytes (CSP),
+   *  so "keep my current image" is declared by name and resolved shell-side
+   *  against the instance's store — the bytes never enter the renderer. */
+  carry: string[]
 }
 
 export type DraftResult =
@@ -106,12 +112,13 @@ export function validateDraft(data: unknown, caps: DraftCaps = DEFAULT_DRAFT_CAP
 
   const att: Record<string, DraftAtt> = {}
   const blobs: Record<string, Uint8Array> = {}
+  const carry: string[] = []
   let blobBytes = 0
 
   if (obj.blobs !== undefined) {
     const raw = obj.blobs
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-      return { ok: false, reason: 'draft: blobs must be a name->bytes object' }
+      return { ok: false, reason: 'draft: blobs must be a name->blob object' }
     }
     const names = Object.keys(raw as Record<string, unknown>)
     if (names.length > caps.maxBlobCount) {
@@ -121,9 +128,31 @@ export function validateDraft(data: unknown, caps: DraftCaps = DEFAULT_DRAFT_CAP
       if (!validBlobName(name, caps.maxNameLen)) {
         return { ok: false, reason: `draft: invalid blob name` }
       }
-      const bytes = (raw as Record<string, unknown>)[name]
-      if (!(bytes instanceof Uint8Array)) {
-        return { ok: false, reason: `draft: blob "${name}" is not a Uint8Array` }
+      // Three value forms: raw bytes, { bytes, mime }, or { carry: true }
+      // (keep the mounted instance's attachment of this name — resolved
+      // shell-side; a program cannot read its own attachment bytes).
+      const v = (raw as Record<string, unknown>)[name]
+      let bytes: Uint8Array
+      let mime = 'application/octet-stream'
+      if (v instanceof Uint8Array) {
+        bytes = v
+      } else if (typeof v === 'object' && v !== null && (v as { carry?: unknown }).carry === true) {
+        if (Object.keys(v).length !== 1) {
+          return { ok: false, reason: `draft: blob "${name}" carry marker must be exactly { carry: true }` }
+        }
+        carry.push(name)
+        continue
+      } else if (typeof v === 'object' && v !== null && (v as { bytes?: unknown }).bytes instanceof Uint8Array) {
+        const o = v as { bytes: Uint8Array; mime?: unknown }
+        bytes = o.bytes
+        if (o.mime !== undefined) {
+          if (typeof o.mime !== 'string' || o.mime.length > 128 || !MIME_RE.test(o.mime)) {
+            return { ok: false, reason: `draft: blob "${name}" has an invalid mime type` }
+          }
+          mime = o.mime
+        }
+      } else {
+        return { ok: false, reason: `draft: blob "${name}" must be bytes, { bytes, mime }, or { carry: true }` }
       }
       if (bytes.byteLength > caps.maxBlobBytes) {
         return { ok: false, reason: `draft: blob "${name}" too large (${bytes.byteLength} bytes)` }
@@ -133,10 +162,14 @@ export function validateDraft(data: unknown, caps: DraftCaps = DEFAULT_DRAFT_CAP
         return { ok: false, reason: `draft: total blob bytes exceed cap` }
       }
       const h = createHash('sha256').update(bytes).digest('hex')
-      att[name] = { h, m: 'application/octet-stream', n: bytes.byteLength }
+      att[name] = { h, m: mime, n: bytes.byteLength }
       blobs[name] = bytes
     }
   }
 
-  return { ok: true, draft: { type, args: obj.args, att, blobs }, argsBytes, blobBytes }
+  return { ok: true, draft: { type, args: obj.args, att, blobs, carry }, argsBytes, blobBytes }
 }
+
+/** type/subtype token form (RFC 6838-ish, permissive): the goal is to refuse
+ *  header-breaking junk, not to police the IANA registry. */
+const MIME_RE = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i
