@@ -1,0 +1,143 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>event invitation</title>
+<style>
+  body { margin: 0; font: 15px/1.55 Georgia, 'Times New Roman', serif; background: #1d2320; color: #2a2620;
+         display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; box-sizing: border-box; }
+  .invite { background: #faf7ef; width: 27em; max-width: 100%; padding: 34px 36px 30px; text-align: center;
+            border: 1px solid #cfc7ae; outline: 4px double #9c8f65; outline-offset: -12px;
+            box-shadow: 0 14px 36px rgba(0, 0, 0, .5); }
+  .eyebrow { font-size: 12px; letter-spacing: .4em; text-transform: uppercase; color: #9c8f65; margin: 0 0 14px; }
+  h1 { margin: 0 0 6px; font-size: 26px; font-style: italic; font-weight: 500; }
+  .host { margin: 0 0 18px; font-size: 13px; color: #6f6752; }
+  .when { margin: 0; font-size: 15px; }
+  .time { margin: 2px 0 0; font-size: 14px; color: #6f6752; }
+  .where { margin: 14px 0 0; font-size: 14px; }
+  .details { margin: 16px 0 0; font-size: 13px; color: #55503f; white-space: pre-wrap; text-align: left; }
+  .field { display: grid; grid-template-columns: 5.5em 1fr; gap: 8px; align-items: baseline; padding: 4px 0; text-align: left; }
+  .field > span { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: #8a8266; font-family: system-ui, sans-serif; }
+  input, textarea { font: inherit; width: 100%; box-sizing: border-box; border: 1px solid #cfc7ae; border-radius: 3px;
+                    padding: 4px 8px; background: #fffdf6; }
+  textarea { min-height: 5em; resize: vertical; }
+  .note { margin-top: 12px; font-size: 12px; color: #9c9478; font-family: system-ui, sans-serif; text-align: left; }
+</style>
+</head>
+<body>
+  <div class="invite">
+    <div id="app"></div>
+  </div>
+  <script>
+    'use strict';
+    // Scalars plus the last untouched bridge method: viewerInfo(). The event
+    // date is STORED as ISO (data, not presentation) and RENDERED in the
+    // viewer's locale — view mode is a rendering of state, not a snapshot.
+    // Same contract as every sample: render the shell-chosen mode, stream
+    // drafts, own no controls.
+    var a = window.bridge.getArgs() || {};
+    var args = (a && typeof a.args === 'object' && a.args !== null) ? a.args : {};
+    var vi = window.bridge.viewerInfo() || {};
+    var app = document.getElementById('app');
+
+    function str(v) { return typeof v === 'string' ? v : ''; }
+
+    function el(tag, text) {
+      var e = document.createElement(tag);
+      if (text !== undefined) e.textContent = text;
+      return e;
+    }
+
+    // ISO 'YYYY-MM-DD' -> the viewer's locale, e.g. "Saturday, June 5, 2027".
+    // Anything unparseable renders as stored — never invent a date.
+    function localDate(iso) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+      var d = new Date(iso + 'T00:00:00');
+      if (isNaN(d.getTime())) return iso;
+      try {
+        return new Intl.DateTimeFormat(vi.locale || undefined, {
+          weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+        }).format(d);
+      } catch (e) {
+        return iso;
+      }
+    }
+
+    function viewMode() {
+      app.replaceChildren();
+      var eyebrow = el('p', 'You are invited'); eyebrow.className = 'eyebrow';
+      var title = el('h1', str(args.title) || '—'); title.id = 'view-title';
+      app.append(eyebrow, title);
+      if (str(args.host)) {
+        var host = el('p', 'hosted by ' + str(args.host)); host.className = 'host'; host.id = 'view-host';
+        app.append(host);
+      }
+      if (str(args.date)) {
+        var when = el('p', localDate(str(args.date))); when.className = 'when'; when.id = 'view-date';
+        app.append(when);
+      }
+      if (str(args.time)) {
+        var time = el('p', str(args.time)); time.className = 'time'; time.id = 'view-time';
+        app.append(time);
+      }
+      if (str(args.location)) {
+        var where = el('p', str(args.location)); where.className = 'where'; where.id = 'view-location';
+        app.append(where);
+      }
+      if (str(args.details)) {
+        var details = el('div', str(args.details)); details.className = 'details'; details.id = 'view-details';
+        app.append(details);
+      }
+    }
+
+    function editMode() {
+      app.replaceChildren();
+      var inputs = {};
+      [
+        { key: 'title', label: 'Event' },
+        { key: 'host', label: 'Host' },
+        { key: 'date', label: 'Date', type: 'date' },
+        { key: 'time', label: 'Time', type: 'time' },
+        { key: 'location', label: 'Where' }
+      ].forEach(function (f) {
+        var input = el('input'); input.type = f.type || 'text';
+        input.id = 'edit-' + f.key; input.value = str(args[f.key]);
+        inputs[f.key] = input;
+        var row = el('label'); row.className = 'field';
+        row.append(el('span', f.label), input);
+        app.append(row);
+      });
+      var details = el('textarea'); details.id = 'edit-details'; details.value = str(args.details);
+      inputs.details = details;
+      var row = el('label'); row.className = 'field';
+      row.append(el('span', 'Details'), details);
+      app.append(row);
+      var note = el('div', 'Preview in View — publish from the shell header when you’re ready.');
+      note.className = 'note';
+      app.append(note);
+
+      function streamDraft() {
+        window.bridge.emit('draft', {
+          type: 'invite',
+          args: {
+            title: inputs.title.value.trim(),
+            host: inputs.host.value.trim(),
+            date: inputs.date.value,
+            time: inputs.time.value,
+            location: inputs.location.value.trim(),
+            details: inputs.details.value
+          }
+        });
+      }
+      Object.keys(inputs).forEach(function (k) {
+        inputs[k].addEventListener('input', streamDraft);
+        inputs[k].addEventListener('change', streamDraft); // date/time pickers fire change
+      });
+      streamDraft(); // initial state, so the shell's Publish enables immediately
+      inputs.title.focus();
+    }
+
+    if (a.mode === 'edit') editMode(); else viewMode();
+  </script>
+</body>
+</html>

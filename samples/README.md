@@ -46,3 +46,11 @@ The same contract with structured state: `args: {to, from, subject, message}`.
 View mode renders a classic memo sheet (em-dash placeholders for unset fields,
 line breaks preserved in the message); edit mode is four fields, each streaming
 a draft on input. Create it via **Create…** with type `memo`.
+
+## invite.html
+
+An event invitation: `args {title, host, date, time, location, details}`.
+The date is STORED as ISO (data, not presentation) and RENDERED in the
+viewer's locale via `viewerInfo()` — the one bridge method no other sample
+uses. Unset fields don't render. Create it via **Create…** with type
+`invite`.
