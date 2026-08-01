@@ -46,3 +46,10 @@ The same contract with structured state: `args: {to, from, subject, message}`.
 View mode renders a classic memo sheet (em-dash placeholders for unset fields,
 line breaks preserved in the message); edit mode is four fields, each streaming
 a draft on input. Create it via **Create…** with type `memo`.
+
+## card.html
+
+A contact / business card: `args {name, role, org, email, phone, url}` —
+pure scalars. View mode renders a card that shows only the fields that are
+set (a real card has no empty labels); edit mode is six inputs, each
+streaming a draft. Create it via **Create…** with type `card`.
