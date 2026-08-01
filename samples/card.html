@@ -1,0 +1,109 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>contact card</title>
+<style>
+  body { margin: 0; font: 15px/1.45 'Helvetica Neue', system-ui, sans-serif; background: #2b2e33; color: #222;
+         display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; box-sizing: border-box; }
+  .card { background: #fbfaf7; width: 30em; max-width: 100%; aspect-ratio: 7 / 4; border-radius: 6px;
+          padding: 26px 30px; box-sizing: border-box; box-shadow: 0 12px 32px rgba(0, 0, 0, .5);
+          display: flex; flex-direction: column; }
+  .card.edit { aspect-ratio: auto; }
+  h1 { margin: 0; font-size: 24px; letter-spacing: .02em; }
+  .role { margin: 2px 0 0; color: #666; font-size: 14px; }
+  .rule { border: 0; border-top: 2px solid #b5541c; width: 3em; margin: 14px 0; }
+  .rows { margin-top: auto; font-size: 13px; }
+  .row { display: flex; gap: 10px; padding: 2px 0; }
+  .row .k { color: #b5541c; font-weight: 700; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; width: 4em; }
+  .field { display: grid; grid-template-columns: 5.5em 1fr; gap: 8px; align-items: baseline; padding: 4px 0; }
+  .field > span { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: #777; }
+  input { font: inherit; width: 100%; box-sizing: border-box; border: 1px solid #cfc9bd; border-radius: 4px;
+          padding: 4px 8px; background: #fffef9; }
+  .note { margin-top: 12px; font-size: 12px; color: #999; }
+</style>
+</head>
+<body>
+  <div class="card" id="card">
+    <div id="app" style="display: contents"></div>
+  </div>
+  <script>
+    'use strict';
+    // A pure-scalar exemplar: args {name, role, org, email, phone, url}. Same
+    // contract as every sample — render the shell-chosen mode, stream every
+    // change on the draft channel, own no controls. View mode renders only
+    // the fields that are set (a real card has no empty labels).
+    var FIELDS = [
+      { key: 'name', label: 'Name' },
+      { key: 'role', label: 'Role' },
+      { key: 'org', label: 'Organisation' },
+      { key: 'email', label: 'Email' },
+      { key: 'phone', label: 'Phone' },
+      { key: 'url', label: 'Web' }
+    ];
+    var CONTACT = ['email', 'phone', 'url'];
+    var a = window.bridge.getArgs() || {};
+    var args = (a && typeof a.args === 'object' && a.args !== null) ? a.args : {};
+    var app = document.getElementById('app');
+
+    function str(v) { return typeof v === 'string' ? v : ''; }
+
+    function el(tag, text) {
+      var e = document.createElement(tag);
+      if (text !== undefined) e.textContent = text;
+      return e;
+    }
+
+    function viewMode() {
+      app.replaceChildren();
+      var name = el('h1', str(args.name) || '—'); name.id = 'view-name';
+      app.append(name);
+      var roleLine = [str(args.role), str(args.org)].filter(Boolean).join(' · ');
+      if (roleLine) {
+        var role = el('p', roleLine); role.className = 'role'; role.id = 'view-role';
+        app.append(role);
+      }
+      var rule = el('hr'); rule.className = 'rule';
+      app.append(rule);
+      var rows = el('div'); rows.className = 'rows'; rows.id = 'view-rows';
+      CONTACT.forEach(function (key) {
+        var v = str(args[key]);
+        if (!v) return; // a real card has no empty labels
+        var row = el('div'); row.className = 'row'; row.id = 'view-' + key;
+        var label = FIELDS.find(function (f) { return f.key === key; }).label;
+        row.append(el('span', label === 'Organisation' ? 'Org' : label), el('span', v));
+        row.firstChild.className = 'k';
+        rows.append(row);
+      });
+      app.append(rows);
+    }
+
+    function editMode() {
+      document.getElementById('card').className = 'card edit';
+      app.replaceChildren();
+      var inputs = {};
+      FIELDS.forEach(function (f) {
+        var input = el('input'); input.id = 'edit-' + f.key; input.value = str(args[f.key]);
+        inputs[f.key] = input;
+        var row = el('label'); row.className = 'field';
+        row.append(el('span', f.label), input);
+        app.append(row);
+      });
+      var note = el('div', 'Preview in View — publish from the shell header when you’re ready.');
+      note.className = 'note';
+      app.append(note);
+
+      function streamDraft() {
+        var out = {};
+        FIELDS.forEach(function (f) { out[f.key] = inputs[f.key].value.trim(); });
+        window.bridge.emit('draft', { type: 'card', args: out });
+      }
+      FIELDS.forEach(function (f) { inputs[f.key].addEventListener('input', streamDraft); });
+      streamDraft(); // initial state, so the shell's Publish enables immediately
+      inputs.name.focus();
+    }
+
+    if (a.mode === 'edit') editMode(); else viewMode();
+  </script>
+</body>
+</html>
