@@ -40,6 +40,14 @@ read the bytes back, so its drafts either include freshly picked bytes
 current image" — which the shell resolves from the instance's own store.
 Create it via **Create…** with type `poster`; pick the image in Edit mode.
 
+## todo.html
+
+The contract with **array state**: `args {title, items: [{text, done}]}`.
+View mode is the signed artifact, read-only — checking things off is editing,
+done in Edit mode (add / remove / toggle / retext, every change streaming a
+draft) and made real by publishing. Create it via **Create…** with type
+`todo`.
+
 ## memo.html
 
 The same contract with structured state: `args: {to, from, subject, message}`.
