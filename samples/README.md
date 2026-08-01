@@ -31,6 +31,15 @@ while the thing is open.
 Programs have no Save/Publish buttons of their own (`emit('publish')` is
 retired): rendering and state are the program's; every control is the shell's.
 
+## poster.html
+
+The contract with an **attachment**: `args {title, caption}` plus an `image`
+attachment. A program can display its image (`getBlob('image')`) but cannot
+read the bytes back, so its drafts either include freshly picked bytes
+(`blobs: {image: {bytes, mime}}`) or declare `{carry: true}` — "keep my
+current image" — which the shell resolves from the instance's own store.
+Create it via **Create…** with type `poster`; pick the image in Edit mode.
+
 ## memo.html
 
 The same contract with structured state: `args: {to, from, subject, message}`.
