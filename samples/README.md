@@ -61,3 +61,11 @@ A contact / business card: `args {name, role, org, email, phone, url}` —
 pure scalars. View mode renders a card that shows only the fields that are
 set (a real card has no empty labels); edit mode is six inputs, each
 streaming a draft. Create it via **Create…** with type `card`.
+
+## invite.html
+
+An event invitation: `args {title, host, date, time, location, details}`.
+The date is STORED as ISO (data, not presentation) and RENDERED in the
+viewer's locale via `viewerInfo()` — the one bridge method no other sample
+uses. Unset fields don't render. Create it via **Create…** with type
+`invite`.
