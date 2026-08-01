@@ -94,8 +94,6 @@ const toast = el('span', 'sh-toast')
 const keyWarn = el('button', 'evm-badge evm-badge--warning sh-keywarn') as HTMLButtonElement
 keyWarn.style.display = 'none'
 topbar.append(
-  el('strong', 'sh-brand', 'the shell'),
-  el('span', 'sh-spacer'),
   createBtn,
   ingestInput,
   ingestBtn,
