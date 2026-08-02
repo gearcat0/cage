@@ -637,6 +637,7 @@ app.whenReady().then(async () => {
       stored,
       bounds: cageRect(),
       mode: 'view',
+      zoomFactor: zoomFactor(),
       onBound: (wcId) => {
         o.wcIds.add(wcId)
         guardCageFocus(wcId)
@@ -675,6 +676,7 @@ app.whenReady().then(async () => {
           stored: o.stored,
           bounds: cageRect(),
           mode: 'edit',
+          zoomFactor: zoomFactor(),
           onBound: (wcId) => {
             o.wcIds.add(wcId)
             guardCageFocus(wcId)
@@ -767,6 +769,7 @@ app.whenReady().then(async () => {
         bounds: cageRect(),
         mode: 'view',
         visible: false, // revealed by applyVisibility; a background load must not steal focus
+        zoomFactor: zoomFactor(),
         onBound: (wcId) => {
           o.wcIds.add(wcId)
           guardCageFocus(wcId)
