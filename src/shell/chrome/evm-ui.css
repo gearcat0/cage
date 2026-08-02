@@ -167,6 +167,10 @@ body {
 .evm-select,
 .evm-textarea {
   width: 100%;
+  /* width:100% PLUS padding and border would render 26px wider than the
+     container — the horizontal overflow behind the account modal's
+     scrollbar (widest at the seed-phrase field). */
+  box-sizing: border-box;
   background: var(--evm-surface-2);
   border: 1px solid var(--evm-border);
   color: var(--evm-text-1);
