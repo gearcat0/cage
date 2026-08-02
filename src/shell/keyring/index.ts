@@ -1,5 +1,5 @@
 import { safeStorage } from 'electron'
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { secp256k1, schnorr } from '@noble/curves/secp256k1.js'
 import { xchacha20poly1305 } from '@noble/ciphers/chacha.js'
@@ -77,6 +77,19 @@ function decryptAtRest(file: Buffer): string {
   throw new Error(`unknown at-rest scheme byte ${scheme}`)
 }
 
+/** The identity file exists but could not be read (corrupt, foreign-machine
+ *  safeStorage blob, unknown scheme, garbled payload). Carries the path so
+ *  the boot error can point the human at the file and its .bak siblings. */
+export class KeyringLoadError extends Error {
+  constructor(
+    readonly path: string,
+    cause: unknown
+  ) {
+    super(`identity file unreadable: ${path} (${(cause as Error)?.message ?? String(cause)})`)
+    this.name = 'KeyringLoadError'
+  }
+}
+
 export interface PublicIdentity {
   /** eth-eip191 signing address (20 bytes). */
   address: Uint8Array
@@ -151,25 +164,59 @@ export class Keyring {
     return kr
   }
 
-  /** Load an existing identity, or null if none exists. */
+  /** Load an existing identity, or null if none exists. Throws
+   *  `KeyringLoadError` on an unreadable/garbled file — the CALLER decides
+   *  what to tell the human; this code never regenerates over a file that
+   *  might still be recoverable. */
   static load(userDataDir: string): Keyring | null {
     const path = join(userDataDir, IDENTITY_FILE)
     if (!existsSync(path)) return null
-    const file = readFileSync(path)
-    const kr = new Keyring(fromHex(decryptAtRest(file)))
-    kr.#storage = file[0] === SCHEME_SAFE_STORAGE ? 'os' : 'software'
-    return kr
+    try {
+      const file = readFileSync(path)
+      const hex = decryptAtRest(file)
+      // A decryptable-but-garbled payload must not silently become a broken
+      // identity: require exactly the hex of a valid secp256k1 scalar.
+      if (!/^[0-9a-f]{64}$/.test(hex)) throw new Error('payload is not a 32-byte key')
+      const privkey = fromHex(hex)
+      secp256k1.getPublicKey(privkey, true) // throws on 0 or k >= n
+      const kr = new Keyring(privkey)
+      kr.#storage = file[0] === SCHEME_SAFE_STORAGE ? 'os' : 'software'
+      return kr
+    } catch (e) {
+      throw new KeyringLoadError(path, e)
+    }
   }
 
   static loadOrCreate(userDataDir: string): Keyring {
     return Keyring.load(userDataDir) ?? Keyring.create(userDataDir)
   }
 
-  private persist(userDataDir: string): void {
+  /** Write `privkey` as the machine's identity, encrypted at rest in the SAME
+   *  format `load` reads (scheme byte + encrypted hex). Atomic (tmp + rename),
+   *  and any existing identity file is first copied to a timestamped
+   *  `identity.key.enc.bak-<ms>` — the only way back after a replacement. */
+  static writeIdentity(userDataDir: string, privkey: Uint8Array): void {
+    if (privkey.length !== 32) throw new Error('identity key must be 32 bytes')
+    secp256k1.getPublicKey(privkey, true) // throws on 0 or k >= n
     mkdirSync(userDataDir, { recursive: true })
+    const path = join(userDataDir, IDENTITY_FILE)
+    if (existsSync(path)) copyFileSync(path, `${path}.bak-${Date.now()}`)
+    const tmp = `${path}.tmp`
+    writeFileSync(tmp, encryptAtRest(toHex(privkey)))
+    renameSync(tmp, path)
+  }
+
+  private persist(userDataDir: string): void {
     // Encrypt the hex-encoded key at rest; the plaintext key bytes never touch
     // disk (safeStorage in production; a loud gated fallback in dev/CI).
-    writeFileSync(join(userDataDir, IDENTITY_FILE), encryptAtRest(toHex(this.#privkey)))
+    Keyring.writeIdentity(userDataDir, this.#privkey)
+  }
+
+  /** The raw secret, hex — for the human-driven backup flow ONLY. The UI must
+   *  gate this behind an explicit confirmation. */
+  exportSecretHex(): string {
+    if (this.#locked) throw new Error('keyring is locked')
+    return toHex(this.#privkey)
   }
 
   get identity(): PublicIdentity {

@@ -274,6 +274,9 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
   // safeStorage availability (still never writes the plaintext key).
   env.SHELL_FORCE_SOFTWARE_KEYS = '1'
   env.SHELL_USER_DATA_DIR = userDataDir
+  // Identity changes normally restart the app; under Playwright that would
+  // orphan the process, so specs relaunch explicitly instead.
+  env.SHELL_NO_RELAUNCH = '1'
   Object.assign(env, opts.extraEnv ?? {})
 
   // Electron occasionally dies during startup on CI runners (macOS

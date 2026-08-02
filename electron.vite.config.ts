@@ -12,7 +12,7 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 // @noble/* and zod are BUNDLED (not externalized) so the CJS main can use these
 // ESM packages without runtime interop issues. `electron` and the native
 // `better-sqlite3` stay external.
-const BUNDLED = ['@noble/curves', '@noble/hashes', '@noble/ciphers', 'zod']
+const BUNDLED = ['@noble/curves', '@noble/hashes', '@noble/ciphers', 'zod', '@scure/bip39', '@scure/bip32', '@scure/base']
 // `webtorrent` is an OPTIONAL, lazily-imported transport (magnet:); keep it
 // external so the build never tries to bundle it when it is not installed.
 const EXTERNAL = ['electron', 'better-sqlite3', 'webtorrent']

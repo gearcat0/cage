@@ -215,3 +215,39 @@ body {
   justify-self: start;
   white-space: nowrap;
 }
+
+/* Account & Keys modal. */
+.sh-account {
+  max-width: 560px;
+}
+.sh-account-h {
+  margin: 18px 0 8px;
+  font-size: var(--evm-text-sm);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--evm-text-muted);
+  border-top: 1px solid var(--evm-border);
+  padding-top: 14px;
+}
+.sh-account-h:first-child {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
+}
+.sh-account-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 8px 0;
+}
+.sh-account-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: var(--evm-text-sm);
+}
+.sh-account-path {
+  color: var(--evm-text-muted);
+  font-family: var(--evm-font-mono);
+}
