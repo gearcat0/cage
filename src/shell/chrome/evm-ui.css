@@ -384,8 +384,8 @@ a.evm-chain-badge:hover { background: var(--evm-surface-4); color: var(--evm-tex
   border-radius: var(--evm-radius-lg);
   box-shadow: var(--evm-shadow-lg);
   width: 100%;
-  max-width: 440px;
-  max-height: 85vh;
+  max-width: 484px;
+  max-height: 90vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;

@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { _electron, type ElectronApplication } from '@playwright/test'
 import { test, expect, launchShell, type ShellHandle } from './helpers.js'
 import { ethAddressHex, mnemonicToAccounts } from '../../src/shell/keyring/hd.js'
+import { toChecksumAddress } from '../../src/shell/address.js'
 
 // ── Account & Keys ───────────────────────────────────────────────────────────
 // Identity setup for real testers: view/copy, back up, and replace the
@@ -84,8 +85,11 @@ test('shows the identity and reveals the secret behind a confirmation', async ()
   try {
     const id = await shell.identity()
     await openAccount(shell)
-    expect(await textOf(shell, 'account-address')).toBe(id.address)
-    expect(await textOf(shell, 'account-nostr')).toBe(id.nostrPubkey)
+    // Displayed EIP-55 (what wallets show); the stored value stays bare hex.
+    expect(id.address).toMatch(/^[0-9a-f]{40}$/)
+    expect(await textOf(shell, 'account-address')).toBe(toChecksumAddress(id.address))
+    expect(await textOf(shell, 'account-address')).toMatch(/^0x[0-9a-fA-F]{40}$/)
+    expect(await textOf(shell, 'account-nostr')).toBe(id.nostrPubkey) // not an address — untouched
     expect(await textOf(shell, 'account-storage')).toContain('software') // helpers force software keys
 
     // Reveal is gated: nothing shown until the danger dialog is confirmed.
@@ -147,8 +151,8 @@ test('derives accounts from a seed phrase and imports the picked one', async () 
       shell,
       `Array.from(document.querySelectorAll('.sh-account-row')).map((r) => r.textContent)`
     )
-    expect(rows[0]).toContain(HARDHAT_0)
-    expect(rows[1]).toContain(HARDHAT_1)
+    expect(rows[0]).toContain(toChecksumAddress(HARDHAT_0))
+    expect(rows[1]).toContain(toChecksumAddress(HARDHAT_1))
     expect(rows.length).toBe(5)
 
     // Pick account 1 (not the default) — the index must be honored.
@@ -272,5 +276,48 @@ test('an unreadable identity file reports the problem instead of bricking or reg
     }
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('ESC dismisses the account modal and cancels a danger dialog', async () => {
+  const shell = await launchShell()
+  try {
+    const pressEsc = (): Promise<void> =>
+      chromeEval(
+        shell,
+        `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`
+      )
+
+    await openAccount(shell)
+    await pressEsc()
+    await poll(
+      () => chromeEval<boolean>(shell, `!!document.querySelector('[data-testid=account-address]')`),
+      (present) => !present
+    )
+
+    // ESC on a danger dialog cancels it (and leaves the modal beneath open).
+    await openAccount(shell)
+    await click(shell, 'account-export-reveal')
+    await poll(
+      () => chromeEval<boolean>(shell, `!!document.querySelector('[data-testid=danger-confirm]')`),
+      (v) => v
+    )
+    await pressEsc()
+    await poll(
+      () => chromeEval<boolean>(shell, `!!document.querySelector('[data-testid=danger-confirm]')`),
+      (present) => !present
+    )
+    expect(await textOf(shell, 'account-secret')).toBeNull() // cancelled — nothing revealed
+    expect(await chromeEval<boolean>(shell, `!!document.querySelector('[data-testid=account-address]')`)).toBe(true)
+
+    // Every overlay closed: the cage views are released again (overlay count
+    // must not leak, or the shell would look frozen with nothing on screen).
+    await pressEsc()
+    await poll(
+      () => chromeEval<number>(shell, `document.querySelectorAll('.evm-modal-overlay').length`),
+      (n) => n === 0
+    )
+  } finally {
+    await shell.close()
   }
 })

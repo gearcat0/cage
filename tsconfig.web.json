@@ -11,5 +11,10 @@
     "isolatedModules": true,
     "noEmit": true
   },
-  "include": ["src/renderer/**/*.ts", "src/shell/chrome/chrome.ts", "src/shell/chrome/css.d.ts"]
+  "include": [
+    "src/renderer/**/*.ts",
+    "src/shell/chrome/chrome.ts",
+    "src/shell/chrome/css.d.ts",
+    "src/shell/address.ts"
+  ]
 }

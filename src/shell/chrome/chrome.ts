@@ -1,5 +1,6 @@
 import './evm-ui.css'
 import './shell.css'
+import { shortAddress, toChecksumAddress } from '../address.js'
 
 // ── The shell chrome (trusted renderer) ──────────────────────────────────────
 // Draws the omnibar, feed, per-thing trust header, and confirm dialogs. Every
@@ -192,14 +193,30 @@ function showText(msg: string, tone: 'success' | 'danger' | 'neutral'): void {
  *  modal is open (they are native siblings composited ABOVE the chrome and
  *  would overpaint it). Patches remove() so every close path announces the
  *  close without per-modal bookkeeping. */
-function trackOverlay(overlay: HTMLElement): HTMLElement {
+function trackOverlay(overlay: HTMLElement, onEscape?: () => void): HTMLElement {
   shell.overlay(1)
+  // ESC dismisses. Modals that own a decision pass an explicit handler so
+  // escaping RESOLVES it (a publish confirm dismissed without a response
+  // would leave the cages hidden behind a modal that is no longer there).
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.key !== 'Escape') return
+    // Overlays stack (a danger dialog over the account modal) and each one
+    // listens on the document — only the TOPMOST may take the key, or one
+    // press would close the whole stack.
+    const open = document.querySelectorAll('.evm-modal-overlay')
+    if (open.length && open[open.length - 1] !== overlay) return
+    e.preventDefault()
+    if (onEscape) onEscape()
+    else overlay.remove()
+  }
+  document.addEventListener('keydown', onKey)
   const origRemove = overlay.remove.bind(overlay)
   let closed = false
   overlay.remove = () => {
     if (!closed) {
       closed = true
       shell.overlay(-1)
+      document.removeEventListener('keydown', onKey)
     }
     origRemove()
   }
@@ -229,7 +246,7 @@ function confirmDanger(title: string, text: string, action: string): Promise<boo
     footer.append(cancel, ok)
     modal.append(header, body, footer)
     overlay.append(modal)
-    document.body.append(trackOverlay(overlay))
+    document.body.append(trackOverlay(overlay, () => done(false)))
   })
 }
 
@@ -298,7 +315,7 @@ async function openAccountModal(): Promise<void> {
   const confirmReplace = (): Promise<boolean> =>
     confirmDanger(
       'Replace your identity?',
-      `This permanently replaces the identity on this machine. Anything sealed to your current nostr key (${short(id.nostrPubkey)}) becomes PERMANENTLY UNOPENABLE — the new key cannot decrypt it. Things you already authored stay signed by your old address (${short(id.address)}) and will no longer read as "you". A timestamped backup of the current encrypted key file is kept beside it (identity.key.enc.bak-<time>); restoring that file is the only way back.`,
+      `This permanently replaces the identity on this machine. Anything sealed to your current nostr key (${short(id.nostrPubkey)}) becomes PERMANENTLY UNOPENABLE — the new key cannot decrypt it. Things you already authored stay signed by your old address (${shortAddress(id.address)}) and will no longer read as "you". A timestamped backup of the current encrypted key file is kept beside it (identity.key.enc.bak-<time>); restoring that file is the only way back.`,
       'Replace identity'
     )
 
@@ -324,7 +341,7 @@ async function openAccountModal(): Promise<void> {
 
   // ── Your identity ──
   body.append(el('h3', 'sh-account-h', 'Your identity'))
-  body.append(copyField('eth address', id.address, 'account-address'))
+  body.append(copyField('eth address', toChecksumAddress(id.address), 'account-address'))
   body.append(copyField('nostr pubkey', id.nostrPubkey, 'account-nostr'))
   const storage = el(
     'span',
@@ -405,7 +422,11 @@ async function openAccountModal(): Promise<void> {
       radio.addEventListener('change', () => {
         useSeedBtn.disabled = false
       })
-      row.append(radio, el('span', 'sh-account-path', `m/44'/60'/0'/0/${acct.index}`), el('span', 'evm-address', acct.address))
+      row.append(
+        radio,
+        el('span', 'sh-account-path', `m/44'/60'/0'/0/${acct.index}`),
+        el('span', 'evm-address', toChecksumAddress(acct.address))
+      )
       accountList.append(row)
     }
     moreBtn.style.display = ''
@@ -450,7 +471,7 @@ async function openAccountModal(): Promise<void> {
       'sh-warn',
       'These 12 words are shown ONCE and stored nowhere. Write them down now — they are the only way to recover this identity.'
     )
-    const addrLine = el('p', 'sh-hint', `account 0 → ${address}`)
+    const addrLine = el('p', 'sh-hint', `account 0 → ${toChecksumAddress(address)}`)
     const ack = el('input') as HTMLInputElement
     ack.type = 'checkbox'
     ack.setAttribute('data-testid', 'account-wrote-down')
@@ -625,7 +646,11 @@ async function refreshFeed(): Promise<void> {
     const line1 = el('div', 'sh-feed-line')
     line1.append(
       el('span', 'evm-badge evm-badge--neutral', row.type),
-      el('span', 'sh-feed-author evm-address evm-address--muted', short(row.authorKey))
+      el(
+        'span',
+        'sh-feed-author evm-address evm-address--muted',
+        row.authorScheme === 'eth-eip191' ? shortAddress(row.authorKey) : short(row.authorKey)
+      )
     )
     if (row.isFork) line1.append(el('span', 'evm-badge evm-badge--danger', 'FORK'))
     if (row.sealed) line1.append(el('span', 'evm-badge evm-badge--purple', 'sealed'))
@@ -734,7 +759,11 @@ function renderHeader(h: HeaderFacts | null): void {
     authorEl.setAttribute('data-name', 'verified')
     authorEl.setAttribute('title', `${h.authorScheme}:${h.authorKey}`)
   } else {
-    authorEl = el('span', 'evm-address evm-address--muted', `${h.authorScheme}:${short(h.authorKey)}`)
+    authorEl = el(
+      'span',
+      'evm-address evm-address--muted',
+      h.authorScheme === 'eth-eip191' ? shortAddress(h.authorKey) : `${h.authorScheme}:${short(h.authorKey)}`
+    )
     authorEl.setAttribute('data-name', 'unverified')
   }
   const typeBadge = el('span', 'evm-badge evm-badge--neutral', h.type)
@@ -831,7 +860,7 @@ shell.onConfirmRequest((req) => {
   footer.append(cancel, ok)
   modal.append(header, body, footer)
   overlay.append(modal)
-  document.body.append(trackOverlay(overlay))
+  document.body.append(trackOverlay(overlay, () => closeModal(false)))
 })
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -860,8 +889,8 @@ shell.onPublishResult((o) => {
 shell.onOpenAccount(() => void openAccountModal()) // File → Account & Keys…
 ;(async () => {
   const id = await shell.identity()
-  identityEl.textContent = `${short(id.address)}`
-  identityEl.setAttribute('title', `${id.address} — click for Account & Keys`)
+  identityEl.textContent = shortAddress(id.address)
+  identityEl.setAttribute('title', `${toChecksumAddress(id.address)} — click for Account & Keys`)
   identityEl.setAttribute('data-testid', 'account-open')
   identityEl.setAttribute('role', 'button')
   identityEl.style.cursor = 'pointer'
