@@ -58,6 +58,11 @@ export interface MountOptions {
    *  live-preview remount — must not steal focus or paint over the active
    *  cage while it loads; the caller reveals it via setVisible later. */
   visible?: boolean
+  /** The app-level zoom factor. A cage must be BORN at the current zoom:
+   *  correcting it after the fact leaves a window where a freshly mounted
+   *  cage (e.g. a live-preview remount) renders at 1.0 while its siblings
+   *  are zoomed. */
+  zoomFactor?: number
   /** Called with the cage's webContents id once the bridge is bound — BEFORE
    *  the program loads, so anything keyed on the id (e.g. the publish confirm
    *  flow) is in place for emits that fire during the load itself. */
@@ -112,7 +117,17 @@ export async function mountThing(opts: MountOptions): Promise<MountedThing> {
     mintedIds.delete(id)
   })
 
+  if (opts.zoomFactor !== undefined && opts.zoomFactor !== 1) {
+    // Set before AND after the load: Electron resets the factor across some
+    // navigations, and the post-load set is what actually sticks.
+    wc.setZoomFactor(opts.zoomFactor)
+    wc.once('did-finish-load', () => {
+      if (!wc.isDestroyed()) wc.setZoomFactor(opts.zoomFactor!)
+    })
+  }
+
   await wc.loadURL(`thing://${id}/index.html`)
+  if (opts.zoomFactor !== undefined && !wc.isDestroyed()) wc.setZoomFactor(opts.zoomFactor)
 
   const env = stored.row
   return {

@@ -72,7 +72,22 @@ async function sendZoomKey(target: 'chrome' | 'thing', keyCode: '+' | '-' | '0')
   await new Promise((r) => setTimeout(r, 300))
 }
 
-function expectLockstep(s: ZoomState, factor: number, baseX: number): void {
+const settled = (s: ZoomState, factor: number, baseX: number): boolean =>
+  Math.abs(s.chromeZoom - factor) < 0.005 &&
+  s.thingZooms.length >= 2 &&
+  s.thingZooms.every((z) => Math.abs(z - factor) < 0.005) &&
+  s.cageXs.every((x) => x === Math.round(baseX * factor))
+
+/** Assert the SETTLED state: a live-preview remount can land mid-assertion
+ *  (the nametag streams a draft on load), so poll briefly before failing —
+ *  then assert, so a genuine mismatch still reports the actual numbers. */
+async function expectLockstep(factor: number, baseX: number): Promise<void> {
+  let s = await state()
+  const deadline = Date.now() + 5_000
+  while (!settled(s, factor, baseX) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 150))
+    s = await state()
+  }
   expect(s.chromeZoom).toBeCloseTo(factor)
   // View + edit cages at minimum; the nametag's initial draft may add a
   // preview cage — EVERY live cage must track the app-level zoom.
@@ -96,19 +111,19 @@ test('Ctrl +/−/0 zooms chrome and BOTH cages in lockstep, from either view', a
   const base = await state()
   expect(base.thingZooms.length).toBeGreaterThanOrEqual(2)
   const baseX = base.cageXs[0]!
-  expectLockstep(base, 1, baseX)
+  await expectLockstep(1, baseX)
 
   // Zoom in from the CHROME: both cages + both native rects scale.
   await sendZoomKey('chrome', '+')
-  expectLockstep(await state(), 1.2, baseX)
+  await expectLockstep(1.2, baseX)
 
   // Zoom in again from the (visible) THING: still lockstep.
   await sendZoomKey('thing', '+')
-  expectLockstep(await state(), 1.44, baseX)
+  await expectLockstep(1.44, baseX)
 
   // Ctrl+0 resets everything.
   await sendZoomKey('thing', '0')
-  expectLockstep(await state(), 1, baseX)
+  await expectLockstep(1, baseX)
 
   // Zoom out below 1 works too.
   await sendZoomKey('chrome', '-')

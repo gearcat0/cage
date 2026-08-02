@@ -1,9 +1,11 @@
 import { app, BaseWindow, Menu, WebContentsView, ipcMain, protocol, session, dialog, webContents } from 'electron'
 import { join } from 'node:path'
-import { appendFileSync, readFileSync } from 'node:fs'
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { AdmissionService } from './admission/index.js'
-import { Keyring } from './keyring/index.js'
+import { Keyring, KeyringLoadError } from './keyring/index.js'
+import { ethAddressHex, generateMnemonic12, mnemonicToAccounts, validatePrivkeyHex } from './keyring/hd.js'
+import { z } from 'zod'
 import { Library, type StoredThing, type ThingRow } from './library/index.js'
 import { mountThing, type MountedThing } from './mount/index.js'
 import { TransportService, FileTransport, SeedTransport, WebtorrentTransport } from './transport/index.js'
@@ -260,7 +262,33 @@ app.whenReady().then(async () => {
 
   const userDataDir = process.env.SHELL_USER_DATA_DIR ?? app.getPath('userData')
   dbg('keyring')
-  const keyring = Keyring.loadOrCreate(userDataDir)
+  let keyring: Keyring
+  try {
+    keyring = Keyring.loadOrCreate(userDataDir)
+  } catch (e) {
+    // The identity file exists but is unreadable. NEVER silently regenerate —
+    // the file (or a .bak sibling) may still be recoverable. Tell the human
+    // and stop. (SHELL_BOOT_ERROR_FILE: tests cannot drive a native dialog.)
+    const keyPath = e instanceof KeyringLoadError ? e.path : join(userDataDir, 'identity.key.enc')
+    const msg =
+      `Your identity file could not be read:\n\n${keyPath}\n\n` +
+      `The shell will NOT overwrite it — it may still be recoverable. ` +
+      `Timestamped backups (identity.key.enc.bak-<time>) may exist in the same folder; ` +
+      `restoring one recovers that identity. To start with a brand-new identity instead, ` +
+      `move the unreadable file out of that folder and relaunch.`
+    const marker = process.env.SHELL_BOOT_ERROR_FILE
+    if (marker) {
+      try {
+        writeFileSync(marker, msg)
+      } catch {
+        /* ignore */
+      }
+    } else {
+      dialog.showErrorBox('Identity unreadable', msg)
+    }
+    app.exit(1)
+    return
+  }
   dbg('library')
   const library = new Library(join(userDataDir, 'library'))
   dbg('admission')
@@ -302,7 +330,14 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       ...(process.platform === 'darwin' ? [{ role: 'appMenu' as const }] : []),
-      { role: 'fileMenu' },
+      {
+        label: 'File',
+        submenu: [
+          { label: 'Account & Keys…', click: () => chrome.webContents.send('shell:open-account') },
+          { type: 'separator' },
+          process.platform === 'darwin' ? { role: 'close' as const } : { role: 'quit' as const }
+        ]
+      },
       { role: 'editMenu' },
       {
         role: 'help',
@@ -602,6 +637,7 @@ app.whenReady().then(async () => {
       stored,
       bounds: cageRect(),
       mode: 'view',
+      zoomFactor: zoomFactor(),
       onBound: (wcId) => {
         o.wcIds.add(wcId)
         guardCageFocus(wcId)
@@ -640,6 +676,7 @@ app.whenReady().then(async () => {
           stored: o.stored,
           bounds: cageRect(),
           mode: 'edit',
+          zoomFactor: zoomFactor(),
           onBound: (wcId) => {
             o.wcIds.add(wcId)
             guardCageFocus(wcId)
@@ -732,6 +769,7 @@ app.whenReady().then(async () => {
         bounds: cageRect(),
         mode: 'view',
         visible: false, // revealed by applyVisibility; a background load must not steal focus
+        zoomFactor: zoomFactor(),
         onBound: (wcId) => {
           o.wcIds.add(wcId)
           guardCageFocus(wcId)
@@ -993,6 +1031,71 @@ app.whenReady().then(async () => {
   ipcMain.handle('shell:fetch', (_e, locator: string) => fetchNameOrLocator(locator))
   ipcMain.handle('shell:open', (_e, envelopeHash: string) => openThing(envelopeHash))
   ipcMain.handle('shell:set-mode', (_e, mode: unknown) => setMode(mode === 'edit' ? 'edit' : 'view'))
+
+  // ── Account & Keys ─────────────────────────────────────────────────────────
+  // The identity is ONE secp256k1 secret; the nostr key derives from it, so
+  // importing an eth key fully determines both. Mnemonics are used in-memory
+  // to derive the chosen account and then discarded — a (possibly funds-
+  // bearing) seed never rests on disk under our at-rest encryption. Private
+  // keys never cross IPC except the explicit, human-confirmed export.
+
+  /** Write the new identity (atomic, with a .bak of the old file) and restart
+   *  so every keyring-holding closure rebinds cleanly. Tests set
+   *  SHELL_NO_RELAUNCH=1 and relaunch themselves. */
+  function applyNewIdentity(privkey: Uint8Array): Record<string, unknown> {
+    Keyring.writeIdentity(userDataDir, privkey)
+    const willRestart = process.env.SHELL_NO_RELAUNCH !== '1'
+    if (willRestart) {
+      // Deferred so this invoke's reply reaches the chrome before quit.
+      setImmediate(() => {
+        app.relaunch()
+        app.quit()
+      })
+    }
+    return { ok: true, address: ethAddressHex(privkey), willRestart }
+  }
+
+  const ImportInput = z.union([
+    z.object({ mnemonic: z.string().max(1024), index: z.number().int().min(0).max(99) }),
+    z.object({ privkeyHex: z.string().max(70) })
+  ])
+
+  ipcMain.handle('shell:account-accounts', (_e, mnemonic: unknown, count: unknown) => {
+    if (typeof mnemonic !== 'string' || mnemonic.length > 1024) return { ok: false, error: 'bad input' }
+    const n = Math.min(30, Math.max(1, typeof count === 'number' ? Math.floor(count) : 5))
+    try {
+      // Addresses only — the derived private keys never cross IPC.
+      const accounts = mnemonicToAccounts(mnemonic, n).map((a) => ({ index: a.index, address: a.address }))
+      return { ok: true, accounts }
+    } catch {
+      return { ok: false, error: 'Not a valid BIP-39 phrase (check the words and word count).' }
+    }
+  })
+
+  ipcMain.handle('shell:account-import', (_e, input: unknown) => {
+    const parsed = ImportInput.safeParse(input)
+    if (!parsed.success) return { ok: false, error: 'bad input' }
+    try {
+      if ('privkeyHex' in parsed.data) {
+        const r = validatePrivkeyHex(parsed.data.privkeyHex)
+        if (!r.ok) return { ok: false, error: r.error }
+        return applyNewIdentity(r.privkey)
+      }
+      const accounts = mnemonicToAccounts(parsed.data.mnemonic, parsed.data.index + 1)
+      return applyNewIdentity(accounts[parsed.data.index]!.privkey)
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+  })
+
+  ipcMain.handle('shell:account-generate', () => {
+    // Nothing is retained here: the chrome shows the phrase for writing down
+    // and hands it back through shell:account-import when the human commits.
+    const mnemonic = generateMnemonic12()
+    return { mnemonic, address: mnemonicToAccounts(mnemonic, 1)[0]!.address }
+  })
+
+  ipcMain.handle('shell:account-export', () => ({ privkeyHex: keyring.exportSecretHex() }))
   ipcMain.handle('shell:publish', () => publishLatestDraft())
   ipcMain.handle('shell:copy', (_e, h: unknown) =>
     typeof h === 'string' ? copyThing(h) : { status: 'invalid', reason: 'bad hash' }

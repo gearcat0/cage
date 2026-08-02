@@ -45,6 +45,21 @@ const shell = {
   overlay: (delta: 1 | -1): void => {
     ipcRenderer.send('shell:overlay', delta)
   },
+  /** Derive the first accounts of a BIP-39 phrase (addresses only). */
+  accountAccounts: (mnemonic: string, count?: number): Promise<Record<string, unknown>> =>
+    ipcRenderer.invoke('shell:account-accounts', mnemonic, count),
+  /** Replace the identity from a phrase+index or a raw private key. Restarts
+   *  the app on success (unless suppressed for tests). */
+  accountImport: (input: { mnemonic: string; index: number } | { privkeyHex: string }): Promise<Record<string, unknown>> =>
+    ipcRenderer.invoke('shell:account-import', input),
+  /** A fresh 12-word phrase + its account-0 address; main retains nothing. */
+  accountGenerate: (): Promise<{ mnemonic: string; address: string }> => ipcRenderer.invoke('shell:account-generate'),
+  /** The current private key — human-confirmed backup flow only. */
+  accountExport: (): Promise<{ privkeyHex: string }> => ipcRenderer.invoke('shell:account-export'),
+  /** Main pushes this when the File menu's Account & Keys… is chosen. */
+  onOpenAccount: (cb: () => void): void => {
+    ipcRenderer.on('shell:open-account', () => cb())
+  },
   /** Main pushes this after the feed changes (e.g. an ingest). */
   onFeedChanged: (cb: () => void): void => {
     ipcRenderer.on('shell:feed-changed', () => cb())
