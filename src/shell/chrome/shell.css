@@ -218,16 +218,16 @@ body {
 
 /* Account & Keys modal. */
 .sh-account {
-  max-width: 616px;
+  max-width: 760px;
 }
 .sh-account-h {
-  margin: 18px 0 8px;
+  margin: 12px 0 6px;
   font-size: var(--evm-text-sm);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--evm-text-muted);
   border-top: 1px solid var(--evm-border);
-  padding-top: 14px;
+  padding-top: 10px;
 }
 .sh-account-h:first-child {
   margin-top: 0;
@@ -250,4 +250,24 @@ body {
 .sh-account-path {
   color: var(--evm-text-muted);
   font-family: var(--evm-font-mono);
+}
+
+/* The two small replace options sit side by side when there is room — stacking
+   them made the modal taller than the viewport at 2x scale. */
+.sh-account-cols {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--evm-space-4);
+}
+@media (min-width: 620px) {
+  .sh-account-cols {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.sh-account-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
 }

@@ -356,7 +356,7 @@ async function openAccountModal(): Promise<void> {
   const backupHint = el(
     'p',
     'sh-hint',
-    'Your private key IS your identity — the nostr key is derived from it. Anyone who has it can author as you and read everything sealed to you.'
+    'Your private key IS your identity — the nostr key derives from it. Anyone who has it can author as you and read everything sealed to you.'
   )
   const reveal = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Reveal private key…') as HTMLButtonElement
   reveal.setAttribute('data-testid', 'account-export-reveal')
@@ -384,7 +384,7 @@ async function openAccountModal(): Promise<void> {
     field(
       'Seed phrase',
       mnemonicInput,
-      'Derives accounts the MetaMask way (m/44′/60′/0′/0/i). Only the account you pick is stored — the phrase itself is never saved. Use a throwaway seed, not one holding funds.'
+      'MetaMask path m/44′/60′/0′/0/i. Only the account you pick is stored — the phrase is never saved. Use a throwaway seed, not one holding funds.'
     )
   )
   const seedError = el('div', 'evm-field-error')
@@ -456,7 +456,8 @@ async function openAccountModal(): Promise<void> {
     pkError.textContent = ''
     void commit({ privkeyHex: pkInput.value })
   })
-  body.append(field('Private key', pkInput, 'Imports this exact account.'), pkError, pkBtn)
+  const pkBlock = el('div', 'sh-account-col')
+  pkBlock.append(field('Private key', pkInput, 'Imports this exact account.'), pkError, pkBtn)
 
   // ── Replace: generate a new identity ──
   const genBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Generate new identity') as HTMLButtonElement
@@ -487,7 +488,11 @@ async function openAccountModal(): Promise<void> {
     genSlot.replaceChildren(words, hint, addrLine, ackRow, useBtn)
     genBtn.disabled = true
   })
-  body.append(genBtn, genSlot)
+  const genBlock = el('div', 'sh-account-col')
+  genBlock.append(el('div', 'evm-field-label', 'No key yet?'), genBtn, genSlot)
+  const cols = el('div', 'sh-account-cols')
+  cols.append(pkBlock, genBlock)
+  body.append(cols)
 
   const footer = el('div', 'evm-modal-footer')
   const close = el('button', 'evm-btn evm-btn--ghost', 'Close')

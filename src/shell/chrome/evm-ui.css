@@ -375,7 +375,7 @@ a.evm-chain-badge:hover { background: var(--evm-surface-4); color: var(--evm-tex
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: var(--evm-space-5);
+  padding: var(--evm-space-3);
   z-index: 1000;
 }
 .evm-modal {
@@ -385,7 +385,7 @@ a.evm-chain-badge:hover { background: var(--evm-surface-4); color: var(--evm-tex
   box-shadow: var(--evm-shadow-lg);
   width: 100%;
   max-width: 484px;
-  max-height: 90vh;
+  max-height: 94vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -427,7 +427,10 @@ a.evm-chain-badge:hover { background: var(--evm-surface-4); color: var(--evm-tex
   color: var(--evm-text-1);
 }
 .evm-copyfield__label { color: var(--evm-text-3); font-family: var(--evm-font-sans); }
-.evm-copyfield__value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* min-width:0 lets this flex child shrink (without it the field overflows its
+   container and the modal grows a horizontal scrollbar); key material wraps
+   rather than ellipsizing — the whole value must be readable to verify it. */
+.evm-copyfield__value { min-width: 0; overflow-wrap: anywhere; }
 .evm-copyfield__btn {
   appearance: none; border: none; background: var(--evm-surface-3);
   color: var(--evm-text-2); border-radius: var(--evm-radius-sm);
