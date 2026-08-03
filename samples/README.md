@@ -16,8 +16,13 @@ disfavor programs that hardcode state or lack proper self-instance creation.
 The smallest program with real state: renders `Name: <name>`, where the label
 is part of the program and the name comes from `args`.
 
-Try it: launch the shell → **Create…** → choose `nametag.html`, type `nametag`
-→ Sign & save. Open it from the feed: it lands in **View** mode (a blank tag
+These six are **built into the shell** as starters: press **New** and pick one
+(the shell also offers any program type already in your library, plus **New
+from HTML…** for your own page). Picking a type starts a local, unsigned
+**draft** — it stays on your machine, autosaves as you edit, and becomes a real
+signed thing only when you Publish.
+
+Try it: **New → Name tag**. Open it from the feed: it lands in **View** mode (a blank tag
 shows `—`). The **View | Edit** toggle in the shell's trusted header — not in
 the program — switches to Edit mode. As you edit, the program streams its
 working state with `bridge.emit('draft', {type, args})` (grants nothing); the
@@ -38,34 +43,32 @@ attachment. A program can display its image (`getBlob('image')`) but cannot
 read the bytes back, so its drafts either include freshly picked bytes
 (`blobs: {image: {bytes, mime}}`) or declare `{carry: true}` — "keep my
 current image" — which the shell resolves from the instance's own store.
-Create it via **Create…** with type `poster`; pick the image in Edit mode.
+Make one with **New → Poster**; pick the image in Edit mode.
 
 ## todo.html
 
 The contract with **array state**: `args {title, items: [{text, done}]}`.
 View mode is the signed artifact, read-only — checking things off is editing,
 done in Edit mode (add / remove / toggle / retext, every change streaming a
-draft) and made real by publishing. Create it via **Create…** with type
-`todo`.
+draft) and made real by publishing. Make one with **New → To-do list**.
 
 ## memo.html
 
 The same contract with structured state: `args: {to, from, subject, message}`.
 View mode renders a classic memo sheet (em-dash placeholders for unset fields,
 line breaks preserved in the message); edit mode is four fields, each streaming
-a draft on input. Create it via **Create…** with type `memo`.
+a draft on input. Make one with **New → Memo**.
 
 ## card.html
 
 A contact / business card: `args {name, role, org, email, phone, url}` —
 pure scalars. View mode renders a card that shows only the fields that are
 set (a real card has no empty labels); edit mode is six inputs, each
-streaming a draft. Create it via **Create…** with type `card`.
+streaming a draft. Make one with **New → Contact card**.
 
 ## invite.html
 
 An event invitation: `args {title, host, date, time, location, details}`.
 The date is STORED as ISO (data, not presentation) and RENDERED in the
 viewer's locale via `viewerInfo()` — the one bridge method no other sample
-uses. Unset fields don't render. Create it via **Create…** with type
-`invite`.
+uses. Unset fields don't render. Make one with **New → Invitation**.

@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { CasStore, EphemeralStore, type AttachmentStore } from '../../main/store.js'
@@ -41,6 +42,31 @@ export interface FeedQuery {
   author?: string
   limit?: number
   offset?: number
+}
+
+/** Ids of local drafts are namespaced so they can never be confused with an
+ *  envelope hash (which is 64 hex chars and means "signed and admitted"). */
+export const DRAFT_ID_PREFIX = 'draft:'
+export const isDraftId = (id: string): boolean => id.startsWith(DRAFT_ID_PREFIX)
+
+/** A local, unsigned draft: a program + the args typed so far. Never signed,
+ *  never seeded, never shared. */
+export interface DraftRow {
+  id: string
+  type: string
+  progHash: string
+  /** Whatever the program last streamed; null until it streams anything. */
+  args: unknown
+  created: number
+  updated: number
+}
+
+/** A program type the user can make something of: distinct (type, program). */
+export interface KnownType {
+  type: string
+  progHash: string
+  /** How many things in the library use this exact (type, program). */
+  count: number
 }
 
 /** Everything needed to mount an admitted thing (rebuilt from its store). */
@@ -88,6 +114,27 @@ function toThingRow(r: Row): ThingRow {
   }
 }
 
+type DraftDbRow = {
+  id: string
+  type: string
+  prog_hash: string
+  args_json: string | null
+  created: number
+  updated: number
+}
+
+function toDraftRow(r: DraftDbRow): DraftRow {
+  let args: unknown = null
+  if (r.args_json !== null) {
+    try {
+      args = JSON.parse(r.args_json)
+    } catch {
+      args = null // unreadable args degrade to "blank", never to a broken draft
+    }
+  }
+  return { id: r.id, type: r.type, progHash: r.prog_hash, args, created: r.created, updated: r.updated }
+}
+
 export interface AdmitStoreResult {
   envelopeHash: string
   /** True if this admission collided with an existing (author,path,seq) at a
@@ -132,6 +179,21 @@ export class Library {
       );
       CREATE INDEX IF NOT EXISTS idx_things_received ON things(received_at DESC);
       CREATE INDEX IF NOT EXISTS idx_things_chain ON things(author_key, path, seq);
+
+      -- Local, UNSIGNED drafts: work in progress that has never been signed and
+      -- never left this machine. Deliberately a separate table, not a column on
+      -- the things table -- migrate() is idempotent CREATE-IF-NOT-EXISTS with
+      -- no version column, so an added column would silently not apply to
+      -- existing libraries, while a new table is created on next open.
+      CREATE TABLE IF NOT EXISTS drafts (
+        id        TEXT PRIMARY KEY,
+        type      TEXT NOT NULL,
+        prog_hash TEXT NOT NULL,
+        args_json TEXT,
+        created   INTEGER NOT NULL,
+        updated   INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_drafts_updated ON drafts(updated DESC);
     `)
   }
 
@@ -267,23 +329,119 @@ export class Library {
     // Candidates BEFORE the row goes (the manifest must still be readable).
     const candidates = this.contentHashes(row)
     this.db.prepare('DELETE FROM things WHERE envelope_hash = ?').run(envelopeHash)
+    this.gc(candidates)
+    return true
+  }
+
+  /** Every content hash still referenced by ANY thing or ANY draft. Drafts are
+   *  not in `things` but DO reference their program blob — scanning only
+   *  `things` would collect the program out from under a live draft. */
+  private referencedHashes(): Set<string> {
     const referenced = new Set<string>()
-    const remaining = this.db.prepare('SELECT prog_hash, manifest_hash, sealed FROM things').all() as {
+    const rows = this.db.prepare('SELECT prog_hash, manifest_hash, sealed FROM things').all() as {
       prog_hash: string
       manifest_hash: string
       sealed: number
     }[]
-    for (const r of remaining) {
+    for (const r of rows) {
       for (const h of this.contentHashes({ progHash: r.prog_hash, manifestHash: r.manifest_hash, sealed: r.sealed === 1 })) {
         referenced.add(h)
       }
     }
+    for (const d of this.db.prepare('SELECT prog_hash FROM drafts').all() as { prog_hash: string }[]) {
+      referenced.add(d.prog_hash)
+    }
+    return referenced
+  }
+
+  /** Drop candidate blobs that nothing references any more. */
+  private gc(candidates: Set<string>): void {
+    const referenced = this.referencedHashes()
     for (const h of candidates) {
       if (referenced.has(h)) continue
       this.cas.delete(h)
       this.sealed.delete(h)
     }
+  }
+
+  // ── Drafts ─────────────────────────────────────────────────────────────────
+
+  /** Program types the user can create something of: distinct (type, program)
+   *  across the library. Sealed things are excluded — their program lives only
+   *  in the in-memory store, so a draft made from one would be unmountable
+   *  after a restart (and copying those bytes to the CAS would put sealed
+   *  plaintext on disk). */
+  distinctTypes(): KnownType[] {
+    const rows = this.db
+      .prepare(
+        `SELECT type, prog_hash, COUNT(*) AS n, MAX(received_at) AS recent
+         FROM things WHERE sealed = 0
+         GROUP BY type, prog_hash
+         ORDER BY recent DESC`
+      )
+      .all() as { type: string; prog_hash: string; n: number }[]
+    return rows
+      .filter((r) => this.cas.has(r.prog_hash))
+      .map((r) => ({ type: r.type, progHash: r.prog_hash, count: r.n }))
+  }
+
+  createDraft(input: { type: string; progHash: string; now?: number }): DraftRow {
+    const now = input.now ?? Date.now()
+    const row: DraftRow = {
+      id: `${DRAFT_ID_PREFIX}${randomUUID()}`,
+      type: input.type,
+      progHash: input.progHash,
+      args: null,
+      created: now,
+      updated: now
+    }
+    this.db
+      .prepare('INSERT INTO drafts (id, type, prog_hash, args_json, created, updated) VALUES (?,?,?,?,?,?)')
+      .run(row.id, row.type, row.progHash, null, now, now)
+    return row
+  }
+
+  listDrafts(): DraftRow[] {
+    const rows = this.db.prepare('SELECT * FROM drafts ORDER BY updated DESC').all() as DraftDbRow[]
+    return rows.map(toDraftRow)
+  }
+
+  getDraft(id: string): DraftRow | null {
+    const r = this.db.prepare('SELECT * FROM drafts WHERE id = ?').get(id) as DraftDbRow | undefined
+    return r ? toDraftRow(r) : null
+  }
+
+  /** Persist the args (and current type) a draft's program last streamed. */
+  updateDraftArgs(id: string, args: unknown, type: string, now = Date.now()): boolean {
+    let json: string
+    try {
+      json = JSON.stringify(args ?? null)
+    } catch {
+      return false
+    }
+    const r = this.db
+      .prepare('UPDATE drafts SET args_json = ?, type = ?, updated = ? WHERE id = ?')
+      .run(json, type, now, id)
+    return r.changes > 0
+  }
+
+  /** Delete a draft and GC its program blob if nothing else references it. */
+  deleteDraft(id: string): boolean {
+    const row = this.getDraft(id)
+    if (!row) return false
+    this.db.prepare('DELETE FROM drafts WHERE id = ?').run(id)
+    this.gc(new Set([row.progHash]))
     return true
+  }
+
+  /** Store program bytes in the CAS (idempotent) and return their hash. */
+  putProgram(bytes: Uint8Array): string {
+    return this.cas.put(bytes)
+  }
+
+  /** Read program bytes by hash — no envelope, no row required. */
+  readProgram(progHash: string): Uint8Array | null {
+    return this.cas.readAll(progHash)
   }
 
   count(): number {

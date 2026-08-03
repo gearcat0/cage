@@ -141,7 +141,7 @@ pnpm test:unit      # fast pure-logic unit tests (Vitest)
 pnpm typecheck
 ```
 
-The **shell** is the product — the user-facing client (feed, Create…, trust
+The **shell** is the product — the user-facing client (feed, New, trust
 chrome). `package.json`'s `main` is `out/main/shell/main.js`, so `pnpm dev`
 (with HMR), `pnpm start` (from the build), `pnpm preview`, `electron .`, and the
 packaged installer all launch the shell. The phase-1 **cage harness**

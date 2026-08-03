@@ -66,7 +66,11 @@ retired); all controls live in trusted chrome.
 **Receive:** file / paste / drag / locator / name → admission → library — the
 "flyer" property, transport-agnostic and verify-at-the-gate.
 
-**Author (Create…):** pick a self-contained HTML page (+ optional attachments) →
+**Author (New):** pick a known type — a built-in starter or any program
+already in your library — and the shell starts a local, UNSIGNED draft that
+autosaves as you edit and is consumed when you publish it. Drafts live in their
+own feed section, never leave the machine, and their header says DRAFT, never
+"signed". **New from HTML…** is the raw path: pick a self-contained HTML page (+ optional attachments) →
 `format.buildBundle` signs it with the keyring `Signer` → a shareable `.thing`
 saved via a native dialog, and admitted + seeded locally like any other thing (so
 you see your own creation, and it is re-servable by `bundle:<hash>`). Authoring is
