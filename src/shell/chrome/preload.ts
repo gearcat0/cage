@@ -56,6 +56,15 @@ const shell = {
   accountGenerate: (): Promise<{ mnemonic: string; address: string }> => ipcRenderer.invoke('shell:account-generate'),
   /** The current private key — human-confirmed backup flow only. */
   accountExport: (): Promise<{ privkeyHex: string }> => ipcRenderer.invoke('shell:account-export'),
+  /** Types the user can make something of: built-in starters + programs
+   *  already in the library. */
+  knownTypes: (): Promise<unknown[]> => ipcRenderer.invoke('shell:known-types'),
+  /** Local, unsigned drafts (newest edit first). */
+  drafts: (): Promise<unknown[]> => ipcRenderer.invoke('shell:drafts'),
+  /** Start a draft of a known type; returns its id. */
+  newDraft: (key: string): Promise<{ id?: string; type?: string; error?: string }> =>
+    ipcRenderer.invoke('shell:new-draft', key),
+  deleteDraft: (id: string): Promise<{ deleted: boolean }> => ipcRenderer.invoke('shell:delete-draft', id),
   /** Main pushes this when the File menu's Account & Keys… is chosen. */
   onOpenAccount: (cb: () => void): void => {
     ipcRenderer.on('shell:open-account', () => cb())

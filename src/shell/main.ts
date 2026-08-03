@@ -6,7 +6,8 @@ import { AdmissionService } from './admission/index.js'
 import { Keyring, KeyringLoadError } from './keyring/index.js'
 import { ethAddressHex, generateMnemonic12, mnemonicToAccounts, validatePrivkeyHex } from './keyring/hd.js'
 import { z } from 'zod'
-import { Library, type StoredThing, type ThingRow } from './library/index.js'
+import { Library, isDraftId, type DraftRow, type StoredThing, type ThingRow } from './library/index.js'
+import { STARTERS, starterByKey, starterBytes } from './starters/index.js'
 import { mountThing, type MountedThing } from './mount/index.js'
 import { TransportService, FileTransport, SeedTransport, WebtorrentTransport } from './transport/index.js'
 import { NamingService, DirectResolver, EnsResolver, NostrResolver, type EnsClient } from './naming/index.js'
@@ -209,6 +210,12 @@ interface ShellSurface {
   } | null
   /** Raise the publish confirm for the open thing's latest draft. */
   publishDraft?: () => Record<string, unknown>
+  /** Types the user can create something of (starters + library programs). */
+  knownTypes?: () => { key: string; testKey: string; source: string; type: string; progHash: string }[]
+  /** Local unsigned drafts, newest edit first. */
+  drafts?: () => DraftRow[]
+  newDraft?: (key: string) => Record<string, unknown>
+  deleteDraft?: (id: string) => Record<string, unknown>
   /** Copy a thing (new instance, same program/type/args/attachments, your key). */
   copyThing?: (envelopeHash: string) => Promise<Record<string, unknown>>
   /** Delete a thing from the library (+ blob GC + seed removal). */
@@ -395,15 +402,25 @@ app.whenReady().then(async () => {
     /** Identity key of the currently mounted preview (dedupe: identical
      *  drafts must not remount — that is visible flicker). */
     lastPreviewKey: string | null
+    /** Non-null when this open thing is a local, UNSIGNED draft. Every draft
+     *  branch keys off THIS — never off re-parsing the id. */
+    draftId: string | null
+    /** Autosave: the last streamed draft, and its debounce timer. */
+    pendingSave: Draft | null
+    saveTimer: ReturnType<typeof setTimeout> | null
     activeMode: ThingMode
     wcIds: Set<number>
   }
   let current: OpenThing | null = null
 
-  function destroyCurrent(): void {
+  function destroyCurrent(opts: { flush?: boolean } = {}): void {
     if (!current) return
     const o = current
     current = null
+    // Persist unsaved draft edits before tearing down — unless the caller is
+    // deleting the draft (a flush would resurrect the row it just removed).
+    if (opts.flush !== false) flushAutosave(o)
+    if (o.saveTimer) clearTimeout(o.saveTimer)
     if (o.draftTimer) clearTimeout(o.draftTimer)
     o.view?.destroy()
     o.edit?.destroy()
@@ -600,16 +617,23 @@ app.whenReady().then(async () => {
   }
 
   async function openThing(envelopeHash: string): Promise<Record<string, unknown>> {
-    // Same-hash reopen is a mode reset, NOT a remount — unsaved edit state
-    // survives, and "open always lands in view" still holds.
+    const draft = isDraftId(envelopeHash) ? library.getDraft(envelopeHash) : null
+    if (isDraftId(envelopeHash) && !draft) return { error: 'draft not found' }
+    // Same-id reopen is a mode reset, NOT a remount — unsaved edit state
+    // survives. A thing lands in view; a draft is unfinished work, so it lands
+    // back in edit.
     if (current && current.envelopeHash === envelopeHash && current.view) {
-      await setMode('view')
-      library.markRead(envelopeHash)
-      notifyFeedChanged()
-      return { ...current.header, mode: 'view' }
+      await setMode(draft ? 'edit' : 'view')
+      if (!draft) {
+        library.markRead(envelopeHash)
+        notifyFeedChanged()
+      }
+      return { ...current.header, mode: current.activeMode }
     }
-    const stored = library.load(envelopeHash)
-    if (!stored) return { error: 'not found or not mountable (sealed)' }
+    const stored = draft ? draftStoredFrom(draft) : library.load(envelopeHash)
+    if (!stored) {
+      return { error: draft ? 'draft program missing from the store' : 'not found or not mountable (sealed)' }
+    }
     destroyCurrent()
     const o: OpenThing = {
       stored,
@@ -626,6 +650,9 @@ app.whenReady().then(async () => {
       latestDraft: null,
       latestDraftMeta: null,
       lastPreviewKey: null,
+      draftId: draft ? draft.id : null,
+      pendingSave: null,
+      saveTimer: null,
       activeMode: 'view',
       wcIds: new Set()
     }
@@ -653,14 +680,24 @@ app.whenReady().then(async () => {
     watchZoomKeys(m.view.webContents)
     applyVisibility()
     applyZoom()
-    library.markRead(envelopeHash)
-    notifyFeedChanged()
+    if (!draft) {
+      library.markRead(envelopeHash)
+      notifyFeedChanged()
+    }
     // The verified primary name for the author — a chrome trust signal. Shown
     // ONLY when it forward+reverse-confirms against the thing's author key.
-    const nv = await naming.primaryName(m.header.authorScheme, m.header.authorKey)
-    o.header = { ...m.header, name: nv.status === 'verified' ? nv.name : null, nameStatus: nv.status }
-    notifyModeChanged('view')
-    return { ...o.header, mode: 'view' }
+    // A draft is unsigned and authored by nobody yet: no name lookup, and the
+    // header must say DRAFT rather than "signed".
+    const nv = draft ? null : await naming.primaryName(m.header.authorScheme, m.header.authorKey)
+    o.header = {
+      ...m.header,
+      name: nv?.status === 'verified' ? nv.name : null,
+      nameStatus: nv?.status ?? null,
+      draft: draft !== null
+    }
+    if (draft) await setMode('edit') // unfinished work opens ready to edit
+    notifyModeChanged(o.activeMode)
+    return { ...o.header, mode: o.activeMode }
   }
 
   /** Switch the open thing's mode. The edit cage mounts lazily on first use
@@ -715,6 +752,149 @@ app.whenReady().then(async () => {
   // program in view mode with the draft's args — the preview goes through the
   // identical path a published instance would, so what you preview is exactly
   // what you would publish.
+
+  // ── Known types, local drafts ──────────────────────────────────────────────
+  // "New" offers the built-in starters plus every distinct program already in
+  // the library, so a type a friend sent you is something you can make too.
+  // Picking one creates an UNSIGNED local draft: it lives only here, autosaves
+  // as you type, and is consumed when you publish it.
+
+  interface KnownTypeEntry {
+    key: string
+    /** Identifier-safe key for chrome data-testids. */
+    testKey: string
+    source: 'starter' | 'library'
+    type: string
+    progHash: string
+    label: string
+    description: string
+    count: number
+  }
+
+  /** Program hashes of the built-in starters (their bytes are compile-time
+   *  constants, so this is computed once). */
+  const starterHashes = new Map<string, string>()
+  for (const st of STARTERS) starterHashes.set(st.key, toHex(hash(starterBytes(st))))
+
+  function knownTypes(): KnownTypeEntry[] {
+    const out: KnownTypeEntry[] = STARTERS.map((st) => ({
+      key: st.key,
+      testKey: `starter-${st.type}`,
+      source: 'starter' as const,
+      type: st.type,
+      progHash: starterHashes.get(st.key)!,
+      label: st.label,
+      description: st.description,
+      count: 0
+    }))
+    const seen = new Set(out.map((e) => `${e.type}\u0000${e.progHash}`))
+    for (const k of library.distinctTypes()) {
+      const id = `${k.type}\u0000${k.progHash}`
+      if (seen.has(id)) continue
+      seen.add(id)
+      out.push({
+        key: `library:${id}`,
+        testKey: `library-${k.progHash.slice(0, 8)}`,
+        source: 'library',
+        type: k.type,
+        progHash: k.progHash,
+        label: k.type,
+        description: `${k.count} in your library`,
+        count: k.count
+      })
+    }
+    return out
+  }
+
+  /** Synthesize the StoredThing a DRAFT is: its program from the CAS, the args
+   *  typed so far, no attachments, nothing signed. Same precedent as
+   *  previewStoredFrom — mountThing never verifies a signature. */
+  function draftStoredFrom(d: DraftRow): StoredThing | null {
+    const program = library.readProgram(d.progHash)
+    if (!program) return null
+    const row: ThingRow = {
+      envelopeHash: d.id,
+      authorScheme: keyring.signer.scheme,
+      authorKey: hex(keyring.identity.address),
+      type: d.type,
+      progHash: d.progHash,
+      manifestHash: '', // nothing was signed, so no manifest exists
+      receivedAt: d.updated,
+      created: d.created,
+      path: null,
+      seq: null,
+      sealed: false,
+      read: true,
+      isFork: false
+    }
+    return {
+      row,
+      program,
+      manifest: { v: 1, prog: hash(program), type: d.type, args: jsToCbor(d.args ?? null), att: new Map() },
+      store: new EphemeralStore()
+    }
+  }
+
+  // Autosave. Slower than the 600ms preview debounce so the sqlite write never
+  // lands on a remount frame.
+  const AUTOSAVE_DEBOUNCE_MS = 800
+
+  function flushAutosave(o: OpenThing): boolean {
+    const d = o.pendingSave
+    o.pendingSave = null
+    if (!d || !o.draftId) return false
+    // Persist only args that can become canonical CBOR — publishing rejects the
+    // rest anyway (floats, say), and a draft that cannot be re-encoded would
+    // throw when reopened.
+    try {
+      jsToCbor(d.args)
+    } catch {
+      return false
+    }
+    return library.updateDraftArgs(o.draftId, d.args, d.type, Date.now())
+  }
+
+  function scheduleAutosave(o: OpenThing, draft: Draft): void {
+    o.pendingSave = draft
+    if (o.saveTimer) return
+    o.saveTimer = setTimeout(() => {
+      o.saveTimer = null
+      flushAutosave(o)
+    }, AUTOSAVE_DEBOUNCE_MS)
+    o.saveTimer.unref?.()
+  }
+
+  /** Start a new local draft of a known type. Returns its id; the chrome then
+   *  opens it (in edit mode). */
+  function newDraft(key: unknown): Record<string, unknown> {
+    if (typeof key !== 'string') return { error: 'bad type key' }
+    const starter = starterByKey(key)
+    let type: string
+    let progHash: string
+    if (starter) {
+      type = starter.type
+      progHash = library.putProgram(starterBytes(starter))
+    } else {
+      // Re-resolve library keys against the CURRENT known types — a renderer
+      // must never be able to pin an arbitrary CAS blob as a program.
+      const entry = knownTypes().find((k) => k.key === key && k.source === 'library')
+      if (!entry) return { error: 'unknown type' }
+      type = entry.type
+      progHash = entry.progHash
+    }
+    const row = library.createDraft({ type, progHash })
+    notifyFeedChanged()
+    return { id: row.id, type: row.type }
+  }
+
+  function deleteDraft(id: string): Record<string, unknown> {
+    if (!isDraftId(id)) return { deleted: false }
+    // Discard (no flush) — a pending autosave would resurrect the row.
+    if (current?.draftId === id) destroyCurrent({ flush: false })
+    const deleted = library.deleteDraft(id)
+    if (deleted) notifyFeedChanged()
+    return { deleted }
+  }
 
   /** Resolve a draft's full attachment set: inline blobs as sent (mime from
    *  the validated att table), carry-over names from the mounted instance's
@@ -826,6 +1006,11 @@ app.whenReady().then(async () => {
     // The latest draft is what the chrome Publish button signs.
     o.latestDraft = req.draft
     o.latestDraftMeta = { argsBytes: req.argsBytes, blobBytes: req.blobBytes }
+    // Autosave BEFORE the preview dedupe below: a draft identical to the last
+    // PREVIEWED one still has to be persisted (type-then-undo, or the first
+    // draft after reopening). No notifyFeedChanged — that would rebuild the
+    // feed DOM on every keystroke.
+    if (o.draftId) scheduleAutosave(o, req.draft)
     if (!publishableBefore) notifyModeChanged(o.activeMode) // enable Publish
     // Identical draft → identical preview: skip the remount (visible flicker).
     if (o.lastPreviewKey !== null && draftKey(req.draft) === o.lastPreviewKey) {
@@ -872,6 +1057,9 @@ app.whenReady().then(async () => {
    *  copy — including of things authored by someone else. Sealed things are
    *  refused: silently republishing private content as public is a footgun. */
   async function copyThing(envelopeHash: string): Promise<Record<string, unknown>> {
+    if (isDraftId(envelopeHash)) {
+      return { status: 'invalid', reason: 'this is an unpublished draft — publish it first' }
+    }
     const stored = library.load(envelopeHash)
     if (!stored) return { status: 'invalid', reason: 'not found or not mountable (sealed, undecrypted)' }
     if (stored.row.sealed) return { status: 'invalid', reason: 'refusing to copy a sealed thing into a public one' }
@@ -909,6 +1097,7 @@ app.whenReady().then(async () => {
    *  its bundle. Copies held by others are of course unaffected — a signed
    *  thing is public and permanent once shared. */
   function deleteThing(envelopeHash: string): Record<string, unknown> {
+    if (isDraftId(envelopeHash)) return deleteDraft(envelopeHash)
     if (current?.envelopeHash === envelopeHash) destroyCurrent()
     const deleted = library.delete(envelopeHash)
     if (deleted) {
@@ -926,6 +1115,8 @@ app.whenReady().then(async () => {
   // chrome renderer; the dialog gets type/args/att metadata only.
   interface PendingPublish {
     draft: Draft
+    /** Set when the open thing was a local draft: publishing CONSUMES it. */
+    draftId: string | null
     /** The full attachment set, resolved (carry-overs included) at CONFIRM
      *  time — approval must publish what the dialog described, even if the
      *  open thing changes before the human decides. */
@@ -999,7 +1190,7 @@ app.whenReady().then(async () => {
       applyVisibility()
     }, PUBLISH_CONFIRM_TTL_MS)
     timer.unref?.()
-    pendingConfirms.set(id, { draft: o.latestDraft, attachments, program: o.stored.program, timer })
+    pendingConfirms.set(id, { draft: o.latestDraft, draftId: o.draftId, attachments, program: o.stored.program, timer })
     applyVisibility() // cages hide while the human decides in chrome
     const confirmReq = { id, kind: 'publish', summary }
     shell.lastConfirm = confirmReq
@@ -1019,6 +1210,15 @@ app.whenReady().then(async () => {
     }
     clearPreview()
     void persistApprovedDraft(p).then((outcome) => {
+      // Ingest FIRST, then drop the draft: library.store has already inserted
+      // the row referencing the shared program blob, so the draft's GC scan
+      // cannot collect it.
+      if (p.draftId && outcome.status === 'valid') {
+        if (current?.draftId === p.draftId) destroyCurrent({ flush: false })
+        library.deleteDraft(p.draftId)
+        outcome.draftConsumed = true
+        notifyFeedChanged()
+      }
       shell.lastPublish = outcome
       chrome.webContents.send('shell:publish-result', outcome)
     })
@@ -1097,6 +1297,12 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('shell:account-export', () => ({ privkeyHex: keyring.exportSecretHex() }))
   ipcMain.handle('shell:publish', () => publishLatestDraft())
+  ipcMain.handle('shell:known-types', () => knownTypes())
+  ipcMain.handle('shell:drafts', () => library.listDrafts())
+  ipcMain.handle('shell:new-draft', (_e, key: unknown) => newDraft(key))
+  ipcMain.handle('shell:delete-draft', (_e, id: unknown) =>
+    typeof id === 'string' ? deleteDraft(id) : { deleted: false }
+  )
   ipcMain.handle('shell:copy', (_e, h: unknown) =>
     typeof h === 'string' ? copyThing(h) : { status: 'invalid', reason: 'bad hash' }
   )
@@ -1143,6 +1349,10 @@ app.whenReady().then(async () => {
   shell.open = (envelopeHash) => openThing(envelopeHash)
   shell.setMode = (m) => setMode(m)
   shell.publishDraft = () => publishLatestDraft()
+  shell.knownTypes = () => knownTypes()
+  shell.drafts = () => library.listDrafts()
+  shell.newDraft = (key) => newDraft(key)
+  shell.deleteDraft = (id) => deleteDraft(id)
   shell.copyThing = (h) => copyThing(h)
   shell.deleteThing = (h) => deleteThing(h)
   shell.modeState = () =>

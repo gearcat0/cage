@@ -35,6 +35,10 @@ interface ShellApi {
   accountGenerate(): Promise<{ mnemonic: string; address: string }>
   accountExport(): Promise<{ privkeyHex: string }>
   onOpenAccount(cb: () => void): void
+  knownTypes(): Promise<KnownTypeEntry[]>
+  drafts(): Promise<DraftRow[]>
+  newDraft(key: string): Promise<{ id?: string; type?: string; error?: string }>
+  deleteDraft(id: string): Promise<{ deleted: boolean }>
   onFeedChanged(cb: () => void): void
   onConfirmRequest(cb: (req: { id: number; kind: string; summary: Record<string, unknown> }) => void): void
   respondConfirm(id: number, approved: boolean): void
@@ -51,6 +55,25 @@ interface ThingRow {
   read: boolean
   isFork: boolean
 }
+interface KnownTypeEntry {
+  key: string
+  /** Identifier-safe key for data-testids. */
+  testKey: string
+  source: 'starter' | 'library'
+  type: string
+  progHash: string
+  label: string
+  description: string
+  count: number
+}
+interface DraftRow {
+  id: string
+  type: string
+  progHash: string
+  args: unknown
+  created: number
+  updated: number
+}
 interface HeaderFacts {
   type: string
   authorScheme: string
@@ -60,7 +83,10 @@ interface HeaderFacts {
   isFork: boolean
   /** Verified primary name for the author, or null if none confirmed. */
   name?: string | null
-  nameStatus?: 'verified' | 'mismatch' | 'unresolvable'
+  nameStatus?: 'verified' | 'mismatch' | 'unresolvable' | null
+  /** True when this is a local, unsigned draft — the header must NOT claim it
+   *  is signed. The renderer never parses ids; this is the discriminant. */
+  draft?: boolean
 }
 type Outcome =
   | { status: 'valid'; type: string; author?: { k: string } }
@@ -96,7 +122,8 @@ ingestInput.placeholder = 'paste a base64 bundle, or a locator (magnet:/bundle:/
 ingestInput.setAttribute('aria-label', 'paste bundle or locator')
 const ingestBtn = el('button', 'evm-btn evm-btn--primary evm-btn--sm', 'Ingest') as HTMLButtonElement
 const fileBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Open file…') as HTMLButtonElement
-const createBtn = el('button', 'evm-btn evm-btn--primary evm-btn--sm', 'Create…') as HTMLButtonElement
+const newBtn = el('button', 'evm-btn evm-btn--primary evm-btn--sm', 'New') as HTMLButtonElement
+newBtn.setAttribute('data-testid', 'new-thing')
 const fileInput = el('input') as HTMLInputElement
 fileInput.type = 'file'
 fileInput.style.display = 'none'
@@ -104,7 +131,7 @@ const toast = el('span', 'sh-toast')
 const keyWarn = el('button', 'evm-badge evm-badge--warning sh-keywarn') as HTMLButtonElement
 keyWarn.style.display = 'none'
 topbar.append(
-  createBtn,
+  newBtn,
   ingestInput,
   ingestBtn,
   fileBtn,
@@ -252,19 +279,26 @@ function confirmDanger(title: string, text: string, action: string): Promise<boo
 
 /** Delete via either the header button or a feed row: confirm, delete, and
  *  clear the header if the deleted thing was the open one. */
-async function deleteWithConfirm(envelopeHash: string, type: string): Promise<void> {
-  const ok = await confirmDanger(
-    'Delete thing',
-    `Delete this ${type} from your library? Its bundle stops being seeded from this machine. Copies already shared are unaffected — a signed thing is public and permanent once shared.`,
-    'Delete'
-  )
+async function deleteWithConfirm(id: string, type: string, isDraft = false): Promise<void> {
+  const ok = isDraft
+    ? await confirmDanger(
+        'Discard draft',
+        `Discard this unsigned ${type} draft? It was never signed and never left this machine, so there is nothing to recall — but the work in it is gone.`,
+        'Discard'
+      )
+    : await confirmDanger(
+        'Delete thing',
+        `Delete this ${type} from your library? Its bundle stops being seeded from this machine. Copies already shared are unaffected — a signed thing is public and permanent once shared.`,
+        'Delete'
+      )
   if (!ok) return
-  await shell.deleteThing(envelopeHash)
-  if (selected === envelopeHash) {
+  if (isDraft) await shell.deleteDraft(id)
+  else await shell.deleteThing(id)
+  if (selected === id) {
     selected = null
     renderHeader(null)
   }
-  showText('Deleted from your library', 'neutral')
+  showText(isDraft ? 'Draft discarded' : 'Deleted from your library', 'neutral')
   await refreshFeed()
 }
 
@@ -504,6 +538,65 @@ async function openAccountModal(): Promise<void> {
   document.body.append(trackOverlay(overlay))
 }
 
+/** The New chooser: built-in starters, then programs already in the library,
+ *  then the raw "bring your own HTML" path. Picking a type starts a local
+ *  DRAFT — nothing is signed until the human publishes it. */
+async function openNewMenu(): Promise<void> {
+  // Fetch before the overlay exists: an await afterwards would hide the cage
+  // views for longer than the modal is actually up.
+  const types = await shell.knownTypes()
+  const overlay = el('div', 'evm-modal-overlay')
+  const modal = el('div', 'evm-modal')
+  modal.setAttribute('data-testid', 'new-menu')
+  const header = el('div', 'evm-modal-header')
+  header.append(el('span', 'evm-modal-title', 'New'))
+  const body = el('div', 'evm-modal-body')
+  body.append(el('p', 'sh-hint', 'Pick what to make. It starts as a draft on this machine — nothing is signed or shared until you publish it.'))
+
+  for (const entry of types) {
+    const btn = el('button', 'evm-btn evm-btn--ghost sh-new-type')
+    btn.setAttribute('data-testid', `new-type-${entry.testKey}`)
+    btn.setAttribute('data-type', entry.type)
+    btn.setAttribute('data-source', entry.source)
+    btn.append(
+      el('span', 'evm-badge evm-badge--neutral', entry.type),
+      (() => {
+        const text = el('span', 'sh-new-type-text')
+        text.append(el('span', 'sh-new-type-label', entry.label), el('span', 'sh-hint', entry.description))
+        return text
+      })()
+    )
+    btn.addEventListener('click', async () => {
+      overlay.remove()
+      const r = await shell.newDraft(entry.key)
+      if (!r.id) {
+        showText(`Could not start a draft: ${String(r.error ?? 'unknown type')}`, 'danger')
+        return
+      }
+      await openThing(r.id)
+    })
+    body.append(btn)
+  }
+
+  body.append(el('div', 'sh-new-sep'))
+  const fromHtml = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'New from HTML…')
+  fromHtml.setAttribute('data-testid', 'new-from-html')
+  fromHtml.addEventListener('click', () => {
+    overlay.remove()
+    openComposeModal()
+  })
+  body.append(fromHtml)
+
+  const footer = el('div', 'evm-modal-footer')
+  const cancel = el('button', 'evm-btn evm-btn--ghost', 'Cancel')
+  cancel.setAttribute('data-testid', 'new-menu-cancel')
+  cancel.addEventListener('click', () => overlay.remove())
+  footer.append(cancel)
+  modal.append(header, body, footer)
+  overlay.append(modal)
+  document.body.append(trackOverlay(overlay))
+}
+
 function openComposeModal(): void {
   const overlay = el('div', 'evm-modal-overlay')
   const modal = el('div', 'evm-modal')
@@ -580,7 +673,7 @@ function openComposeModal(): void {
     }
   })
 }
-createBtn.addEventListener('click', openComposeModal)
+newBtn.addEventListener('click', () => void openNewMenu())
 
 // ── Safety notice (experimental alpha + real key custody) ────────────────────
 function safetyModal(keyStorage: 'os' | 'software'): void {
@@ -637,46 +730,85 @@ function renderSafety(keyStorage: 'os' | 'software'): void {
 // ── Feed ─────────────────────────────────────────────────────────────────────
 let selected: string | null = null
 
+/** One feed row. Three grid cells — type | author | flags — so the author
+ *  column lines up across rows regardless of how long the type name is. */
+function thingItem(row: ThingRow): HTMLElement {
+  const item = el('button', 'sh-feed-item')
+  if (row.envelopeHash === selected) item.classList.add('sh-feed-item--active')
+  const line1 = el('div', 'sh-feed-line')
+  const author = el(
+    'span',
+    'sh-feed-author evm-address evm-address--muted',
+    row.authorScheme === 'eth-eip191' ? shortAddress(row.authorKey) : short(row.authorKey)
+  )
+  const flags = el('span', 'sh-feed-flags')
+  if (row.isFork) flags.append(el('span', 'evm-badge evm-badge--danger', 'FORK'))
+  if (row.sealed) flags.append(el('span', 'evm-badge evm-badge--purple', 'sealed'))
+  if (!row.read) flags.append(el('span', 'sh-unread', '●'))
+  // Per-row delete — usable WITHOUT opening the thing (you may not want to
+  // mount something before removing it). A span, not a button: the row itself
+  // is a button and buttons must not nest.
+  const del = el('span', 'sh-feed-del', '×')
+  del.title = 'Delete from library'
+  del.setAttribute('role', 'button')
+  del.setAttribute('data-testid', 'feed-delete')
+  del.addEventListener('click', (e) => {
+    e.stopPropagation()
+    void deleteWithConfirm(row.envelopeHash, row.type)
+  })
+  flags.append(del)
+  line1.append(el('span', 'evm-badge evm-badge--neutral', row.type), author, flags)
+  item.append(line1, el('div', 'sh-feed-meta', fmtTime(row.receivedAt)))
+  item.addEventListener('click', () => void openThing(row.envelopeHash))
+  return item
+}
+
+/** A local, unsigned draft. Same grid so the columns still line up. */
+function draftItem(d: DraftRow): HTMLElement {
+  const item = el('button', 'sh-feed-item sh-feed-item--draft')
+  item.setAttribute('data-testid', 'draft-item')
+  item.setAttribute('data-draft-id', d.id)
+  if (d.id === selected) item.classList.add('sh-feed-item--active')
+  const line1 = el('div', 'sh-feed-line')
+  const label = el('span', 'sh-feed-author sh-feed-draft-label', 'only on this machine')
+  const flags = el('span', 'sh-feed-flags')
+  const badge = el('span', 'evm-badge evm-badge--warning', 'DRAFT')
+  badge.setAttribute('data-testid', 'draft-badge')
+  flags.append(badge)
+  const del = el('span', 'sh-feed-del', '×')
+  del.title = 'Discard draft'
+  del.setAttribute('role', 'button')
+  // NOT `feed-delete`: specs query the first match of that id, and drafts
+  // render above the feed.
+  del.setAttribute('data-testid', 'draft-delete')
+  del.addEventListener('click', (e) => {
+    e.stopPropagation()
+    void deleteWithConfirm(d.id, d.type, true)
+  })
+  flags.append(del)
+  line1.append(el('span', 'evm-badge evm-badge--neutral', d.type), label, flags)
+  item.append(line1, el('div', 'sh-feed-meta', `edited ${fmtTime(d.updated)}`))
+  item.addEventListener('click', () => void openThing(d.id))
+  return item
+}
+
 async function refreshFeed(): Promise<void> {
-  const rows = await shell.feed({})
+  const [drafts, rows] = await Promise.all([shell.drafts(), shell.feed({})])
   feedPane.replaceChildren()
+  if (drafts.length > 0) {
+    const title = el('div', 'sh-feed-title', `Drafts · ${drafts.length}`)
+    title.setAttribute('data-testid', 'feed-drafts-title')
+    feedPane.append(title)
+    for (const d of drafts) feedPane.append(draftItem(d))
+  }
   feedPane.append(el('div', 'sh-feed-title', `Feed · ${rows.length}`))
   if (rows.length === 0) {
-    feedPane.append(el('div', 'evm-empty', 'No things yet. Ingest a bundle to begin.'))
+    feedPane.append(
+      el('div', 'evm-empty', drafts.length > 0 ? 'Nothing published yet.' : 'Nothing yet. Press New to make something.')
+    )
     return
   }
-  for (const row of rows) {
-    const item = el('button', 'sh-feed-item')
-    if (row.envelopeHash === selected) item.classList.add('sh-feed-item--active')
-    const line1 = el('div', 'sh-feed-line')
-    line1.append(
-      el('span', 'evm-badge evm-badge--neutral', row.type),
-      el(
-        'span',
-        'sh-feed-author evm-address evm-address--muted',
-        row.authorScheme === 'eth-eip191' ? shortAddress(row.authorKey) : short(row.authorKey)
-      )
-    )
-    if (row.isFork) line1.append(el('span', 'evm-badge evm-badge--danger', 'FORK'))
-    if (row.sealed) line1.append(el('span', 'evm-badge evm-badge--purple', 'sealed'))
-    if (!row.read) line1.append(el('span', 'sh-unread', '●'))
-    // Per-row delete — usable WITHOUT opening the thing (you may not want to
-    // mount something before removing it). A span, not a button: the row
-    // itself is a button and buttons must not nest.
-    const del = el('span', 'sh-feed-del', '×')
-    del.title = 'Delete from library'
-    del.setAttribute('role', 'button')
-    del.setAttribute('data-testid', 'feed-delete')
-    del.addEventListener('click', (e) => {
-      e.stopPropagation()
-      void deleteWithConfirm(row.envelopeHash, row.type)
-    })
-    line1.append(el('span', 'sh-feed-flex'), del)
-    const line2 = el('div', 'sh-feed-meta', fmtTime(row.receivedAt))
-    item.append(line1, line2)
-    item.addEventListener('click', () => void openThing(row.envelopeHash))
-    feedPane.append(item)
-  }
+  for (const row of rows) feedPane.append(thingItem(row))
 }
 
 // ── View | Edit mode toggle ──────────────────────────────────────────────────
@@ -743,8 +875,12 @@ function renderHeader(h: HeaderFacts | null): void {
   // Signature status: everything in the library is admission-`valid`, so a
   // mounted thing is signed-and-verified. The badge uses the DS success token —
   // this is the trust signal the thing must never be able to forge.
-  const badge = el('span', 'evm-badge evm-badge--success sh-verified', '✓ signed')
-  badge.setAttribute('data-trust', 'verified')
+  // A draft is UNSIGNED: the trust badge must never claim otherwise.
+  const badge = h.draft
+    ? el('span', 'evm-badge evm-badge--warning sh-verified', 'DRAFT — not signed')
+    : el('span', 'evm-badge evm-badge--success sh-verified', '✓ signed')
+  badge.setAttribute('data-trust', h.draft ? 'draft' : 'verified')
+  if (h.draft) badge.setAttribute('data-testid', 'header-draft-badge')
   trustBadge = badge
   // Hidden until view mode shows an unpublished-draft preview (see
   // styleModeButtons) — then it REPLACES the trust badge.
@@ -776,6 +912,7 @@ function renderHeader(h: HeaderFacts | null): void {
   // Copy: the shell-level "edit this object" primitive — things are immutable,
   // so editing starts by making your own instance with the same program+args.
   const copyBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Copy')
+  if (h.draft) copyBtn.style.display = 'none' // nothing to copy until it is signed
   copyBtn.setAttribute('data-testid', 'header-copy')
   copyBtn.addEventListener('click', async () => {
     const outcome = await shell.copyThing(h.envelopeHash)
@@ -783,9 +920,9 @@ function renderHeader(h: HeaderFacts | null): void {
     else showText(`Copy failed: ${String(outcome.reason ?? outcome.status)}`, 'danger')
     await refreshFeed()
   })
-  const delBtn = el('button', 'evm-btn evm-btn--danger evm-btn--sm', 'Delete')
+  const delBtn = el('button', 'evm-btn evm-btn--danger evm-btn--sm', h.draft ? 'Discard' : 'Delete')
   delBtn.setAttribute('data-testid', 'header-delete')
-  delBtn.addEventListener('click', () => void deleteWithConfirm(h.envelopeHash, h.type))
+  delBtn.addEventListener('click', () => void deleteWithConfirm(h.envelopeHash, h.type, h.draft === true))
   // Publish: signs the LATEST streamed draft — exactly what the preview shows.
   // Disabled until the program streams one (see styleModeButtons).
   const pub = el('button', 'evm-btn evm-btn--primary evm-btn--sm', 'Publish') as HTMLButtonElement
@@ -804,10 +941,10 @@ function renderHeader(h: HeaderFacts | null): void {
     pub,
     el('span', 'sh-spacer'),
     copyBtn,
-    delBtn,
-    el('span', 'sh-hint', 'hash'),
-    hashEl
+    delBtn
   )
+  // A draft has no envelope, so there is no hash to show.
+  if (!h.draft) thingHeader.append(el('span', 'sh-hint', 'hash'), hashEl)
   if (h.isFork) thingHeader.append(el('span', 'evm-badge evm-badge--danger', 'FORK — author history diverged'))
   // Main pushes mode-changed BEFORE shell.open returns, i.e. before these
   // elements existed — apply the cached state to the freshly built controls.
@@ -888,8 +1025,12 @@ shell.onModeChanged((p) => {
   styleModeButtons()
 })
 shell.onPublishResult((o) => {
-  if (o.status === 'valid') showText('Published to your feed', 'success')
-  else showText(`Publish failed: ${String(o.reason ?? o.status)}`, 'danger')
+  if (o.status === 'valid') {
+    showText('Published to your feed', 'success')
+    // The draft was consumed — land on the signed instance, which really is
+    // "✓ signed" (the draft's own header said DRAFT).
+    if (o.draftConsumed === true && typeof o.envelopeHash === 'string') void openThing(o.envelopeHash)
+  } else showText(`Publish failed: ${String(o.reason ?? o.status)}`, 'danger')
 })
 shell.onOpenAccount(() => void openAccountModal()) // File → Account & Keys…
 ;(async () => {

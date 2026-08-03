@@ -86,13 +86,43 @@ body {
   background: var(--evm-surface-2);
   border-color: var(--evm-accent-muted);
 }
+/* Feed rows: type | author | flags. The type column is a FIXED length on
+   purpose — each row is its own grid container, so 1fr/max-content would size
+   per row and the author addresses would still not line up. */
 .sh-feed-line {
+  display: grid;
+  grid-template-columns: var(--sh-feed-type-col) minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--evm-space-2);
+}
+.sh-feed-line > .evm-badge:first-child {
+  justify-self: start;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sh-feed-flags {
   display: flex;
   align-items: center;
-  gap: var(--evm-space-2);
+  gap: var(--evm-space-1);
+  justify-self: end;
 }
 .sh-feed-author {
   font-size: var(--evm-text-sm);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sh-feed-draft-label {
+  color: var(--evm-text-3);
+  font-style: italic;
+}
+.sh-feed-item--draft {
+  /* Colour the border the row already reserves — widening it here would
+     shift this row's content and break the author column alignment. */
+  border-left-color: var(--evm-warning, #e0a03a);
 }
 .sh-feed-meta {
   color: var(--evm-text-3);
@@ -101,7 +131,6 @@ body {
 }
 .sh-unread {
   color: var(--evm-accent);
-  margin-left: auto;
   font-size: 10px;
 }
 
@@ -270,4 +299,37 @@ body {
   align-items: flex-start;
   gap: 6px;
   min-width: 0;
+}
+
+/* Feed row type column. Fixed so the author column lines up across rows; it
+   lives inside the 300px feed pane (#app grid-template-columns above, and
+   FEED_WIDTH in src/shell/main.ts). */
+:root {
+  --sh-feed-type-col: 5.5rem;
+}
+
+/* New chooser. */
+.sh-new-type {
+  display: grid;
+  grid-template-columns: var(--sh-feed-type-col) 1fr;
+  gap: var(--evm-space-2);
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  margin-bottom: var(--evm-space-1);
+}
+.sh-new-type > .evm-badge {
+  justify-self: start;
+}
+.sh-new-type-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.sh-new-type-label {
+  color: var(--evm-text-1);
+}
+.sh-new-sep {
+  border-top: 1px solid var(--evm-border);
+  margin: var(--evm-space-3) 0;
 }

@@ -206,6 +206,12 @@ export interface ShellHandle {
   feed(): Promise<Record<string, unknown>[]>
   /** Mount a thing via the shell's own hook (returns the header facts). */
   openThing(envelopeHash: string): Promise<Record<string, unknown>>
+  /** Types the user can create something of (starters + library programs). */
+  knownTypes(): Promise<{ key: string; testKey: string; source: string; type: string; progHash: string }[]>
+  /** Local unsigned drafts. */
+  drafts(): Promise<{ id: string; type: string; progHash: string; args: unknown; created: number; updated: number }[]>
+  newDraft(key: string): Promise<{ id?: string; error?: string }>
+  deleteDraft(id: string): Promise<{ deleted: boolean }>
   /** Files under userData whose bytes contain `needle`. */
   scanUserData(needle: Uint8Array): string[]
   /** Files under the library CAS blobs dir (hex hashes). */
@@ -357,6 +363,26 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
         const s = (electron.app as unknown as { __shell: { open: (x: string) => Promise<Record<string, unknown>> } }).__shell
         return s.open(h)
       }, envelopeHash),
+    knownTypes: () =>
+      app.evaluate(async (electron) => {
+        const s = (electron.app as unknown as { __shell: { knownTypes: () => unknown[] } }).__shell
+        return s.knownTypes() as never
+      }),
+    drafts: () =>
+      app.evaluate(async (electron) => {
+        const s = (electron.app as unknown as { __shell: { drafts: () => unknown[] } }).__shell
+        return s.drafts() as never
+      }),
+    newDraft: (key: string) =>
+      app.evaluate(async (electron, k) => {
+        const s = (electron.app as unknown as { __shell: { newDraft: (x: string) => unknown } }).__shell
+        return s.newDraft(k) as never
+      }, key),
+    deleteDraft: (id: string) =>
+      app.evaluate(async (electron, i) => {
+        const s = (electron.app as unknown as { __shell: { deleteDraft: (x: string) => unknown } }).__shell
+        return s.deleteDraft(i) as never
+      }, id),
     scanUserData(needle: Uint8Array) {
       return scanTree(userDataDir, needle)
     },
