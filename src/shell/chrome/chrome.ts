@@ -730,17 +730,35 @@ function renderSafety(keyStorage: 'os' | 'software'): void {
 // ── Feed ─────────────────────────────────────────────────────────────────────
 let selected: string | null = null
 
+/** This shell's own author key (bare lowercase hex), once identity resolves.
+ *  Used ONLY to label rows as yours — the comparison is on the admitted
+ *  envelope's author key, so it says what the signature says. */
+let myAuthorKey: string | null = null
+let feedScope: 'all' | 'mine' = 'all'
+
+/** Is this row signed by the identity currently loaded in this shell? */
+function isMine(row: { authorScheme: string; authorKey: string }): boolean {
+  return myAuthorKey !== null && row.authorScheme === 'eth-eip191' && row.authorKey === myAuthorKey
+}
+
 /** One feed row. Three grid cells — type | author | flags — so the author
  *  column lines up across rows regardless of how long the type name is. */
 function thingItem(row: ThingRow): HTMLElement {
   const item = el('button', 'sh-feed-item')
   if (row.envelopeHash === selected) item.classList.add('sh-feed-item--active')
   const line1 = el('div', 'sh-feed-line')
-  const author = el(
-    'span',
-    'sh-feed-author evm-address evm-address--muted',
-    row.authorScheme === 'eth-eip191' ? shortAddress(row.authorKey) : short(row.authorKey)
-  )
+  // Your own things read "by you" rather than your address — the whole point
+  // of the column is telling authors apart at a glance.
+  const mine = isMine(row)
+  const author = mine
+    ? el('span', 'sh-feed-author sh-feed-you', 'by you')
+    : el(
+        'span',
+        'sh-feed-author evm-address evm-address--muted',
+        row.authorScheme === 'eth-eip191' ? shortAddress(row.authorKey) : short(row.authorKey)
+      )
+  if (mine) author.setAttribute('data-testid', 'feed-you')
+  author.setAttribute('title', `${row.authorScheme}:${row.authorKey}`)
   const flags = el('span', 'sh-feed-flags')
   if (row.isFork) flags.append(el('span', 'evm-badge evm-badge--danger', 'FORK'))
   if (row.sealed) flags.append(el('span', 'evm-badge evm-badge--purple', 'sealed'))
@@ -792,20 +810,52 @@ function draftItem(d: DraftRow): HTMLElement {
   return item
 }
 
+/** All | Mine. "Mine" filters on the author key in the library, so it means
+ *  "signed by the identity this shell currently holds" — swap identities and
+ *  the set changes, truthfully. */
+function feedFilter(): HTMLElement {
+  const wrap = el('span', 'sh-feed-filter')
+  const mk = (scope: 'all' | 'mine', label: string): HTMLElement => {
+    const b = el('button', 'evm-btn evm-btn--ghost evm-btn--sm sh-feed-filter-btn', label)
+    b.setAttribute('data-testid', `feed-filter-${scope}`)
+    if (feedScope === scope) b.classList.add('sh-feed-filter-btn--active')
+    b.addEventListener('click', (e) => {
+      e.stopPropagation()
+      if (feedScope === scope) return
+      feedScope = scope
+      void refreshFeed()
+    })
+    return b
+  }
+  wrap.append(mk('all', 'All'), mk('mine', 'Mine'))
+  return wrap
+}
+
 async function refreshFeed(): Promise<void> {
-  const [drafts, rows] = await Promise.all([shell.drafts(), shell.feed({})])
+  // "Mine" is a library-side author filter; with no identity yet (boot race)
+  // fall back to everything rather than showing a misleading empty list.
+  const query = feedScope === 'mine' && myAuthorKey ? { author: myAuthorKey } : {}
+  const [drafts, rows] = await Promise.all([shell.drafts(), shell.feed(query)])
   feedPane.replaceChildren()
+  // Drafts are yours by definition and are never published, so the Mine/All
+  // scope does not apply to them — they always show.
   if (drafts.length > 0) {
     const title = el('div', 'sh-feed-title', `Drafts · ${drafts.length}`)
     title.setAttribute('data-testid', 'feed-drafts-title')
     feedPane.append(title)
     for (const d of drafts) feedPane.append(draftItem(d))
   }
-  feedPane.append(el('div', 'sh-feed-title', `Feed · ${rows.length}`))
+  const head = el('div', 'sh-feed-title sh-feed-head')
+  head.append(el('span', undefined, `${feedScope === 'mine' ? 'By you' : 'Feed'} · ${rows.length}`), feedFilter())
+  feedPane.append(head)
   if (rows.length === 0) {
-    feedPane.append(
-      el('div', 'evm-empty', drafts.length > 0 ? 'Nothing published yet.' : 'Nothing yet. Press New to make something.')
-    )
+    const empty =
+      feedScope === 'mine'
+        ? 'Nothing published by you yet.'
+        : drafts.length > 0
+          ? 'Nothing published yet.'
+          : 'Nothing yet. Press New to make something.'
+    feedPane.append(el('div', 'evm-empty', empty))
     return
   }
   for (const row of rows) feedPane.append(thingItem(row))
@@ -900,12 +950,17 @@ function renderHeader(h: HeaderFacts | null): void {
     authorEl.setAttribute('data-name', 'verified')
     authorEl.setAttribute('title', `${h.authorScheme}:${h.authorKey}`)
   } else {
-    authorEl = el(
-      'span',
-      'evm-address evm-address--muted',
-      h.authorScheme === 'eth-eip191' ? shortAddress(h.authorKey) : `${h.authorScheme}:${short(h.authorKey)}`
-    )
-    authorEl.setAttribute('data-name', 'unverified')
+    const mine = isMine(h)
+    authorEl = mine
+      ? el('span', 'sh-feed-you', 'you')
+      : el(
+          'span',
+          'evm-address evm-address--muted',
+          h.authorScheme === 'eth-eip191' ? shortAddress(h.authorKey) : `${h.authorScheme}:${short(h.authorKey)}`
+        )
+    authorEl.setAttribute('data-name', mine ? 'self' : 'unverified')
+    if (mine) authorEl.setAttribute('data-testid', 'header-you')
+    authorEl.setAttribute('title', `${h.authorScheme}:${h.authorKey}`)
   }
   const typeBadge = el('span', 'evm-badge evm-badge--neutral', h.type)
   const hashEl = el('span', 'sh-hash evm-address evm-address--muted', short(h.envelopeHash, 8))
@@ -1035,6 +1090,7 @@ shell.onPublishResult((o) => {
 shell.onOpenAccount(() => void openAccountModal()) // File → Account & Keys…
 ;(async () => {
   const id = await shell.identity()
+  myAuthorKey = id.address // enables the "by you" marker + the Mine filter
   identityEl.textContent = shortAddress(id.address)
   identityEl.setAttribute('title', `${toChecksumAddress(id.address)} — click for Account & Keys`)
   identityEl.setAttribute('data-testid', 'account-open')
