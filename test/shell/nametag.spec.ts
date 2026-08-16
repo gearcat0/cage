@@ -286,7 +286,12 @@ test('live preview: view mode shows the unpublished draft in final form', async 
   await switchMode('view')
   expect(await displayText('preview')).toBe('Previewed')
   // ...and the View/Edit/Publish controls have NOT moved despite the badge swap.
-  expect(await buttonX()).toEqual(beforeSwap)
+  // Compared with a sub-pixel tolerance: the property under test is "the
+  // controls do not shift", and exact float equality also fails on harmless
+  // text-metric jitter (a 0.03px difference is not a moved button).
+  const afterSwap = await buttonX()
+  expect(Math.abs(afterSwap.view - beforeSwap.view)).toBeLessThan(1)
+  expect(Math.abs(afterSwap.publish - beforeSwap.publish)).toBeLessThan(1)
   // ...while the signed instance underneath is untouched (blank placeholder).
   expect(await thingEval<string | null>(`document.getElementById('display')?.textContent ?? null`, 'view')).toBe('—')
 
