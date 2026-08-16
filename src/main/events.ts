@@ -30,6 +30,9 @@ export type CageEvent =
       blobBytes: number
     }
   | { type: 'sandbox-state'; envDisabled: boolean; argvNoSandbox: boolean }
+  // A cage's renderer died (crash, OOM kill, GPU reset). Recorded so a blank
+  // pane or a frozen preview is diagnosable instead of mysterious.
+  | { type: 'cage-gone'; role: 'view' | 'edit' | 'preview'; reason: string; exitCode: number }
 
 /** TEST-ONLY payload capture. A separate buffer that DOES retain emit payloads
  *  so the Playwright suite can assert on them. Populated only when

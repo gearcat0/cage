@@ -76,13 +76,27 @@ async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs 
   const deadline = Date.now() + timeoutMs
   for (;;) {
     let value: T | undefined
+    let threw: string | null = null
     try {
       value = await fn()
+      threw = null
       if (pred(value)) return value
-    } catch {
-      /* not ready yet (page still loading, element absent) — retry */
+    } catch (e) {
+      // Keep the reason: "no preview cage" and "cage wc gone" are different
+      // failures, and `value` stays undefined for both.
+      threw = (e as Error).message
     }
-    if (Date.now() > deadline) throw new Error(`poll timed out; last value: ${JSON.stringify(value)}`)
+    if (Date.now() > deadline) {
+      // The cage state machine, so a CI timeout says WHICH way it was stuck
+      // (no open thing / no preview / preview mid-mount / preview crashed)
+      // instead of just "undefined".
+      const diag = await modeState().catch(() => null)
+      throw new Error(
+        `poll timed out; last value: ${JSON.stringify(value)}` +
+          (threw ? ` (last error: ${threw})` : '') +
+          `; modeState: ${JSON.stringify(diag)}`
+      )
+    }
     await new Promise((r) => setTimeout(r, 150))
   }
 }

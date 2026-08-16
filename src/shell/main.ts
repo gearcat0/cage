@@ -15,7 +15,7 @@ import { createMockEnsClient } from './naming/mock-ens.js'
 import { createViemEnsClient } from './naming/ens-viem.js'
 import { CasStore, EphemeralStore } from '../main/store.js'
 import { installBridge, setDraftObserver, type ThingMode } from '../main/bridge.js'
-import { cage as cageGlobals } from '../main/events.js'
+import { cage as cageGlobals, record } from '../main/events.js'
 import type { Draft } from '../main/draft.js'
 import {
   admitBundle,
@@ -207,6 +207,11 @@ interface ShellSurface {
     viewWcId: number | null
     editWcId: number | null
     previewWcId: number | null
+    previewMounting: boolean
+    hasPendingDraft: boolean
+    draftTimerPending: boolean
+    lastPreviewKey: string | null
+    previewDestroyed: boolean | null
   } | null
   /** Raise the publish confirm for the open thing's latest draft. */
   publishDraft?: () => Record<string, unknown>
@@ -676,6 +681,9 @@ app.whenReady().then(async () => {
       return { error: 'superseded' }
     }
     o.view = m
+    m.view.webContents.once('render-process-gone', (_e, details) => {
+      record({ type: 'cage-gone', role: 'view', reason: details.reason, exitCode: details.exitCode })
+    })
     // The new cage joins the app-level zoom: same factor, zoom keys watched.
     watchZoomKeys(m.view.webContents)
     applyVisibility()
@@ -732,6 +740,9 @@ app.whenReady().then(async () => {
       if (!o.edit) {
         o.edit = m
         o.editMounting = null
+        m.view.webContents.once('render-process-gone', (_e, details) => {
+          record({ type: 'cage-gone', role: 'edit', reason: details.reason, exitCode: details.exitCode })
+        })
         watchZoomKeys(m.view.webContents)
       }
     }
@@ -966,6 +977,22 @@ app.whenReady().then(async () => {
       }
       o.preview = m
       o.lastPreviewKey = draftKey(draft)
+      // A renderer can die under memory pressure (CI boxes especially). A dead
+      // cage left installed shows as a frozen preview that never updates
+      // again, with nothing said about it — so record it and rebuild from the
+      // latest draft.
+      m.view.webContents.once('render-process-gone', (_e, details) => {
+        record({ type: 'cage-gone', role: 'preview', reason: details.reason, exitCode: details.exitCode })
+        if (current !== o || o.preview !== m) return
+        o.preview = null
+        o.lastPreviewKey = null
+        applyVisibility()
+        notifyModeChanged(o.activeMode)
+        if (o.latestDraft) {
+          o.pendingDraft = o.latestDraft
+          void mountPreview(o)
+        }
+      })
       watchZoomKeys(m.view.webContents)
       applyVisibility()
       applyZoom()
@@ -1361,7 +1388,15 @@ app.whenReady().then(async () => {
           activeMode: current.activeMode,
           viewWcId: current.view ? current.view.view.webContents.id : null,
           editWcId: current.edit ? current.edit.view.webContents.id : null,
-          previewWcId: current.preview ? current.preview.view.webContents.id : null
+          previewWcId: current.preview ? current.preview.view.webContents.id : null,
+          // Preview state machine, for diagnosing "the preview stopped
+          // updating": a stuck previewMounting or a pendingDraft that never
+          // drains are the two ways a remount can be silently lost.
+          previewMounting: current.previewMounting,
+          hasPendingDraft: current.pendingDraft !== null,
+          draftTimerPending: current.draftTimer !== null,
+          lastPreviewKey: current.lastPreviewKey,
+          previewDestroyed: current.preview ? current.preview.view.webContents.isDestroyed() : null
         }
       : null
   shell.signAndAdmit = async (type: string) => {
