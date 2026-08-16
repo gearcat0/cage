@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { _electron, type ElectronApplication } from '@playwright/test'
-import { test, expect, launchShell, buildBundle, ethSigner, secp256k1, type ShellHandle } from './helpers.js'
+import { test, expect, buildBundle, ethSigner, secp256k1 } from './helpers.js'
 
 // ── Opening a .thing from the desktop ────────────────────────────────────────
 // Double-clicking a bundle hands its path to the shell: on Windows/Linux in
@@ -62,20 +62,18 @@ function launchWithFile(dir: string, thingPath: string): Promise<ElectronApplica
   })
 }
 
-async function strangerBundle(shell: ShellHandle, type = 'nametag'): Promise<Uint8Array> {
-  void shell
-  return buildBundle(ethSigner(secp256k1.utils.randomSecretKey()), { type, program: new Uint8Array(NAMETAG) })
-}
+/** A bundle from someone else. Built in-process — launching a whole shell
+ *  just to sign a fixture would add two more Electron apps to a suite that
+ *  already launches one per spec file. */
+const strangerBundle = (type = 'nametag'): Promise<Uint8Array> =>
+  buildBundle(ethSigner(secp256k1.utils.randomSecretKey()), { type, program: new Uint8Array(NAMETAG) })
 
 test('a .thing passed at launch is admitted and opened', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'shell-openfile-'))
   const file = join(dir, 'gift.thing')
   try {
     // A bundle from someone else, sitting on disk like a download.
-    const shell = await launchShell()
-    const bundle = await strangerBundle(shell)
-    await shell.close()
-    writeFileSync(file, bundle)
+    writeFileSync(file, await strangerBundle())
 
     const app = await launchWithFile(dir, file)
     try {
@@ -132,10 +130,7 @@ test('a second launch hands the file to the running shell instead of starting a 
   const dir = mkdtempSync(join(tmpdir(), 'shell-openfile-single-'))
   const file = join(dir, 'handed-over.thing')
   try {
-    const seed = await launchShell()
-    const bundle = await strangerBundle(seed, 'memo')
-    await seed.close()
-    writeFileSync(file, bundle)
+    writeFileSync(file, await strangerBundle('memo'))
 
     // First instance: already running, nothing in its feed.
     const first = await _electron.launch({

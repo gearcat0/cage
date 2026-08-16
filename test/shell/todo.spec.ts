@@ -70,7 +70,12 @@ async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs 
     } catch {
       /* not ready yet — retry */
     }
-    if (Date.now() > deadline) throw new Error(`poll timed out; last value: ${JSON.stringify(value)}`)
+    if (Date.now() > deadline) {
+      // The cage state machine, so a CI timeout says WHICH way it was stuck
+      // (no open thing / no preview / preview mid-mount / preview crashed).
+      const diag = await modeState().catch(() => null)
+      throw new Error(`poll timed out; last value: ${JSON.stringify(value)}; modeState: ${JSON.stringify(diag)}`)
+    }
     await new Promise((r) => setTimeout(r, 150))
   }
 }
