@@ -1,6 +1,6 @@
 import { app, BaseWindow, Menu, WebContentsView, ipcMain, protocol, session, dialog, webContents } from 'electron'
 import { join } from 'node:path'
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { AdmissionService } from './admission/index.js'
 import { Keyring, KeyringLoadError } from './keyring/index.js'
@@ -81,6 +81,53 @@ if (process.env.SHELL_USER_DATA_DIR) app.setPath('userData', process.env.SHELL_U
 // overrides on any platform.
 const SCALE = process.env.SHELL_SCALE ?? (process.platform === 'linux' ? '2' : null)
 if (SCALE) app.commandLine.appendSwitch('force-device-scale-factor', SCALE)
+
+// ── Opening a .thing from the desktop ────────────────────────────────────────
+// Double-clicking a bundle (or `shell foo.thing`) must land in THIS shell's
+// library, not a second copy of the app with its own database — hence the
+// single-instance lock, which is keyed on the userData dir set above (so the
+// test suite's per-run profiles each get their own lock).
+//
+// Paths arrive differently per platform: in argv on Windows/Linux (and again
+// via `second-instance` when the app is already running), and as `open-file`
+// events on macOS — which can fire BEFORE the app is ready, so they queue.
+const pendingOpenFiles: string[] = []
+/** Drains the queue once the shell is up; set inside whenReady. */
+let drainOpenFiles: (() => void) | null = null
+
+function thingPathsIn(argv: readonly string[]): string[] {
+  return argv.filter((a) => !a.startsWith('-') && a.toLowerCase().endsWith('.thing') && existsSync(a))
+}
+
+function queueOpenFiles(paths: string[]): void {
+  if (paths.length === 0) return
+  pendingOpenFiles.push(...paths)
+  drainOpenFiles?.()
+}
+
+app.on('open-file', (event, path) => {
+  event.preventDefault() // macOS: we handle it, so don't let the default fire
+  queueOpenFiles([path])
+})
+
+// SHELL_ALLOW_MULTI lets a developer run two shells side by side (different
+// profiles) without the lock refusing the second.
+const singleInstance = process.env.SHELL_ALLOW_MULTI === '1' || app.requestSingleInstanceLock()
+if (!singleInstance) {
+  // Another shell owns this profile: it has been handed our argv via
+  // `second-instance` and will open the file. Leave immediately — two
+  // processes on one SQLite library is the thing to avoid.
+  app.exit(0)
+} else {
+  app.on('second-instance', (_event, argv) => {
+    queueOpenFiles(thingPathsIn(argv))
+    focusMainWindow?.()
+  })
+  queueOpenFiles(thingPathsIn(process.argv))
+}
+
+/** Raise the window when a second launch hands us a file. Set inside whenReady. */
+let focusMainWindow: (() => void) | null = null
 
 /** Our own version, read from package.json (three levels up from
  *  out/main/shell — the same relative shape inside a packaged asar). In dev
@@ -199,6 +246,8 @@ interface ShellSurface {
   lastConfirm?: { id: number; kind: string; summary: Record<string, unknown> } | null
   /** TEST: outcome of the most recent decided publish ({status:'denied'} on deny). */
   lastPublish?: Record<string, unknown> | null
+  /** TEST: outcome of the most recent .thing opened from the desktop. */
+  lastFileOpen?: Record<string, unknown> | null
   /** Switch the open thing's mode (same path as the chrome toggle). */
   setMode?: (mode: 'view' | 'edit') => Promise<'view' | 'edit'>
   /** TEST: active mode + the wcIds of the cages, for spec targeting. */
@@ -227,7 +276,7 @@ interface ShellSurface {
   deleteThing?: (envelopeHash: string) => Record<string, unknown>
 }
 
-const shell: ShellSurface = { ready: false, lastConfirm: null, lastPublish: null }
+const shell: ShellSurface = { ready: false, lastConfirm: null, lastPublish: null, lastFileOpen: null }
 ;(app as unknown as { __shell: ShellSurface }).__shell = shell
 // The bridge/cage event log, readable from OUTSIDE the renderer via
 // `evaluate(({ app }) => app.__cage)` — same surface the cage harness exposes.
@@ -1417,6 +1466,44 @@ app.whenReady().then(async () => {
   else await chrome.webContents.loadFile(join(__dirname, '../../renderer/shell/chrome/index.html'))
   dbg('chrome-loaded')
   layout()
+
+  // ── Desktop file opens ─────────────────────────────────────────────────────
+  // A .thing handed to us by the OS goes through the SAME admission gate as
+  // anything else — a file on disk is not more trusted for having been
+  // double-clicked — and then opens, so the user sees what they just opened.
+  focusMainWindow = () => {
+    if (win.isMinimized()) win.restore()
+    win.focus()
+  }
+
+  let draining = false
+  async function openFilesNow(): Promise<void> {
+    if (draining) return
+    draining = true
+    try {
+      for (let path = pendingOpenFiles.shift(); path !== undefined; path = pendingOpenFiles.shift()) {
+        let bytes: Uint8Array
+        try {
+          bytes = new Uint8Array(readFileSync(path))
+        } catch (e) {
+          chrome.webContents.send('shell:file-opened', { path, status: 'invalid', reason: (e as Error).message })
+          continue
+        }
+        const outcome = await ingestBytes(bytes)
+        shell.lastFileOpen = { path, ...outcome }
+        chrome.webContents.send('shell:file-opened', { path, ...outcome })
+        // Land on it when it admitted; a rejected bundle just reports why.
+        if (outcome.status === 'valid' && typeof outcome.envelopeHash === 'string') {
+          await openThing(outcome.envelopeHash)
+          chrome.webContents.send('shell:opened-thing', { envelopeHash: outcome.envelopeHash })
+        }
+      }
+    } finally {
+      draining = false
+    }
+  }
+  drainOpenFiles = () => void openFilesNow()
+  drainOpenFiles() // anything the OS handed us before we were ready
 
   shell.ready = true
   dbg('ready-done')

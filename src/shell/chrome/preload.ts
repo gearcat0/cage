@@ -65,6 +65,10 @@ const shell = {
   newDraft: (key: string): Promise<{ id?: string; type?: string; error?: string }> =>
     ipcRenderer.invoke('shell:new-draft', key),
   deleteDraft: (id: string): Promise<{ deleted: boolean }> => ipcRenderer.invoke('shell:delete-draft', id),
+  /** Main pushes the outcome of a .thing opened from the desktop. */
+  onFileOpened: (cb: (r: Record<string, unknown>) => void): void => {
+    ipcRenderer.on('shell:file-opened', (_e, r) => cb(r))
+  },
   /** Main pushes this when the File menu's Account & Keys… is chosen. */
   onOpenAccount: (cb: () => void): void => {
     ipcRenderer.on('shell:open-account', () => cb())

@@ -34,6 +34,15 @@ files:
   - '!**/*.map'
   - '!**/*.ts'
 
+# Double-clicking a .thing opens it in the shell (it still goes through the
+# same admission gate — arriving by double-click grants a bundle nothing).
+fileAssociations:
+  - ext: thing
+    name: Thing bundle
+    description: A signed thing bundle
+    mimeType: application/x-thing
+    role: Viewer
+
 asar: true
 asarUnpack:
   - '**/node_modules/better-sqlite3/**'
