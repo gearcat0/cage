@@ -333,3 +333,34 @@ body {
   border-top: 1px solid var(--evm-border);
   margin: var(--evm-space-3) 0;
 }
+
+/* "by you" marker + the All | Mine feed filter. */
+.sh-feed-you {
+  color: var(--evm-accent);
+  font-size: var(--evm-text-sm);
+}
+.sh-feed-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--evm-space-2);
+}
+.sh-feed-filter {
+  display: inline-flex;
+  border: 1px solid var(--evm-border);
+  border-radius: var(--evm-radius-md);
+  overflow: hidden;
+}
+.sh-feed-filter-btn {
+  border: 0;
+  border-radius: 0;
+  padding: 1px 8px;
+  font-size: var(--evm-text-xs);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.sh-feed-filter-btn--active {
+  background: var(--evm-accent);
+  color: var(--evm-bg);
+  font-weight: var(--evm-weight-semibold);
+}
