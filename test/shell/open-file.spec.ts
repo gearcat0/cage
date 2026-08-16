@@ -87,14 +87,19 @@ test('a .thing passed at launch is admitted and opened', async () => {
       const feed = await feedOf(app)
       expect(feed.length).toBe(1)
       expect(feed[0]!.type).toBe('nametag')
-      // …and the shell opened it, so the user sees what they just opened.
-      const mode = await app.evaluate(async (e) => {
-        const s = (
-          e.app as unknown as { __shell: { modeState: () => { viewWcId: number | null } | null } }
-        ).__shell.modeState()
-        return s?.viewWcId != null
-      })
-      expect(mode).toBe(true)
+      // …and the shell opens it, so the user sees what they just opened.
+      // Polled, not read once: lastFileOpen is set when the bundle is
+      // ADMITTED, and the mount follows it.
+      await poll(
+        () =>
+          app.evaluate(async (e) => {
+            const s = (
+              e.app as unknown as { __shell: { modeState: () => { viewWcId: number | null } | null } }
+            ).__shell.modeState()
+            return s?.viewWcId != null
+          }),
+        (open) => open === true
+      )
     } finally {
       await app.close().catch(() => {})
     }

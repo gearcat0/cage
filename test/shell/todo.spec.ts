@@ -14,6 +14,11 @@ let shell: ShellHandle
 test.beforeAll(async () => {
   shell = await launchShell()
 })
+
+// List editing chains several 600ms-debounced preview remounts, each spawning
+// a renderer; on a loaded CI runner that legitimately exceeds the 30s default.
+// More budget, not less coverage — a real hang still fails, just later.
+test.beforeEach(() => test.setTimeout(90_000))
 test.afterAll(async () => {
   await shell?.close()
 })
