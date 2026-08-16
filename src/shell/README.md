@@ -63,8 +63,11 @@ retired); all controls live in trusted chrome.
 
 ## Ingestion & authoring
 
-**Receive:** file / paste / drag / locator / name → admission → library — the
-"flyer" property, transport-agnostic and verify-at-the-gate.
+**Receive:** file / paste / drag / double-click a `.thing` / locator / name →
+admission → library — the "flyer" property, transport-agnostic and
+verify-at-the-gate. Double-clicking is just another transport: the bundle
+still passes the same gate, and a second launch hands the file to the running
+shell (single-instance lock) rather than opening a rival library.
 
 **Author (New):** pick a known type — a built-in starter or any program
 already in your library — and the shell starts a local, UNSIGNED draft that

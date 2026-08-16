@@ -35,6 +35,7 @@ interface ShellApi {
   accountGenerate(): Promise<{ mnemonic: string; address: string }>
   accountExport(): Promise<{ privkeyHex: string }>
   onOpenAccount(cb: () => void): void
+  onFileOpened(cb: (r: Record<string, unknown>) => void): void
   knownTypes(): Promise<KnownTypeEntry[]>
   drafts(): Promise<DraftRow[]>
   newDraft(key: string): Promise<{ id?: string; type?: string; error?: string }>
@@ -1088,6 +1089,16 @@ shell.onPublishResult((o) => {
   } else showText(`Publish failed: ${String(o.reason ?? o.status)}`, 'danger')
 })
 shell.onOpenAccount(() => void openAccountModal()) // File → Account & Keys…
+// A .thing double-clicked in the file manager: say what became of it, using
+// the same wording as any other ingest (it went through the same gate).
+shell.onFileOpened((r) => {
+  const name = String(r.path ?? '').split(/[\\/]/).pop()
+  if (r.status === 'valid') showText(`Opened ${name} — admitted as ${String(r.type)}`, 'success')
+  else if (r.status === 'invalid') showText(`${name}: INVALID — ${String(r.reason)}`, 'danger')
+  else if (r.status === 'unverifiable') showText(`${name}: unverifiable scheme ${String(r.scheme)}`, 'danger')
+  else showText(`${name}: not for you`, 'neutral')
+  void refreshFeed()
+})
 ;(async () => {
   const id = await shell.identity()
   myAuthorKey = id.address // enables the "by you" marker + the Mine filter
