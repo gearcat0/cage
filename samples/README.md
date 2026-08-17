@@ -59,6 +59,23 @@ View mode renders a classic memo sheet (em-dash placeholders for unset fields,
 line breaks preserved in the message); edit mode is four fields, each streaming
 a draft on input. Make one with **New → Memo**.
 
+## article.html
+
+The richest sample: a news article as a **block document**. `args {title,
+byline, blocks}`, where a block is a heading, subheading, paragraph, image, or
+footnote — strings only, never numbers, so the canonical-CBOR float rules can
+never bite. Image blocks carry `{name, caption, alt, placement}`; `left` and
+`right` float so the text wraps around them, `full` spans the column. A
+footnote marks the block above it and collects into a numbered list with
+back-links at the end. Edit mode is a block editor: add, reorder, delete, pick
+images, set placement.
+
+Two contract rules it demonstrates, both easy to get wrong elsewhere: args and
+blobs are **whole-set replacement**, so every image still in the article is
+re-declared on every emit — fresh bytes when just picked, `{carry: true}`
+otherwise, so megabytes do not move per keystroke — and image names are never
+renamed, because renaming orphans the carried blob and drops the picture.
+
 ## comment.html
 
 A comment on another thing: `args {replyTo, body}`. A program can never learn a

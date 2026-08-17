@@ -1,3 +1,4 @@
+import articleHtml from '../../../samples/article.html?raw'
 import cardHtml from '../../../samples/card.html?raw'
 import commentHtml from '../../../samples/comment.html?raw'
 import inviteHtml from '../../../samples/invite.html?raw'
@@ -62,6 +63,13 @@ export const STARTERS: readonly Starter[] = [
     label: 'To-do list',
     description: 'A list of things to check off.',
     html: todoHtml
+  },
+  {
+    key: 'starter:article',
+    type: 'article',
+    label: 'News article',
+    description: 'Headings, images text wraps around, footnotes.',
+    html: articleHtml
   },
   {
     key: 'starter:comment',
