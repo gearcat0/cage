@@ -12,6 +12,17 @@ import { test, expect, launchShell, buildBundle, ethSigner, secp256k1, type Shel
 
 const NAMETAG = readFileSync(join(__dirname, '..', '..', 'samples', 'nametag.html'))
 
+// One shell for the file: each test works against its own target hash, so they
+// cannot interfere — and every extra Electron launch is real pressure on a
+// two-core CI runner (a starved app is where this suite's flakes come from).
+let shell: ShellHandle
+test.beforeAll(async () => {
+  shell = await launchShell()
+})
+test.afterAll(async () => {
+  await shell?.close()
+})
+
 async function chromeEval<T>(shell: ShellHandle, js: string): Promise<T> {
   return shell.app.evaluate(async (electron, code) => {
     const wc = electron.webContents
@@ -77,8 +88,6 @@ async function publishOpenDraft(shell: ShellHandle): Promise<Record<string, unkn
 }
 
 test('Comment seeds the target, and the article then shows its comment', async () => {
-  const shell = await launchShell()
-  try {
     const bundle = await buildBundle(ethSigner(secp256k1.utils.randomSecretKey()), {
       type: 'nametag',
       program: new Uint8Array(NAMETAG)
@@ -114,14 +123,9 @@ test('Comment seeds the target, and the article then shows its comment', async (
     expect(await text(shell, 'header-replyto')).toContain('in reply to')
     // A claim is never dressed as verification.
     expect(await text(shell, 'header-replyto')).not.toContain('✓')
-  } finally {
-    await shell.close()
-  }
 })
 
 test('deleting the target degrades the claim honestly instead of hiding it', async () => {
-  const shell = await launchShell()
-  try {
     const bundle = await buildBundle(ethSigner(secp256k1.utils.randomSecretKey()), {
       type: 'nametag',
       program: new Uint8Array(NAMETAG)
@@ -142,14 +146,9 @@ test('deleting the target degrades the claim honestly instead of hiding it', asy
     await openViaChrome(shell, commentHash)
     await poll(() => attr(shell, 'header-replyto', 'data-known'), (k) => k === '0')
     expect(await attr(shell, 'header-replyto', 'title')).toContain('not in your library')
-  } finally {
-    await shell.close()
-  }
 })
 
 test('only a real 64-hex claim is indexed, and the index survives a restart', async () => {
-  const shell = await launchShell()
-  try {
     // Junk and near-miss targets are program data, not references.
     for (const bogus of ['not-a-hash', 'a'.repeat(63), '', 'A'.repeat(64)]) {
       const program = new TextEncoder().encode('<!doctype html><p>c</p>')
@@ -171,7 +170,4 @@ test('only a real 64-hex claim is indexed, and the index survives a restart', as
     })
     await shell.ingest(bundle)
     expect((await shell.replies(absent)).count).toBe(1)
-  } finally {
-    await shell.close()
-  }
 })

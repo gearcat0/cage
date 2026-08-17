@@ -15,6 +15,16 @@ const toHex = (b: Uint8Array): string => [...b].map((x) => x.toString(16).padSta
 const PNG_HASH = toHex(hash(new Uint8Array(PNG)))
 const POSTER = readFileSync(join(__dirname, '..', '..', 'samples', 'poster.html'))
 
+// Shared by the tests that do not need their own profile: fewer Electron
+// launches, because a starved app is where this suite's flakes come from.
+let shared: ShellHandle
+test.beforeAll(async () => {
+  shared = await launchShell()
+})
+test.afterAll(async () => {
+  await shared?.close()
+})
+
 type ModeState = {
   activeMode: 'view' | 'edit'
   viewWcId: number | null
@@ -90,8 +100,8 @@ async function draftWithImage(shell: ShellHandle): Promise<string> {
 }
 
 test('a draft keeps its image across opening something else', async () => {
-  const shell = await launchShell()
-  try {
+  const shell = shared
+  {
     const draftId = await draftWithImage(shell)
     const blobs = await shell.draftBlobs(draftId)
     expect(blobs[0]!.hash).toBe(PNG_HASH)
@@ -113,8 +123,6 @@ test('a draft keeps its image across opening something else', async () => {
     })) as string[]
     expect(atts).toEqual(['image'])
     expect(await poll(() => imageRenders(shell, 'edit'), (v) => v)).toBe(true)
-  } finally {
-    await shell.close()
   }
 })
 
@@ -166,8 +174,13 @@ test('a draft image survives a restart, and {carry:true} then publishes it', asy
 })
 
 test('discarding a draft releases its image — unless another draft holds it', async () => {
-  const shell = await launchShell()
-  try {
+  const shell = shared
+  {
+    // This test is about global blob state, so start from a stated clean
+    // slate rather than assuming what earlier tests left behind.
+    for (const d of await shell.drafts()) await shell.deleteDraft(d.id)
+    expect(shell.casBlobs(), 'no draft should be holding the image yet').not.toContain(PNG_HASH)
+
     const a = await draftWithImage(shell)
     expect(shell.casBlobs()).toContain(PNG_HASH)
 
@@ -186,7 +199,5 @@ test('discarding a draft releases its image — unless another draft holds it', 
 
     await shell.deleteDraft(b)
     expect(shell.casBlobs(), 'last holder gone: the bytes go too').not.toContain(PNG_HASH)
-  } finally {
-    await shell.close()
   }
 })
