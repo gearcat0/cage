@@ -1375,19 +1375,29 @@ app.whenReady().then(async () => {
       return
     }
     clearPreview()
-    void persistApprovedDraft(p).then((outcome) => {
-      // Ingest FIRST, then drop the draft: library.store has already inserted
-      // the row referencing the shared program blob, so the draft's GC scan
-      // cannot collect it.
-      if (p.draftId && outcome.status === 'valid') {
-        if (current?.draftId === p.draftId) destroyCurrent({ flush: false })
-        library.deleteDraft(p.draftId)
-        outcome.draftConsumed = true
-        notifyFeedChanged()
-      }
-      shell.lastPublish = outcome
-      chrome.webContents.send('shell:publish-result', outcome)
-    })
+    void persistApprovedDraft(p)
+      .then((outcome) => {
+        // Ingest FIRST, then drop the draft: library.store has already inserted
+        // the row referencing the shared program blob, so the draft's GC scan
+        // cannot collect it.
+        if (p.draftId && outcome.status === 'valid') {
+          if (current?.draftId === p.draftId) destroyCurrent({ flush: false })
+          library.deleteDraft(p.draftId)
+          outcome.draftConsumed = true
+          notifyFeedChanged()
+        }
+        return outcome
+      })
+      // buildBundle (signing, tar) and ingestBytes both throw. Without this the
+      // rejection is silent: the human approved a publish and would get NO
+      // outcome at all — no error, no result, a Publish button that just stops
+      // responding — and the draft is left intact, which is the right side to
+      // fail on. Report the failure instead.
+      .catch((e: unknown) => ({ status: 'invalid', reason: `publish: ${(e as Error).message}` }))
+      .then((outcome) => {
+        shell.lastPublish = outcome
+        chrome.webContents.send('shell:publish-result', outcome)
+      })
   })
 
   // ── IPC surface for the chrome ─────────────────────────────────────────────

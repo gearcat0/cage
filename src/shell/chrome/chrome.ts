@@ -1071,6 +1071,9 @@ function renderHeader(h: HeaderFacts | null): void {
     repliesBadge = el('button', 'evm-btn evm-btn--ghost evm-btn--sm', replyLabel(count))
     repliesBadge.setAttribute('data-testid', 'header-replies')
     repliesBadge.setAttribute('data-count', String(count))
+    // Which thing this count is about — the header is rebuilt per open, so
+    // this is also how a test knows the rebuild has caught up.
+    repliesBadge.setAttribute('data-envelope-hash', h.envelopeHash)
     repliesBadge.addEventListener('click', () => void openRepliesModal(h.envelopeHash))
     replyBits.push(repliesBadge)
   }

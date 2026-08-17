@@ -33,17 +33,23 @@ async function chromeEval<T>(shell: ShellHandle, js: string): Promise<T> {
   }, js)
 }
 
-async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs = 20_000): Promise<T> {
+async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs = 20_000, what = ''): Promise<T> {
   const deadline = Date.now() + timeoutMs
+  let lastError: unknown = null
   for (;;) {
     let value: T | undefined
     try {
       value = await fn()
       if (pred(value)) return value
-    } catch {
-      /* retry */
+    } catch (e) {
+      lastError = e // a swallowed error here is why a timeout reads as an unexplained null
     }
-    if (Date.now() > deadline) throw new Error(`poll timed out; last value: ${JSON.stringify(value)}`)
+    if (Date.now() > deadline) {
+      throw new Error(
+        `poll timed out${what ? ` waiting for ${what}` : ''}; last value: ${JSON.stringify(value)}` +
+          (lastError ? `; last error: ${(lastError as Error).message}` : '')
+      )
+    }
     await new Promise((r) => setTimeout(r, 150))
   }
 }
@@ -56,7 +62,15 @@ const text = (shell: ShellHandle, testid: string): Promise<string | null> =>
 
 const openViaChrome = async (shell: ShellHandle, hash: string): Promise<void> => {
   await chromeEval(shell, `window.__shellChrome.openThing(${JSON.stringify(hash)})`)
-  await poll(() => text(shell, 'header-replies'), (t) => t !== null || true)
+  // Wait for the header to actually be rendered for THIS thing. The previous
+  // predicate (`t !== null || true`) was a tautology: it waited for nothing,
+  // so every assertion after it raced the header rebuild.
+  await poll(
+    () => attr(shell, 'header-replies', 'data-envelope-hash'),
+    (h) => h === hash,
+    20_000,
+    `the header to show ${hash.slice(0, 8)}`
+  )
 }
 
 /** Publish whatever the open draft last streamed, approving the confirm.
@@ -65,16 +79,29 @@ const openViaChrome = async (shell: ShellHandle, hash: string): Promise<void> =>
  *  to publish nothing. */
 async function publishOpenDraft(shell: ShellHandle): Promise<Record<string, unknown>> {
   await poll(
-    () => chromeEval<boolean>(shell, `!document.querySelector('[data-testid=header-publish]')?.disabled`),
-    (ready) => ready === true
+    () =>
+      chromeEval<boolean>(
+        shell,
+        // `!el?.disabled` is TRUE when the button is absent, which let this
+        // poll pass before the header existed and then publish nothing.
+        `(() => { const b = document.querySelector('[data-testid=header-publish]'); return !!b && !b.disabled })()`
+      ),
+    (ready) => ready === true,
+    20_000,
+    'the Publish button to enable (the draft to be streamed)'
   )
-  await shell.app.evaluate(async (electron) => {
-    const s = (electron.app as unknown as { __shell: { publishDraft: () => unknown } }).__shell
-    s.publishDraft()
-  })
+  // Assert the answer: 'nothing to publish' here would otherwise surface 20s
+  // later as an unexplained timeout waiting for a confirm that never comes.
+  const raised = (await shell.app.evaluate(async (electron) => {
+    const s = (electron.app as unknown as { __shell: { publishDraft: () => Record<string, unknown> } }).__shell
+    return s.publishDraft() as never
+  })) as Record<string, unknown>
+  expect(raised.status, `publishDraft refused: ${JSON.stringify(raised.reason ?? '')}`).toBe('pending')
   await poll(
     () => chromeEval<boolean>(shell, `!!document.querySelector('[data-testid=confirm-approve]')`),
-    (v) => v
+    (v) => v,
+    20_000,
+    'the publish confirm to appear'
   )
   await chromeEval(shell, `document.querySelector('[data-testid=confirm-approve]').click()`)
   return (await poll(
@@ -83,7 +110,9 @@ async function publishOpenDraft(shell: ShellHandle): Promise<Record<string, unkn
         const s = (electron.app as unknown as { __shell: { lastPublish: Record<string, unknown> | null } }).__shell
         return s.lastPublish as never
       }) as Promise<Record<string, unknown> | null>,
-    (p) => p?.status === 'valid'
+    (p) => p?.status === 'valid',
+    20_000,
+    'the approved publish to resolve'
   )) as Record<string, unknown>
 }
 
