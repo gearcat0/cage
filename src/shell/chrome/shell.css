@@ -364,3 +364,17 @@ body {
   color: var(--evm-bg);
   font-weight: var(--evm-weight-semibold);
 }
+
+/* "in reply to" — a CLAIM, never dressed as verification. */
+.sh-replyto {
+  color: var(--evm-text-3);
+  font-size: var(--evm-text-sm);
+  font-family: var(--evm-font-mono);
+}
+.sh-replyto--known {
+  color: var(--evm-text-2);
+  cursor: pointer;
+}
+.sh-replyto--known:hover {
+  color: var(--evm-accent);
+}

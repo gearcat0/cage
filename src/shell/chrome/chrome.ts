@@ -38,7 +38,9 @@ interface ShellApi {
   onFileOpened(cb: (r: Record<string, unknown>) => void): void
   knownTypes(): Promise<KnownTypeEntry[]>
   drafts(): Promise<DraftRow[]>
-  newDraft(key: string): Promise<{ id?: string; type?: string; error?: string }>
+  newDraft(key: string, args?: unknown): Promise<{ id?: string; type?: string; error?: string }>
+  newComment(targetHash: string): Promise<{ id?: string; error?: string }>
+  replies(targetHash: string): Promise<{ count: number; rows: ThingRow[] }>
   deleteDraft(id: string): Promise<{ deleted: boolean }>
   onFeedChanged(cb: () => void): void
   onConfirmRequest(cb: (req: { id: number; kind: string; summary: Record<string, unknown> }) => void): void
@@ -88,6 +90,11 @@ interface HeaderFacts {
   /** True when this is a local, unsigned draft — the header must NOT claim it
    *  is signed. The renderer never parses ids; this is the discriminant. */
   draft?: boolean
+  /** What this thing CLAIMS to reply to (unauthenticated), whether that target
+   *  is in this library, and how many things claim to reply to THIS one. */
+  replyTo?: string | null
+  replyToKnown?: boolean
+  replyCount?: number
 }
 type Outcome =
   | { status: 'valid'; type: string; author?: { k: string } }
@@ -912,6 +919,58 @@ function renderModeToggle(): HTMLElement {
   return wrap
 }
 
+let repliesBadge: HTMLElement | null = null
+
+const replyLabel = (n: number): string => (n === 0 ? 'no comments' : n === 1 ? '1 comment' : `${n} comments`)
+
+/** Things in THIS library that claim to reply to `target`. */
+async function openRepliesModal(target: string): Promise<void> {
+  const { rows } = await shell.replies(target)
+  const overlay = el('div', 'evm-modal-overlay')
+  const modal = el('div', 'evm-modal')
+  modal.setAttribute('data-testid', 'replies-modal')
+  const header = el('div', 'evm-modal-header')
+  header.append(el('span', 'evm-modal-title', 'Comments on this'))
+  const body = el('div', 'evm-modal-body')
+  body.append(
+    el(
+      'p',
+      'sh-hint',
+      'Things in your library that claim to reply to this. A reply is the commenter’s claim — like a timestamp, nothing binds it to this thing or its author.'
+    )
+  )
+  if (rows.length === 0) body.append(el('div', 'evm-empty', 'Nothing in your library replies to this.'))
+  for (const row of rows) {
+    const item = el('button', 'sh-feed-item')
+    item.setAttribute('data-testid', 'reply-item')
+    item.setAttribute('data-envelope-hash', row.envelopeHash)
+    const line = el('div', 'sh-feed-line')
+    line.append(
+      el('span', 'evm-badge evm-badge--neutral', row.type),
+      el(
+        'span',
+        'sh-feed-author evm-address evm-address--muted',
+        row.authorScheme === 'eth-eip191' ? shortAddress(row.authorKey) : short(row.authorKey)
+      ),
+      el('span', 'sh-feed-flags')
+    )
+    item.append(line, el('div', 'sh-feed-meta', fmtTime(row.receivedAt)))
+    item.addEventListener('click', () => {
+      overlay.remove()
+      void openThing(row.envelopeHash)
+    })
+    body.append(item)
+  }
+  const footer = el('div', 'evm-modal-footer')
+  const close = el('button', 'evm-btn evm-btn--ghost', 'Close')
+  close.setAttribute('data-testid', 'replies-close')
+  close.addEventListener('click', () => overlay.remove())
+  footer.append(close)
+  modal.append(header, body, footer)
+  overlay.append(modal)
+  document.body.append(trackOverlay(overlay))
+}
+
 // ── Per-thing trust header ───────────────────────────────────────────────────
 function renderHeader(h: HeaderFacts | null): void {
   thingHeader.replaceChildren()
@@ -920,6 +979,7 @@ function renderHeader(h: HeaderFacts | null): void {
     trustBadge = null
     previewBadge = null
     publishBtn = null
+    repliesBadge = null
     thingHeader.append(el('span', 'sh-hint', 'Select a thing from the feed.'))
     return
   }
@@ -988,6 +1048,47 @@ function renderHeader(h: HeaderFacts | null): void {
     if (r.status === 'invalid') showText(String(r.reason), 'danger')
   })
   publishBtn = pub
+
+  // ── Replies ────────────────────────────────────────────────────────────────
+  // A reply is an author CLAIM: anyone may claim to reply to anything, and the
+  // target's author never consented. So: never the ✓ vocabulary, always scoped
+  // to "your library", and honest when the target is missing.
+  const replyBits: HTMLElement[] = []
+  if (!h.draft) {
+    const commentBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Comment')
+    commentBtn.setAttribute('data-testid', 'header-comment')
+    commentBtn.addEventListener('click', async () => {
+      const r = await shell.newComment(h.envelopeHash)
+      if (!r.id) {
+        showText(`Could not start a comment: ${String(r.error ?? 'unknown')}`, 'danger')
+        return
+      }
+      await openThing(r.id)
+    })
+    replyBits.push(commentBtn)
+
+    const count = h.replyCount ?? 0
+    repliesBadge = el('button', 'evm-btn evm-btn--ghost evm-btn--sm', replyLabel(count))
+    repliesBadge.setAttribute('data-testid', 'header-replies')
+    repliesBadge.setAttribute('data-count', String(count))
+    repliesBadge.addEventListener('click', () => void openRepliesModal(h.envelopeHash))
+    replyBits.push(repliesBadge)
+  }
+  if (h.replyTo) {
+    const known = h.replyToKnown === true
+    const rt = el('span', `sh-replyto${known ? ' sh-replyto--known' : ''}`, `in reply to ${short(h.replyTo, 6)}`)
+    rt.setAttribute('data-testid', 'header-replyto')
+    rt.setAttribute('data-known', known ? '1' : '0')
+    rt.title = known
+      ? `${h.replyTo} — click to open`
+      : `${h.replyTo} — not in your library: you have the reply, not the thing it claims to answer`
+    if (known) {
+      rt.setAttribute('role', 'button')
+      rt.addEventListener('click', () => void openThing(h.replyTo!))
+    }
+    replyBits.push(rt)
+  }
+
   thingHeader.append(
     statusSlot,
     el('span', 'sh-by', 'by'),
@@ -996,6 +1097,7 @@ function renderHeader(h: HeaderFacts | null): void {
     renderModeToggle(),
     pub,
     el('span', 'sh-spacer'),
+    ...replyBits,
     copyBtn,
     delBtn
   )
@@ -1073,7 +1175,18 @@ function bytesToBase64(bytes: Uint8Array): string {
 ;(window as unknown as { __shellChrome: unknown }).__shellChrome = { openThing }
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
-shell.onFeedChanged(() => void refreshFeed())
+shell.onFeedChanged(() => {
+  void refreshFeed()
+  // Keep the comment count fresh without rebuilding the header (a rebuild
+  // would re-run renderModeToggle and move the pinned controls).
+  if (selected && repliesBadge && !selected.startsWith('draft:')) {
+    void shell.replies(selected).then((r) => {
+      if (!repliesBadge) return
+      repliesBadge.textContent = replyLabel(r.count)
+      repliesBadge.setAttribute('data-count', String(r.count))
+    })
+  }
+})
 shell.onModeChanged((p) => {
   currentMode = p.mode
   previewActive = p.preview

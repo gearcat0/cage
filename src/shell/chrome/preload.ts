@@ -62,8 +62,14 @@ const shell = {
   /** Local, unsigned drafts (newest edit first). */
   drafts: (): Promise<unknown[]> => ipcRenderer.invoke('shell:drafts'),
   /** Start a draft of a known type; returns its id. */
-  newDraft: (key: string): Promise<{ id?: string; type?: string; error?: string }> =>
-    ipcRenderer.invoke('shell:new-draft', key),
+  newDraft: (key: string, args?: unknown): Promise<{ id?: string; type?: string; error?: string }> =>
+    ipcRenderer.invoke('shell:new-draft', key, args),
+  /** Start a comment on a thing; the shell seeds the target into its args. */
+  newComment: (targetHash: string): Promise<{ id?: string; error?: string }> =>
+    ipcRenderer.invoke('shell:new-comment', targetHash),
+  /** Things in this library claiming to reply to a hash. */
+  replies: (targetHash: string): Promise<{ count: number; rows: Record<string, unknown>[] }> =>
+    ipcRenderer.invoke('shell:replies', targetHash),
   deleteDraft: (id: string): Promise<{ deleted: boolean }> => ipcRenderer.invoke('shell:delete-draft', id),
   /** Main pushes the outcome of a .thing opened from the desktop. */
   onFileOpened: (cb: (r: Record<string, unknown>) => void): void => {
