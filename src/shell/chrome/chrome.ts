@@ -1183,11 +1183,20 @@ shell.onFeedChanged(() => {
   // Keep the comment count fresh without rebuilding the header (a rebuild
   // would re-run renderModeToggle and move the pinned controls).
   if (selected && repliesBadge && !selected.startsWith('draft:')) {
-    void shell.replies(selected).then((r) => {
-      if (!repliesBadge) return
-      repliesBadge.textContent = replyLabel(r.count)
-      repliesBadge.setAttribute('data-count', String(r.count))
-    })
+    const asked = selected
+    void shell
+      .replies(asked)
+      .then((r) => {
+        // Open something else while this is in flight and the header is
+        // rebuilt with a new badge — writing the old count into it would
+        // label the new thing with the previous one's comments.
+        if (!repliesBadge || repliesBadge.getAttribute('data-envelope-hash') !== asked) return
+        repliesBadge.textContent = replyLabel(r.count)
+        repliesBadge.setAttribute('data-count', String(r.count))
+      })
+      .catch(() => {
+        /* a stale count is not worth an unhandled rejection */
+      })
   }
 })
 shell.onModeChanged((p) => {
