@@ -81,6 +81,23 @@ the mirror of admission and lives in `format`; the shell only supplies the
 `Signer`. Public things only for now — sealed authoring is deferred with the rest
 of sealing. Sharing this phase is **file handoff**; live P2P is the fast-follow.
 
+**Drafts hold attachments.** A draft's images live in the CAS like any other
+blob, with `draft_blobs` holding the draft's *reference* to them, so a picked
+image survives both opening something else and quitting the app — and a program
+can re-declare it as `{carry: true}` instead of re-shipping the bytes. The
+garbage collector counts draft references as holders: bytes are released only
+when the last draft *and* thing that referenced them is gone.
+
+**One thing can reference another.** A program can never learn a hash by
+itself (`getArgs` withholds the envelope), so the shell seeds `args.replyTo`
+when you press **Comment** on an open thing, and indexes the reference so the
+target can show its comments. That reference is an author **claim**, exactly
+like the `created` timestamp: anyone may claim to reply to anything, and the
+target's author never consented. The chrome therefore scopes the list to things
+in *your library*, and when you don't hold the target it says so plainly rather
+than hiding the claim. The ✓ vocabulary is reserved for verification and is
+never used here.
+
 ## Notes
 
 - **Keys are software-only** for now (safeStorage if present, else static-key

@@ -210,7 +210,10 @@ export interface ShellHandle {
   knownTypes(): Promise<{ key: string; testKey: string; source: string; type: string; progHash: string }[]>
   /** Local unsigned drafts. */
   drafts(): Promise<{ id: string; type: string; progHash: string; args: unknown; created: number; updated: number }[]>
-  newDraft(key: string): Promise<{ id?: string; error?: string }>
+  newDraft(key: string, args?: unknown): Promise<{ id?: string; error?: string }>
+  newComment(targetHash: string): Promise<{ id?: string; error?: string }>
+  draftBlobs(draftId: string): Promise<{ name: string; hash: string; mime: string; size: number }[]>
+  replies(targetHash: string): Promise<{ count: number; rows: Record<string, unknown>[] }>
   deleteDraft(id: string): Promise<{ deleted: boolean }>
   /** Files under userData whose bytes contain `needle`. */
   scanUserData(needle: Uint8Array): string[]
@@ -273,7 +276,13 @@ async function ackSafetyNotice(app: ElectronApplication, timeoutMs = 5_000): Pro
 }
 
 export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellHandle> {
-  const userDataDir = mkdtempSync(join(tmpdir(), 'shell-userdata-'))
+  // When a spec supplies its own profile dir (restart tests), the handle's
+  // accessors — casBlobs(), scanUserData() — must look at THAT dir, not at a
+  // temp dir we made and the app never used. We also must not delete a dir we
+  // did not create: specs relaunch against theirs.
+  const suppliedDir = opts.extraEnv?.SHELL_USER_DATA_DIR
+  const userDataDir = suppliedDir ?? mkdtempSync(join(tmpdir(), 'shell-userdata-'))
+  const ownsDir = suppliedDir === undefined
   const env: Record<string, string> = { ...process.env } as Record<string, string>
   delete env.ELECTRON_DISABLE_SANDBOX
   // Force software key storage so the test is deterministic regardless of host
@@ -373,11 +382,29 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
         const s = (electron.app as unknown as { __shell: { drafts: () => unknown[] } }).__shell
         return s.drafts() as never
       }),
-    newDraft: (key: string) =>
-      app.evaluate(async (electron, k) => {
-        const s = (electron.app as unknown as { __shell: { newDraft: (x: string) => unknown } }).__shell
-        return s.newDraft(k) as never
-      }, key),
+    newDraft: (key: string, args?: unknown) =>
+      app.evaluate(
+        async (electron, a) => {
+          const s = (electron.app as unknown as { __shell: { newDraft: (k: string, g?: unknown) => unknown } }).__shell
+          return s.newDraft(a.key, a.args) as never
+        },
+        { key, args }
+      ),
+    newComment: (targetHash: string) =>
+      app.evaluate(async (electron, h) => {
+        const s = (electron.app as unknown as { __shell: { newComment: (x: string) => unknown } }).__shell
+        return s.newComment(h) as never
+      }, targetHash),
+    draftBlobs: (draftId: string) =>
+      app.evaluate(async (electron, id) => {
+        const s = (electron.app as unknown as { __shell: { draftBlobs: (x: string) => unknown } }).__shell
+        return s.draftBlobs(id) as never
+      }, draftId),
+    replies: (targetHash: string) =>
+      app.evaluate(async (electron, h) => {
+        const s = (electron.app as unknown as { __shell: { replies: (x: string) => unknown } }).__shell
+        return s.replies(h) as never
+      }, targetHash),
     deleteDraft: (id: string) =>
       app.evaluate(async (electron, i) => {
         const s = (electron.app as unknown as { __shell: { deleteDraft: (x: string) => unknown } }).__shell
@@ -395,7 +422,7 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
     },
     close: async () => {
       await app.close()
-      rmSync(userDataDir, { recursive: true, force: true })
+      if (ownsDir) rmSync(userDataDir, { recursive: true, force: true })
     }
   }
 }

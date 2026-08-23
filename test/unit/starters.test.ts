@@ -13,8 +13,17 @@ const sampleBytes = (type: string): Uint8Array =>
 
 describe('starters', () => {
   it('ships all six samples', () => {
-    expect(STARTERS.length).toBe(6)
-    expect([...STARTERS].map((s) => s.type).sort()).toEqual(['card', 'invite', 'memo', 'nametag', 'poster', 'todo'])
+    expect(STARTERS.length).toBe(8)
+    expect([...STARTERS].map((s) => s.type).sort()).toEqual([
+      'article',
+      'card',
+      'comment',
+      'invite',
+      'memo',
+      'nametag',
+      'poster',
+      'todo'
+    ])
   })
 
   it('byte-matches the on-disk sample for every starter', () => {
@@ -24,9 +33,9 @@ describe('starters', () => {
   })
 
   it('has distinct keys, types, and programs', () => {
-    expect(new Set(STARTERS.map((s) => s.key)).size).toBe(6)
-    expect(new Set(STARTERS.map((s) => s.type)).size).toBe(6)
-    expect(new Set(STARTERS.map((s) => s.html)).size).toBe(6)
+    expect(new Set(STARTERS.map((s) => s.key)).size).toBe(8)
+    expect(new Set(STARTERS.map((s) => s.type)).size).toBe(8)
+    expect(new Set(STARTERS.map((s) => s.html)).size).toBe(8)
   })
 
   it('resolves by key and rejects unknown keys', () => {

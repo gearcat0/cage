@@ -56,3 +56,24 @@ the CAS layout (`blobs/<hex-hash>`, §8's bundle shape) all mapped onto the
 spec cleanly. §10.4 (program supersedes) says "decide when the bridge lands" —
 the bridge landed without needing it; it can stay parked until the naming
 layer.
+
+## 6. The draft contract re-ships blob bytes on every emit
+
+`emit("draft", {type, args, blobs})` is whole-set replacement, so a program
+that wants to keep an image must name it in *every* emit. Phase 2 added
+`{carry: true}` for the case where the shell already holds the bytes under
+that name, which covers re-mounts (the image is in `getArgs().attachments`, so
+the program can carry it rather than re-read the file). It does **not** cover
+the within-session case: an image the human just picked has no mount-time
+attachment name, so its bytes cross IPC again on every subsequent keystroke
+until the draft is re-mounted. Debouncing hides the cost rather than removing
+it, and a multi-image article makes it concrete — a 3 MB photo re-crossing the
+boundary per edit.
+
+The fix is a blob **handle**: the shell returns an opaque token when it accepts
+inline bytes, and the program names the token thereafter — the same idea as
+`carry`, extended to bytes the shell has accepted but not yet mounted. That is
+a bridge-surface change, so it wants a decision at the same time as anything
+else touching the 4-method surface, and it must keep the property that a handle
+is not a capability to *read* anything the program could not already read (it
+names bytes the program itself just supplied, nothing more).

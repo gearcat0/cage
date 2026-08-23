@@ -1,0 +1,125 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>comment</title>
+<style>
+  body { margin: 0; font: 15px/1.55 system-ui, sans-serif; background: #1d2320; color: #d8d4c8;
+         display: flex; align-items: flex-start; justify-content: center; min-height: 100vh;
+         padding: 24px; box-sizing: border-box; }
+  .comment { background: #262c28; border: 1px solid #39413b; border-left: 3px solid #6f8f76; border-radius: 4px;
+             width: 34em; max-width: 100%; padding: 16px 18px; }
+  .body { white-space: pre-wrap; margin: 0; }
+  .body.empty { color: #7d8a80; font-style: italic; }
+  .claim { margin: 14px 0 0; padding-top: 10px; border-top: 1px solid #39413b;
+           font-size: 12px; color: #8a978d; }
+  .claim code { font-family: ui-monospace, Menlo, monospace; color: #a9b8ae; }
+  label { display: block; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: #8a978d;
+          margin-bottom: 6px; }
+  textarea, input { font: inherit; width: 100%; box-sizing: border-box; background: #1f2521; color: #e6e2d6;
+                    border: 1px solid #3f4a43; border-radius: 4px; padding: 8px 10px; }
+  textarea { min-height: 7em; resize: vertical; }
+  .note { margin-top: 12px; font-size: 12px; color: #7d8a80; }
+</style>
+</head>
+<body>
+  <div class="comment">
+    <div id="app"></div>
+  </div>
+  <script>
+    'use strict';
+    // A comment on another thing.
+    //
+    // A program can never learn a thing's hash by itself — getArgs deliberately
+    // withholds the envelope — so the SHELL seeds args.replyTo when the human
+    // presses Comment on something. Two consequences this program must respect:
+    //
+    //   1. args are WHOLE-SET replacement on every emit, so replyTo has to be
+    //      echoed back every time. Dropping it silently unthreads the comment.
+    //   2. replyTo is a CLAIM, not proof. Anyone can claim to reply to
+    //      anything, and the target's author never agreed. This program says
+    //      "replying to" and nothing stronger; whether that thing is actually
+    //      in your library is the shell's line to speak, in trusted chrome.
+    var a = window.bridge.getArgs() || {};
+    var args = (a && typeof a.args === 'object' && a.args !== null) ? a.args : {};
+    var app = document.getElementById('app');
+
+    function str(v) { return typeof v === 'string' ? v : ''; }
+
+    function el(tag, text) {
+      var e = document.createElement(tag);
+      if (text !== undefined) e.textContent = text;
+      return e;
+    }
+
+    function shortHash(h) {
+      return h.length > 16 ? h.slice(0, 8) + '…' + h.slice(-6) : h;
+    }
+
+    function claimLine(replyTo) {
+      var p = el('p'); p.className = 'claim'; p.id = 'view-claim';
+      if (!replyTo) {
+        p.textContent = 'not a reply — this comment stands on its own';
+        return p;
+      }
+      p.append(document.createTextNode('replying to '));
+      var code = el('code', shortHash(replyTo)); code.id = 'view-replyto';
+      code.title = replyTo;
+      p.append(code);
+      p.append(document.createTextNode(' — the shell’s header says whether that thing is in your library.'));
+      return p;
+    }
+
+    function viewMode() {
+      app.replaceChildren();
+      var body = el('p', str(args.body) || 'No comment written yet.');
+      body.className = str(args.body) ? 'body' : 'body empty';
+      body.id = 'view-body';
+      app.append(body, claimLine(str(args.replyTo)));
+    }
+
+    function editMode() {
+      app.replaceChildren();
+      var replyTo = str(args.replyTo);
+
+      var bodyLabel = el('label', 'Comment');
+      var body = el('textarea'); body.id = 'edit-body'; body.value = str(args.body);
+      body.placeholder = 'What do you want to say?';
+      app.append(bodyLabel, body);
+
+      var target = null;
+      if (replyTo) {
+        // Seeded by the shell: show it, do not let it be edited away.
+        var fixed = el('p'); fixed.className = 'claim'; fixed.id = 'replyto-fixed';
+        fixed.append(document.createTextNode('replying to '));
+        var code = el('code', shortHash(replyTo)); code.title = replyTo;
+        fixed.append(code);
+        app.append(fixed);
+      } else {
+        // Reached via New rather than the Comment button: let the human paste
+        // a target, or publish it as a standalone note.
+        var tLabel = el('label', 'Replying to (optional)');
+        target = el('input'); target.id = 'edit-replyto'; target.value = '';
+        target.placeholder = 'a 64-character thing hash';
+        app.append(tLabel, target);
+      }
+      var note = el('div', 'Preview in View — publish from the shell header when you’re ready.');
+      note.className = 'note';
+      app.append(note);
+
+      function streamDraft() {
+        // replyTo is echoed on EVERY emit: args are whole-set replacement, so
+        // omitting it here would quietly detach the comment from its target.
+        var to = replyTo || (target ? target.value.trim() : '');
+        window.bridge.emit('draft', { type: 'comment', args: { replyTo: to, body: body.value } });
+      }
+      body.addEventListener('input', streamDraft);
+      if (target) target.addEventListener('input', streamDraft);
+      streamDraft(); // initial state, so the shell's Publish enables immediately
+      body.focus();
+    }
+
+    if (a.mode === 'edit') editMode(); else viewMode();
+  </script>
+</body>
+</html>

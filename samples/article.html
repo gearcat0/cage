@@ -1,0 +1,455 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>article</title>
+<style>
+  body { margin: 0; font: 16px/1.6 Georgia, 'Times New Roman', serif; background: #1d2320; color: #23201a;
+         display: flex; align-items: flex-start; justify-content: center; min-height: 100vh;
+         padding: 24px; box-sizing: border-box; }
+  .sheet { background: #faf8f2; width: 44em; max-width: 100%; padding: 34px 40px 40px; }
+
+  /* ── view ── */
+  .a-title { margin: 0 0 4px; font-size: 30px; line-height: 1.2; }
+  .a-byline { margin: 0 0 18px; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: #7a7365;
+              font-family: system-ui, sans-serif; border-bottom: 1px solid #ddd6c6; padding-bottom: 14px; }
+  .a-article::after { content: ''; display: block; clear: both; } /* floats never escape */
+  .a-h { margin: 22px 0 6px; font-size: 21px; clear: both; }
+  .a-sub { margin: 16px 0 4px; font-size: 16px; letter-spacing: .04em; text-transform: uppercase;
+           color: #6d6558; font-family: system-ui, sans-serif; clear: both; }
+  .a-p { margin: 0 0 12px; }
+  .a-fig { margin: .3em 0 .9em; }
+  .a-fig img { display: block; width: 100%; height: auto; background: #e8e2d4; }
+  .a-fig figcaption { font-size: 12px; line-height: 1.45; color: #7a7365; padding-top: 5px;
+                      font-family: system-ui, sans-serif; }
+  .a-fig--left  { float: left;  width: 44%; margin-right: 1.4em; }
+  .a-fig--right { float: right; width: 44%; margin-left: 1.4em; }
+  .a-fig--full  { float: none;  width: 100%; clear: both; }
+  .a-fig__missing { display: flex; align-items: center; justify-content: center; min-height: 6em;
+                    background: #e8e2d4; color: #9a9284; font-size: 12px; font-family: system-ui, sans-serif; }
+  .a-fnref { font-size: .72em; vertical-align: super; line-height: 0; }
+  .a-fnref a, .a-fnback { color: #96521f; text-decoration: none; cursor: pointer; }
+  .a-notes { clear: both; margin-top: 26px; padding-top: 12px; border-top: 1px solid #ddd6c6;
+             font-size: 13px; color: #5c554a; font-family: system-ui, sans-serif; }
+  .a-notes ol { margin: 0; padding-left: 1.3em; }
+  .a-notes li { margin-bottom: 5px; }
+  .a-empty { color: #9a9284; font-style: italic; }
+  @media (max-width: 34em) {
+    .a-fig--left, .a-fig--right { float: none; width: 100%; margin-left: 0; margin-right: 0; }
+  }
+
+  /* ── edit ── */
+  .e-field { margin-bottom: 10px; }
+  .e-field label { display: block; font: 11px/1.4 system-ui, sans-serif; letter-spacing: .1em;
+                   text-transform: uppercase; color: #7a7365; margin-bottom: 3px; }
+  input, textarea, select { font: inherit; font-family: system-ui, sans-serif; font-size: 14px; width: 100%;
+                            box-sizing: border-box; border: 1px solid #cfc7b5; border-radius: 3px;
+                            padding: 6px 8px; background: #fffdf7; color: #23201a; }
+  textarea { min-height: 4.5em; resize: vertical; }
+  .e-bar { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0; padding: 10px 0;
+           border-top: 1px solid #ddd6c6; border-bottom: 1px solid #ddd6c6; }
+  .e-bar button { width: auto; font: 12px system-ui, sans-serif; padding: 5px 10px; border: 1px solid #c6bda8;
+                  background: #efeade; color: #3f3a31; border-radius: 3px; cursor: pointer; }
+  .e-block { border: 1px solid #ddd6c6; border-left: 3px solid #b9ae95; border-radius: 3px;
+             padding: 9px 10px; margin-bottom: 8px; background: #fffdf7; }
+  .e-block[data-kind='image'] { border-left-color: #96521f; }
+  .e-block[data-kind='footnote'] { border-left-color: #6f8f76; }
+  .e-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .e-kind { font: 11px system-ui, sans-serif; letter-spacing: .1em; text-transform: uppercase; color: #7a7365; flex: 1; }
+  .e-head button { width: auto; font: 12px system-ui, sans-serif; padding: 2px 7px; border: 1px solid #cfc7b5;
+                   background: #f2eee2; color: #3f3a31; border-radius: 3px; cursor: pointer; }
+  .e-img-row { display: grid; grid-template-columns: 5.5em 1fr; gap: 6px; align-items: center; margin-top: 6px; }
+  .e-thumb { max-width: 5.5em; max-height: 4em; background: #e8e2d4; }
+  .e-note { font: 12px system-ui, sans-serif; color: #7a7365; margin-top: 10px; }
+  .e-warn { font: 12px system-ui, sans-serif; color: #a4441c; margin-top: 6px; }
+</style>
+</head>
+<body>
+  <div class="sheet">
+    <div id="app"></div>
+  </div>
+  <script>
+    'use strict';
+    // A news article: headings, paragraphs, images that text wraps around, and
+    // footnotes. The richest sample — and the one that shows the contract
+    // scales past flat fields.
+    //
+    // State: args {title, byline, blocks:[…]} where a block is one of
+    //   {kind:'heading'|'subheading'|'paragraph'|'footnote', text}
+    //   {kind:'image', name, caption, alt, placement:'left'|'right'|'full'}
+    // Deliberately STRINGS ONLY — no numbers anywhere — so the canonical-CBOR
+    // rules about floats can never bite. Images live in attachments, addressed
+    // by name; the block only holds the name.
+    //
+    // Two contract rules this program obeys, both easy to get wrong:
+    //   • args AND blobs are whole-set replacement on every emit. Every image
+    //     still in the article must be re-declared each time — as fresh bytes
+    //     if just picked, otherwise as {carry:true} so the shell reuses what it
+    //     already holds instead of moving megabytes per keystroke.
+    //   • image names are never reused or renamed. Renaming would orphan the
+    //     carried blob and silently drop the picture.
+    var KINDS = { heading: 'Heading', subheading: 'Subheading', paragraph: 'Paragraph', image: 'Image', footnote: 'Footnote' };
+    var PLACEMENTS = { left: 'Wrap left', right: 'Wrap right', full: 'Full width' };
+    // Admission caps a manifest's arrays at 4096 entries and args at 256 KB;
+    // past either, a thing signs and then fails its own re-ingest. Warn well
+    // before that rather than let a long article vanish at publish time.
+    var MAX_BLOCKS = 400;
+    var WARN_ARGS_BYTES = 200 * 1024;
+
+    var a = window.bridge.getArgs() || {};
+    var rawArgs = (a && typeof a.args === 'object' && a.args !== null) ? a.args : {};
+    var attachments = a.attachments || [];
+    var app = document.getElementById('app');
+
+    function str(v) { return typeof v === 'string' ? v : ''; }
+
+    function el(tag, text) {
+      var e = document.createElement(tag);
+      if (text !== undefined) e.textContent = text;
+      return e;
+    }
+
+    function hasAttachment(name) {
+      for (var i = 0; i < attachments.length; i++) if (attachments[i].name === name) return true;
+      return false;
+    }
+
+    /** Args are untrusted and may be absent, partial, or hostile: every block
+     *  is coerced into something renderable. Unknown kinds read as paragraphs;
+     *  unknown placements as full width. */
+    function cleanBlocks(raw) {
+      if (!Array.isArray(raw)) return [];
+      var out = [];
+      for (var i = 0; i < raw.length && out.length < MAX_BLOCKS; i++) {
+        var b = (raw[i] && typeof raw[i] === 'object') ? raw[i] : {};
+        var kind = KINDS[b.kind] ? b.kind : 'paragraph';
+        if (kind === 'image') {
+          out.push({
+            kind: 'image',
+            name: str(b.name),
+            caption: str(b.caption),
+            alt: str(b.alt),
+            placement: PLACEMENTS[b.placement] ? b.placement : 'full'
+          });
+        } else {
+          out.push({ kind: kind, text: str(b.text) });
+        }
+      }
+      return out;
+    }
+
+    var state = {
+      title: str(rawArgs.title),
+      byline: str(rawArgs.byline),
+      blocks: cleanBlocks(rawArgs.blocks)
+    };
+
+    // ── view ────────────────────────────────────────────────────────────────
+    function figureFor(b) {
+      var fig = el('figure');
+      fig.className = 'a-fig a-fig--' + b.placement;
+      fig.id = 'fig-' + b.name;
+      var url = b.name ? window.bridge.getBlob(b.name) : null;
+      if (url) {
+        var img = el('img');
+        img.src = url;
+        img.alt = b.alt || b.caption || '';
+        fig.append(img);
+      } else {
+        // A published article can legitimately name a blob that is not here.
+        var missing = el('div', b.name ? 'image not attached: ' + b.name : 'no image');
+        missing.className = 'a-fig__missing';
+        fig.append(missing);
+      }
+      if (b.caption) {
+        var cap = el('figcaption', b.caption);
+        cap.className = 'a-fig__cap';
+        fig.append(cap);
+      }
+      return fig;
+    }
+
+    /** Footnote markers attach to the block BEFORE them, and the notes collect
+     *  at the end in document order — so view, preview and published render
+     *  identically. */
+    function viewMode() {
+      app.replaceChildren();
+      var title = el('h1', state.title || 'Untitled');
+      title.className = 'a-title'; title.id = 'view-title';
+      app.append(title);
+      if (state.byline) {
+        var by = el('p', state.byline);
+        by.className = 'a-byline'; by.id = 'view-byline';
+        app.append(by);
+      }
+
+      var article = el('div'); article.className = 'a-article'; article.id = 'view-article';
+      var notes = [];
+      var last = null;
+      for (var i = 0; i < state.blocks.length; i++) {
+        var b = state.blocks[i];
+        if (b.kind === 'footnote') {
+          notes.push(b.text);
+          var n = String(notes.length);
+          var sup = el('sup'); sup.className = 'a-fnref'; sup.id = 'fnref-' + n;
+          var link = el('a', n); link.href = '#fn-' + n;
+          link.setAttribute('data-goto', 'fn-' + n);
+          sup.append(link);
+          (last || article).append(sup);
+          continue;
+        }
+        var node;
+        if (b.kind === 'image') {
+          node = figureFor(b);
+        } else if (b.kind === 'heading') {
+          node = el('h2', b.text); node.className = 'a-h';
+        } else if (b.kind === 'subheading') {
+          node = el('h3', b.text); node.className = 'a-sub';
+        } else {
+          node = el('p', b.text); node.className = 'a-p';
+        }
+        node.id = 'view-block-' + i;
+        article.append(node);
+        last = node;
+      }
+      if (state.blocks.length === 0) {
+        var empty = el('p', 'Nothing written yet.'); empty.className = 'a-empty'; empty.id = 'view-empty';
+        article.append(empty);
+      }
+      app.append(article);
+
+      if (notes.length > 0) {
+        var sec = el('section'); sec.className = 'a-notes'; sec.id = 'view-notes';
+        var ol = el('ol');
+        for (var j = 0; j < notes.length; j++) {
+          var li = el('li', notes[j]); li.id = 'fn-' + String(j + 1);
+          var back = el('a', ' ↩'); back.className = 'a-fnback'; back.href = '#fnref-' + String(j + 1);
+          back.setAttribute('data-goto', 'fnref-' + String(j + 1));
+          li.append(back);
+          ol.append(li);
+        }
+        sec.append(ol);
+        app.append(sec);
+      }
+
+      // Scroll by hand: the cage blocks navigation, including fragment jumps,
+      // so a bare href would do nothing.
+      app.addEventListener('click', function (e) {
+        var t = e.target;
+        var id = t && t.getAttribute && t.getAttribute('data-goto');
+        if (!id) return;
+        e.preventDefault();
+        var dest = document.getElementById(id);
+        if (dest) dest.scrollIntoView({ block: 'center' });
+      });
+    }
+
+    // ── edit ────────────────────────────────────────────────────────────────
+    function nextImageName() {
+      var max = 0;
+      for (var i = 0; i < state.blocks.length; i++) {
+        var m = /^img-(\d+)$/.exec(str(state.blocks[i].name));
+        if (m) { var n = parseInt(m[1], 10); if (n > max) max = n; }
+      }
+      return 'img-' + String(max + 1);
+    }
+
+    var picked = {};      // name -> {bytes, mime} for images chosen this session
+    var thumbUrls = {};   // name -> object URL, revoked when replaced
+    var draftTimer = null;
+
+    function argsOut() {
+      var blocks = [];
+      for (var i = 0; i < state.blocks.length; i++) {
+        var b = state.blocks[i];
+        if (b.kind === 'image') {
+          blocks.push({ kind: 'image', name: b.name, caption: b.caption, alt: b.alt, placement: b.placement });
+        } else {
+          blocks.push({ kind: b.kind, text: b.text });
+        }
+      }
+      return { title: state.title, byline: state.byline, blocks: blocks };
+    }
+
+    function blobsOut() {
+      var blobs = {};
+      for (var i = 0; i < state.blocks.length; i++) {
+        var b = state.blocks[i];
+        if (b.kind !== 'image' || !b.name) continue;
+        if (picked[b.name]) blobs[b.name] = picked[b.name];        // chosen just now
+        else if (hasAttachment(b.name)) blobs[b.name] = { carry: true }; // the shell already holds it
+      }
+      return blobs;
+    }
+
+    function streamDraft() {
+      var out = argsOut();
+      window.bridge.emit('draft', { type: 'article', args: out, blobs: blobsOut() });
+      var warn = document.getElementById('size-warn');
+      if (warn) {
+        var bytes = JSON.stringify(out).length;
+        var over = state.blocks.length > MAX_BLOCKS || bytes > WARN_ARGS_BYTES;
+        warn.textContent = over
+          ? 'This article is very large (' + state.blocks.length + ' blocks, ~' + Math.round(bytes / 1024) +
+            ' KB of text). Past the limits the shell will refuse it — split it up.'
+          : '';
+      }
+      var count = document.getElementById('block-count');
+      if (count) count.textContent = state.blocks.length + (state.blocks.length === 1 ? ' block' : ' blocks');
+    }
+
+    /** Text edits must NOT re-render (it would kill the caret), so they stream
+     *  on a short trailing debounce; structural edits re-render and flush. */
+    function scheduleDraft() {
+      if (draftTimer) clearTimeout(draftTimer);
+      draftTimer = setTimeout(function () { draftTimer = null; streamDraft(); }, 200);
+    }
+
+    function addBlock(kind) {
+      if (state.blocks.length >= MAX_BLOCKS) return;
+      if (kind === 'image') {
+        state.blocks.push({ kind: 'image', name: nextImageName(), caption: '', alt: '', placement: 'full' });
+      } else {
+        state.blocks.push({ kind: kind, text: '' });
+      }
+      render();
+      streamDraft();
+      var focusId = (kind === 'image' ? 'block-caption-' : 'block-text-') + String(state.blocks.length - 1);
+      var f = document.getElementById(focusId);
+      if (f) f.focus();
+    }
+
+    function moveBlock(i, delta) {
+      var j = i + delta;
+      if (j < 0 || j >= state.blocks.length) return;
+      var tmp = state.blocks[i];
+      state.blocks[i] = state.blocks[j];
+      state.blocks[j] = tmp;
+      render();
+      streamDraft();
+    }
+
+    function deleteBlock(i) {
+      var b = state.blocks[i];
+      if (b.kind === 'image' && b.name) {
+        delete picked[b.name];
+        if (thumbUrls[b.name]) { URL.revokeObjectURL(thumbUrls[b.name]); delete thumbUrls[b.name]; }
+      }
+      state.blocks.splice(i, 1);
+      render();
+      streamDraft();
+    }
+
+    function blockEditor(b, i) {
+      var wrap = el('div'); wrap.className = 'e-block'; wrap.id = 'block-' + i;
+      wrap.setAttribute('data-kind', b.kind);
+
+      var head = el('div'); head.className = 'e-head';
+      head.append(el('span', KINDS[b.kind]));
+      head.firstChild.className = 'e-kind';
+      var up = el('button', '↑'); up.id = 'block-up-' + i; up.title = 'Move up';
+      up.addEventListener('click', function () { moveBlock(i, -1); });
+      var down = el('button', '↓'); down.id = 'block-down-' + i; down.title = 'Move down';
+      down.addEventListener('click', function () { moveBlock(i, 1); });
+      var del = el('button', '×'); del.id = 'block-del-' + i; del.title = 'Delete block';
+      del.addEventListener('click', function () { deleteBlock(i); });
+      head.append(up, down, del);
+      wrap.append(head);
+
+      if (b.kind === 'image') {
+        var file = el('input'); file.type = 'file'; file.accept = 'image/*'; file.id = 'block-file-' + i;
+        var thumb = el('img'); thumb.className = 'e-thumb'; thumb.id = 'block-thumb-' + i;
+        var current = picked[b.name] ? thumbUrls[b.name] : (hasAttachment(b.name) ? window.bridge.getBlob(b.name) : null);
+        if (current) thumb.src = current; else thumb.style.display = 'none';
+        file.addEventListener('change', function () {
+          var f = file.files && file.files[0];
+          if (!f) return;
+          f.arrayBuffer().then(function (buf) {
+            picked[b.name] = { bytes: new Uint8Array(buf), mime: f.type || 'application/octet-stream' };
+            if (thumbUrls[b.name]) URL.revokeObjectURL(thumbUrls[b.name]);
+            thumbUrls[b.name] = URL.createObjectURL(f);
+            thumb.src = thumbUrls[b.name];
+            thumb.style.display = '';
+            streamDraft();
+          });
+        });
+        var caption = el('input'); caption.id = 'block-caption-' + i; caption.value = b.caption;
+        caption.placeholder = 'Caption';
+        caption.addEventListener('input', function () { b.caption = caption.value; scheduleDraft(); });
+        var alt = el('input'); alt.id = 'block-alt-' + i; alt.value = b.alt;
+        alt.placeholder = 'Alt text (for people who cannot see it)';
+        alt.addEventListener('input', function () { b.alt = alt.value; scheduleDraft(); });
+        var place = el('select'); place.id = 'block-placement-' + i;
+        Object.keys(PLACEMENTS).forEach(function (k) {
+          var o = el('option', PLACEMENTS[k]); o.value = k;
+          if (b.placement === k) o.selected = true;
+          place.append(o);
+        });
+        place.addEventListener('change', function () { b.placement = place.value; streamDraft(); });
+
+        var row = el('div'); row.className = 'e-img-row';
+        row.append(thumb, file);
+        wrap.append(row);
+        wrap.append(caption, alt, place);
+      } else {
+        var input = b.kind === 'paragraph' || b.kind === 'footnote' ? el('textarea') : el('input');
+        input.id = 'block-text-' + i;
+        input.value = b.text;
+        input.placeholder = KINDS[b.kind] + '…';
+        input.addEventListener('input', function () { b.text = input.value; scheduleDraft(); });
+        wrap.append(input);
+      }
+      return wrap;
+    }
+
+    var blocksHost = null;
+
+    function render() {
+      blocksHost.replaceChildren();
+      for (var i = 0; i < state.blocks.length; i++) blocksHost.append(blockEditor(state.blocks[i], i));
+    }
+
+    function editMode() {
+      app.replaceChildren();
+
+      var tField = el('div'); tField.className = 'e-field';
+      tField.append(el('label', 'Headline'));
+      var title = el('input'); title.id = 'edit-title'; title.value = state.title;
+      title.addEventListener('input', function () { state.title = title.value; scheduleDraft(); });
+      tField.append(title);
+
+      var bField = el('div'); bField.className = 'e-field';
+      bField.append(el('label', 'Byline'));
+      var byline = el('input'); byline.id = 'edit-byline'; byline.value = state.byline;
+      byline.placeholder = 'Who wrote it';
+      byline.addEventListener('input', function () { state.byline = byline.value; scheduleDraft(); });
+      bField.append(byline);
+      app.append(tField, bField);
+
+      var bar = el('div'); bar.className = 'e-bar';
+      Object.keys(KINDS).forEach(function (kind) {
+        var btn = el('button', '+ ' + KINDS[kind]);
+        btn.id = 'add-' + kind;
+        btn.addEventListener('click', function () { addBlock(kind); });
+        bar.append(btn);
+      });
+      app.append(bar);
+
+      blocksHost = el('div'); blocksHost.id = 'blocks';
+      app.append(blocksHost);
+      render();
+
+      var count = el('div', ''); count.className = 'e-note'; count.id = 'block-count';
+      var warn = el('div', ''); warn.className = 'e-warn'; warn.id = 'size-warn';
+      var note = el('div', 'A footnote marks the block above it. Preview in View — publish from the shell header when you’re ready.');
+      note.className = 'e-note';
+      app.append(count, warn, note);
+
+      streamDraft(); // initial state, so the shell's Publish enables immediately
+      title.focus();
+    }
+
+    if (a.mode === 'edit') editMode(); else viewMode();
+  </script>
+</body>
+</html>

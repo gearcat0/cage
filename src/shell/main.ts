@@ -6,7 +6,15 @@ import { AdmissionService } from './admission/index.js'
 import { Keyring, KeyringLoadError } from './keyring/index.js'
 import { ethAddressHex, generateMnemonic12, mnemonicToAccounts, validatePrivkeyHex } from './keyring/hd.js'
 import { z } from 'zod'
-import { Library, isDraftId, type DraftRow, type StoredThing, type ThingRow } from './library/index.js'
+import {
+  Library,
+  isDraftId,
+  refTarget,
+  type DraftBlobInput,
+  type DraftRow,
+  type StoredThing,
+  type ThingRow
+} from './library/index.js'
 import { STARTERS, starterByKey, starterBytes } from './starters/index.js'
 import { mountThing, type MountedThing } from './mount/index.js'
 import { TransportService, FileTransport, SeedTransport, WebtorrentTransport } from './transport/index.js'
@@ -20,6 +28,7 @@ import type { Draft } from '../main/draft.js'
 import {
   admitBundle,
   buildBundle,
+  fromHex,
   encodeEnvelope,
   encodeManifest,
   hash,
@@ -268,7 +277,13 @@ interface ShellSurface {
   knownTypes?: () => { key: string; testKey: string; source: string; type: string; progHash: string }[]
   /** Local unsigned drafts, newest edit first. */
   drafts?: () => DraftRow[]
-  newDraft?: (key: string) => Record<string, unknown>
+  newDraft?: (key: string, args?: unknown) => Record<string, unknown>
+  /** Start a comment draft seeded with the target's hash. */
+  newComment?: (targetHash: string) => Record<string, unknown>
+  /** TEST: the attachment set a draft is holding. */
+  draftBlobs?: (draftId: string) => { name: string; hash: string; mime: string; size: number }[]
+  /** Things claiming to reply to a hash. */
+  replies?: (targetHash: string) => { count: number; rows: ThingRow[] }
   deleteDraft?: (id: string) => Record<string, unknown>
   /** Copy a thing (new instance, same program/type/args/attachments, your key). */
   copyThing?: (envelopeHash: string) => Promise<Record<string, unknown>>
@@ -682,6 +697,16 @@ app.whenReady().then(async () => {
         library.markRead(envelopeHash)
         notifyFeedChanged()
       }
+      // Reply facts are library state, not properties of this mount: the
+      // target may have been deleted and comments may have arrived since the
+      // header was built. Recompute them rather than serve a stale claim.
+      const claimedNow = refTarget(current.stored.manifest.args)
+      current.header = {
+        ...current.header,
+        replyTo: claimedNow,
+        replyToKnown: claimedNow ? library.get(claimedNow) !== null : false,
+        replyCount: draft ? 0 : library.countRefsTo(envelopeHash)
+      }
       return { ...current.header, mode: current.activeMode }
     }
     const stored = draft ? draftStoredFrom(draft) : library.load(envelopeHash)
@@ -746,11 +771,18 @@ app.whenReady().then(async () => {
     // A draft is unsigned and authored by nobody yet: no name lookup, and the
     // header must say DRAFT rather than "signed".
     const nv = draft ? null : await naming.primaryName(m.header.authorScheme, m.header.authorKey)
+    // What this thing CLAIMS to reply to, and whether we hold that target.
+    // The claim is unauthenticated (anyone may claim to reply to anything);
+    // the chrome says so and never dresses it as verification.
+    const claimed = refTarget(stored.manifest.args)
     o.header = {
       ...m.header,
       name: nv?.status === 'verified' ? nv.name : null,
       nameStatus: nv?.status ?? null,
-      draft: draft !== null
+      draft: draft !== null,
+      replyTo: claimed,
+      replyToKnown: claimed ? library.get(claimed) !== null : false,
+      replyCount: draft ? 0 : library.countRefsTo(envelopeHash)
     }
     if (draft) await setMode('edit') // unfinished work opens ready to edit
     notifyModeChanged(o.activeMode)
@@ -887,11 +919,19 @@ app.whenReady().then(async () => {
       read: true,
       isFork: false
     }
+    // The draft's attachments, rebuilt from the CAS. A hash the store no longer
+    // holds degrades to "no image" rather than an unmountable draft.
+    const att = new Map<string, Attachment>()
+    for (const b of library.draftBlobs(d.id)) {
+      if (!library.casStore.has(b.hash)) continue
+      att.set(b.name, { h: fromHex(b.hash), m: b.mime, n: b.size })
+    }
     return {
       row,
       program,
-      manifest: { v: 1, prog: hash(program), type: d.type, args: jsToCbor(d.args ?? null), att: new Map() },
-      store: new EphemeralStore()
+      manifest: { v: 1, prog: hash(program), type: d.type, args: jsToCbor(d.args ?? null), att },
+      // The CAS, so getBlob/att-serving and {carry:true} all work on a draft.
+      store: library.casStore
     }
   }
 
@@ -911,7 +951,28 @@ app.whenReady().then(async () => {
     } catch {
       return false
     }
-    return library.updateDraftArgs(o.draftId, d.args, d.type, Date.now())
+    if (!library.updateDraftArgs(o.draftId, d.args, d.type, Date.now())) return false
+    // Persist the attachment SET as well, reusing the hashes validateDraft
+    // already computed — autosave must never re-hash megabytes. Bytes are
+    // lazy: only a hash the CAS lacks is actually read.
+    const entries: DraftBlobInput[] = []
+    for (const [name, a] of Object.entries(d.att)) {
+      entries.push({ name, hash: a.h, mime: a.m, size: a.n, bytes: () => d.blobs[name]! })
+    }
+    for (const name of d.carry) {
+      const a = o.stored.manifest.att.get(name)
+      if (!a) continue // unresolvable carry: keep whatever is already stored
+      const hashHex = toHex(a.h)
+      entries.push({
+        name,
+        hash: hashHex,
+        mime: a.m,
+        size: a.n,
+        bytes: () => o.stored.store.readAll(hashHex)!
+      })
+    }
+    library.setDraftBlobs(o.draftId, entries)
+    return true
   }
 
   function scheduleAutosave(o: OpenThing, draft: Draft): void {
@@ -926,8 +987,21 @@ app.whenReady().then(async () => {
 
   /** Start a new local draft of a known type. Returns its id; the chrome then
    *  opens it (in edit mode). */
-  function newDraft(key: unknown): Record<string, unknown> {
+  function newDraft(key: unknown, argsSeed?: unknown): Record<string, unknown> {
     if (typeof key !== 'string') return { error: 'bad type key' }
+    // A seed must survive the same trip the program's own args do: JSON for
+    // the drafts table, canonical CBOR at signing time, within the args cap.
+    let seed: unknown = undefined
+    if (argsSeed !== undefined && argsSeed !== null) {
+      try {
+        const json = JSON.stringify(argsSeed)
+        if (typeof json !== 'string' || Buffer.byteLength(json) > 256 * 1024) throw new Error('too large')
+        jsToCbor(argsSeed)
+        seed = argsSeed
+      } catch {
+        return { error: 'bad args seed' }
+      }
+    }
     const starter = starterByKey(key)
     let type: string
     let progHash: string
@@ -942,9 +1016,21 @@ app.whenReady().then(async () => {
       type = entry.type
       progHash = entry.progHash
     }
-    const row = library.createDraft({ type, progHash })
+    const row = library.createDraft({ type, progHash, args: seed })
     notifyFeedChanged()
     return { id: row.id, type: row.type }
+  }
+
+  const HEX64 = /^[0-9a-f]{64}$/
+
+  /** Start a comment on an existing thing. The program cannot learn a hash on
+   *  its own (getArgs withholds the envelope, deliberately), so the SHELL puts
+   *  the target in the draft's args — an ordinary arg the human chose, not a
+   *  new bridge capability. */
+  function newComment(targetHash: unknown): Record<string, unknown> {
+    if (typeof targetHash !== 'string' || !HEX64.test(targetHash)) return { error: 'bad hash' }
+    if (!library.get(targetHash)) return { error: 'that thing is not in your library' }
+    return newDraft('starter:comment', { replyTo: targetHash })
   }
 
   function deleteDraft(id: string): Record<string, unknown> {
@@ -1253,13 +1339,17 @@ app.whenReady().then(async () => {
     const id = nextConfirmId++
     // What the human decides on: type + args + attachment table — args is
     // JSON-serializable and ≤256 KB by validateDraft.
+    // blobBytes from the draft counts INLINE bytes only; with carry working on
+    // drafts, a fully-carried article would otherwise report 0.
+    let resolvedBytes = 0
+    for (const { bytes } of attachments.values()) resolvedBytes += bytes.length
     const summary: Record<string, unknown> = {
       type: o.latestDraft.type,
       args: o.latestDraft.args,
       att: o.latestDraft.att,
       carry: o.latestDraft.carry,
       argsBytes: o.latestDraftMeta.argsBytes,
-      blobBytes: o.latestDraftMeta.blobBytes
+      blobBytes: resolvedBytes
     }
     const timer = setTimeout(() => {
       pendingConfirms.delete(id)
@@ -1285,19 +1375,29 @@ app.whenReady().then(async () => {
       return
     }
     clearPreview()
-    void persistApprovedDraft(p).then((outcome) => {
-      // Ingest FIRST, then drop the draft: library.store has already inserted
-      // the row referencing the shared program blob, so the draft's GC scan
-      // cannot collect it.
-      if (p.draftId && outcome.status === 'valid') {
-        if (current?.draftId === p.draftId) destroyCurrent({ flush: false })
-        library.deleteDraft(p.draftId)
-        outcome.draftConsumed = true
-        notifyFeedChanged()
-      }
-      shell.lastPublish = outcome
-      chrome.webContents.send('shell:publish-result', outcome)
-    })
+    void persistApprovedDraft(p)
+      .then((outcome) => {
+        // Ingest FIRST, then drop the draft: library.store has already inserted
+        // the row referencing the shared program blob, so the draft's GC scan
+        // cannot collect it.
+        if (p.draftId && outcome.status === 'valid') {
+          if (current?.draftId === p.draftId) destroyCurrent({ flush: false })
+          library.deleteDraft(p.draftId)
+          outcome.draftConsumed = true
+          notifyFeedChanged()
+        }
+        return outcome
+      })
+      // buildBundle (signing, tar) and ingestBytes both throw. Without this the
+      // rejection is silent: the human approved a publish and would get NO
+      // outcome at all — no error, no result, a Publish button that just stops
+      // responding — and the draft is left intact, which is the right side to
+      // fail on. Report the failure instead.
+      .catch((e: unknown) => ({ status: 'invalid', reason: `publish: ${(e as Error).message}` }))
+      .then((outcome) => {
+        shell.lastPublish = outcome
+        chrome.webContents.send('shell:publish-result', outcome)
+      })
   })
 
   // ── IPC surface for the chrome ─────────────────────────────────────────────
@@ -1375,7 +1475,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('shell:publish', () => publishLatestDraft())
   ipcMain.handle('shell:known-types', () => knownTypes())
   ipcMain.handle('shell:drafts', () => library.listDrafts())
-  ipcMain.handle('shell:new-draft', (_e, key: unknown) => newDraft(key))
+  ipcMain.handle('shell:new-draft', (_e, key: unknown, args: unknown) => newDraft(key, args))
+  ipcMain.handle('shell:new-comment', (_e, h: unknown) => newComment(h))
+  ipcMain.handle('shell:replies', (_e, h: unknown) =>
+    typeof h === 'string' && HEX64.test(h)
+      ? { count: library.countRefsTo(h), rows: library.feed({ replyTo: h, limit: 200 }) }
+      : { count: 0, rows: [] }
+  )
   ipcMain.handle('shell:delete-draft', (_e, id: unknown) =>
     typeof id === 'string' ? deleteDraft(id) : { deleted: false }
   )
@@ -1427,7 +1533,10 @@ app.whenReady().then(async () => {
   shell.publishDraft = () => publishLatestDraft()
   shell.knownTypes = () => knownTypes()
   shell.drafts = () => library.listDrafts()
-  shell.newDraft = (key) => newDraft(key)
+  shell.newDraft = (key, args) => newDraft(key, args)
+  shell.newComment = (h) => newComment(h)
+  shell.draftBlobs = (id) => library.draftBlobs(id)
+  shell.replies = (h) => ({ count: library.countRefsTo(h), rows: library.feed({ replyTo: h, limit: 200 }) })
   shell.deleteDraft = (id) => deleteDraft(id)
   shell.copyThing = (h) => copyThing(h)
   shell.deleteThing = (h) => deleteThing(h)
