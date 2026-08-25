@@ -60,17 +60,39 @@ const attr = (shell: ShellHandle, testid: string, name: string): Promise<string 
 const text = (shell: ShellHandle, testid: string): Promise<string | null> =>
   chromeEval<string | null>(shell, `document.querySelector('[data-testid=${testid}]')?.textContent ?? null`)
 
+/** What the chrome header actually shows — for when the wait below fails and
+ *  "null" alone cannot distinguish "not rendered yet" from "open refused". */
+const headerDump = (shell: ShellHandle): Promise<string> =>
+  chromeEval<string>(
+    shell,
+    `(() => {
+      const h = document.querySelector('.sh-thing-header')
+      const ids = h ? Array.from(h.querySelectorAll('[data-testid]')).map((e) => e.getAttribute('data-testid')) : null
+      const toast = document.querySelector('.sh-toast')
+      return JSON.stringify({ testids: ids, headerText: h ? h.textContent.trim().slice(0, 120) : null,
+                              toast: toast ? toast.textContent : null })
+    })()`
+  ).catch((e: unknown) => `<dump failed: ${(e as Error).message}>`)
+
 const openViaChrome = async (shell: ShellHandle, hash: string): Promise<void> => {
   await chromeEval(shell, `window.__shellChrome.openThing(${JSON.stringify(hash)})`)
   // Wait for the header to actually be rendered for THIS thing. The previous
   // predicate (`t !== null || true`) was a tautology: it waited for nothing,
   // so every assertion after it raced the header rebuild.
-  await poll(
-    () => attr(shell, 'header-replies', 'data-envelope-hash'),
-    (h) => h === hash,
-    20_000,
-    `the header to show ${hash.slice(0, 8)}`
-  )
+  try {
+    await poll(
+      () => attr(shell, 'header-replies', 'data-envelope-hash'),
+      (h) => h === hash,
+      20_000,
+      `the header to show ${hash.slice(0, 8)}`
+    )
+  } catch (e) {
+    // chrome renders NO header-replies when an open is refused (renderHeader
+    // (null) + an "Open failed" toast), which looks identical to "still
+    // loading" from the outside. Say which one it was, and which thing the
+    // header is actually describing.
+    throw new Error(`${(e as Error).message}; header now: ${await headerDump(shell)}`)
+  }
 }
 
 /** Publish whatever the open draft last streamed, approving the confirm.
