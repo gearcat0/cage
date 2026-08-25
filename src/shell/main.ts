@@ -273,6 +273,7 @@ interface ShellSurface {
   } | null
   /** Raise the publish confirm for the open thing's latest draft. */
   publishDraft?: () => Record<string, unknown>
+  exportThing?: (envelopeHash: string) => { tarBase64: string; filename: string } | { error: string }
   /** Types the user can create something of (starters + library programs). */
   knownTypes?: () => { key: string; testKey: string; source: string; type: string; progHash: string }[]
   /** Local unsigned drafts, newest edit first. */
@@ -1241,17 +1242,53 @@ app.whenReady().then(async () => {
   }
 
   /** The seed store is keyed by TAR hash with no envelope index — scan and
-   *  parse to find the bundle(s) whose envelope matches. Seeds are few. */
-  function removeSeedsFor(envelopeHashHex: string): void {
+   *  parse to find the tar hash(es) whose envelope matches. Seeds are few.
+   *  If this ever gets expensive the answer is an envelope->tar index TABLE
+   *  (the library has no schema versioning, so never a new column). */
+  function seedTarHashesFor(envelopeHashHex: string): string[] {
+    const found: string[] = []
     for (const tarHash of seedStore.list()) {
       const bytes = seedStore.readAll(tarHash)
       if (!bytes) continue
       try {
-        if (toHex(hash(parseBundle(bytes).envelope)) === envelopeHashHex) seedStore.delete(tarHash)
+        if (toHex(hash(parseBundle(bytes).envelope)) === envelopeHashHex) found.push(tarHash)
       } catch {
         /* unparseable seed — leave it */
       }
     }
+    return found
+  }
+
+  function removeSeedsFor(envelopeHashHex: string): void {
+    // Every match, not just the first: the same envelope can arrive in more
+    // than one tar, and deleting a thing must stop seeding all of them.
+    for (const tarHash of seedTarHashesFor(envelopeHashHex)) seedStore.delete(tarHash)
+  }
+
+  /** The bytes of a thing, ready to leave this machine as a .thing file.
+   *
+   *  These are the ORIGINAL admitted tar bytes, straight from the seed store —
+   *  never a rebuild. buildBundle signs with the local keyring (that is what
+   *  copyThing wants), so rebuilding here would re-author the thing: a thing
+   *  received from someone else would leave over YOUR signature, and your own
+   *  would arrive elsewhere under a different envelope hash. Copying the bytes
+   *  keeps the signature, the hash, and the author intact, which is the whole
+   *  point of a bundle being a flyer.
+   *
+   *  A sealed thing therefore exports its original ENCRYPTED tar — decrypted
+   *  plaintext never reaches the disk (§7.1). The recipient can open it only if
+   *  it was sealed to them, which is the format working, not a failure. */
+  function exportThing(envelopeHash: string): { tar: Uint8Array; filename: string } | { error: string } {
+    if (isDraftId(envelopeHash)) return { error: 'this is an unpublished draft — publish it first' }
+    const row = library.get(envelopeHash)
+    if (!row) return { error: 'not found' }
+    const tarHash = seedTarHashesFor(envelopeHash)[0]
+    const tar = tarHash ? seedStore.readAll(tarHash) : null
+    // Seeds are retained for every admitted bundle and pruned only on delete,
+    // so this is unreachable in practice — say something true if it happens.
+    if (!tar) return { error: 'the original bundle bytes are no longer held' }
+    const safeType = (row.type.trim() || 'thing').replace(/[^a-z0-9-]/gi, '-')
+    return { tar, filename: `${safeType}-${envelopeHash.slice(0, 8)}.thing` }
   }
 
   /** Delete a thing everywhere the shell holds it: close it if open, drop the
@@ -1508,6 +1545,19 @@ app.whenReady().then(async () => {
       return { outcome, path: res.filePath }
     }
   )
+  ipcMain.handle('shell:export', async (_e, h: unknown) => {
+    if (typeof h !== 'string') return { path: null, error: 'bad hash' }
+    const r = exportThing(h)
+    if ('error' in r) return { path: null, error: r.error }
+    const res = await dialog.showSaveDialog(win, {
+      title: 'Save thing to share',
+      defaultPath: r.filename,
+      filters: [{ name: 'thing bundle', extensions: ['thing'] }]
+    })
+    if (res.canceled || !res.filePath) return { path: null }
+    await writeFile(res.filePath, r.tar)
+    return { path: res.filePath }
+  })
   ipcMain.handle('shell:close', () => {
     destroyCurrent()
   })
@@ -1525,6 +1575,10 @@ app.whenReady().then(async () => {
   shell.compose = async (programBase64, type, attachments) => {
     const { tar, outcome } = await composeAndIngest(programBase64, type, attachments)
     return { outcome, tarBase64: bytesToBase64(tar) }
+  }
+  shell.exportThing = (h) => {
+    const r = exportThing(h)
+    return 'error' in r ? { error: r.error } : { tarBase64: bytesToBase64(r.tar), filename: r.filename }
   }
   shell.seedHas = (hashHex) => seedStore.has(hashHex)
   shell.feed = (query) => getFeed(query)

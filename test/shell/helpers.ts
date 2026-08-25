@@ -196,6 +196,9 @@ export interface ShellHandle {
     type: string,
     attachments?: { name: string; base64: string; mime?: string }[]
   ): Promise<{ outcome: Record<string, unknown>; tarBase64: string }>
+  /** The bytes a thing would be saved as, WITHOUT the native save dialog (a
+   *  real one cannot be driven) — the same split shell.compose uses. */
+  exportThing(envelopeHash: string): Promise<{ tarBase64?: string; filename?: string; error?: string }>
   /** Ingest raw bundle bytes (admit + store in the library). */
   ingest(bytes: Uint8Array): Promise<Record<string, unknown>>
   /** Fetch a locator (file:/bundle:/magnet:) then admit it. */
@@ -352,6 +355,17 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
         },
         { programBase64, type, attachments }
       ),
+    exportThing: (envelopeHash: string) =>
+      app.evaluate(async (electron, h) => {
+        const s = (
+          electron.app as unknown as {
+            __shell: {
+              exportThing: (h: string) => { tarBase64?: string; filename?: string; error?: string }
+            }
+          }
+        ).__shell
+        return s.exportThing(h)
+      }, envelopeHash),
     fetchLocator: (locator: string) =>
       app.evaluate(async (electron, loc) => {
         const s = (electron.app as unknown as { __shell: { fetch: (l: string) => Promise<Record<string, unknown>> } }).__shell
