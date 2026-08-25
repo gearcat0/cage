@@ -81,6 +81,16 @@ the mirror of admission and lives in `format`; the shell only supplies the
 `Signer`. Public things only for now — sealed authoring is deferred with the rest
 of sealing. Sharing this phase is **file handoff**; live P2P is the fast-follow.
 
+**Export** writes the open thing to a `.thing` file you can carry anywhere.
+Deliberately a byte-for-byte copy of the bundle as it was admitted, taken from
+the seed store — never a rebuild, because `buildBundle` signs with the local
+keyring and would therefore re-author the thing (someone else's would leave
+over *your* signature; your own would arrive under a new envelope hash). So an
+exported thing keeps its author, its signature, and its hash wherever it lands,
+and a sealed one exports its original ENCRYPTED bytes — decrypted plaintext
+still never reaches disk. Drafts have nothing signed to hand over: the button
+is hidden, and the operation says to publish it first.
+
 **Drafts hold attachments.** A draft's images live in the CAS like any other
 blob, with `draft_blobs` holding the draft's *reference* to them, so a picked
 image survives both opening something else and quitting the app — and a program

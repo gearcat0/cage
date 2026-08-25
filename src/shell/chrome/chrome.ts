@@ -24,6 +24,7 @@ interface ShellApi {
   onModeChanged(cb: (p: { mode: 'view' | 'edit'; preview: boolean; publishable: boolean }) => void): void
   publishDraft(): Promise<Record<string, unknown>>
   copyThing(envelopeHash: string): Promise<Record<string, unknown>>
+  exportThing(envelopeHash: string): Promise<{ path: string | null; error?: string }>
   deleteThing(envelopeHash: string): Promise<{ deleted: boolean }>
   overlay(delta: 1 | -1): void
   accountAccounts(mnemonic: string, count?: number): Promise<
@@ -1036,6 +1037,18 @@ function renderHeader(h: HeaderFacts | null): void {
     else showText(`Copy failed: ${String(outcome.reason ?? outcome.status)}`, 'danger')
     await refreshFeed()
   })
+  // Export: write this thing out as a .thing file to carry to another machine
+  // (or another account). The ORIGINAL admitted bytes, so it stays signed by
+  // its author and keeps its envelope hash wherever it lands.
+  const exportBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Export\u2026')
+  if (h.draft) exportBtn.style.display = 'none' // nothing signed to hand over yet
+  exportBtn.setAttribute('data-testid', 'header-export')
+  exportBtn.addEventListener('click', async () => {
+    const r = await shell.exportThing(h.envelopeHash)
+    if (r.error) showText(`Export failed: ${r.error}`, 'danger')
+    else if (r.path) showText(`Saved to ${r.path}`, 'success')
+    // Cancelled: the human closed the dialog, which needs no announcement.
+  })
   const delBtn = el('button', 'evm-btn evm-btn--danger evm-btn--sm', h.draft ? 'Discard' : 'Delete')
   delBtn.setAttribute('data-testid', 'header-delete')
   delBtn.addEventListener('click', () => void deleteWithConfirm(h.envelopeHash, h.type, h.draft === true))
@@ -1102,6 +1115,7 @@ function renderHeader(h: HeaderFacts | null): void {
     el('span', 'sh-spacer'),
     ...replyBits,
     copyBtn,
+    exportBtn,
     delBtn
   )
   // A draft has no envelope, so there is no hash to show.
@@ -1115,6 +1129,13 @@ function renderHeader(h: HeaderFacts | null): void {
 async function openThing(envelopeHash: string): Promise<void> {
   selected = envelopeHash
   const header = await shell.open(envelopeHash)
+  // Opens overlap: a feed click, a reply-list jump, and the auto-open after a
+  // publish are all fire-and-forget, so replies can land out of order. Only
+  // the most recently requested thing is the one actually mounted — an older
+  // reply must not paint its header over it. The header names the author, the
+  // signature status and the content hash, so a stale one would describe a
+  // thing that is NOT the one on screen: a trust claim about the wrong object.
+  if (selected !== envelopeHash) return
   // An open can fail (e.g. a stale feed row, or a sealed thing after restart)
   // — surface it instead of rendering an error object as header facts.
   if ((header as unknown as { error?: string }).error) {

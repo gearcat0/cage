@@ -149,6 +149,20 @@ body {
   padding: 0 var(--evm-space-4);
   background: var(--evm-surface-2);
   border-bottom: 1px solid var(--evm-border);
+  /* The row is wider than the pane at the default window size (more so under
+     the 2x Linux scaling), and a clipped control is an UNREACHABLE one --
+     Copy/Export/Delete simply could not be clicked. Scroll instead of clip.
+     Deliberately NOT flex-wrap: wrapping would move View/Edit/Publish, whose
+     fixed position is a property the suite pins. */
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+/* Controls keep their size when the row overflows -- a squashed button is as
+   unusable as a clipped one. Text (hash, names) may still shrink. */
+.sh-thing-header button,
+.sh-thing-header .sh-mode,
+.sh-thing-header .evm-badge {
+  flex-shrink: 0;
 }
 .sh-verified {
   font-weight: var(--evm-weight-semibold);
