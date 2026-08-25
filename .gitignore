@@ -10,3 +10,9 @@ playwright-report/
 .DS_Store
 .claude/settings.local.json
 test/fixtures/
+
+# Editor swap/backup files -- artifacts of whoever is editing, never content.
+*.swp
+*.swo
+*~
+.*.sw?
