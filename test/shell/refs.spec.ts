@@ -75,13 +75,18 @@ const headerDump = (shell: ShellHandle): Promise<string> =>
   ).catch((e: unknown) => `<dump failed: ${(e as Error).message}>`)
 
 const openViaChrome = async (shell: ShellHandle, hash: string): Promise<void> => {
-  await chromeEval(shell, `window.__shellChrome.openThing(${JSON.stringify(hash)})`)
-  // Wait for the header to actually be rendered for THIS thing. The previous
-  // predicate (`t !== null || true`) was a tautology: it waited for nothing,
-  // so every assertion after it raced the header rebuild.
+  // Ask until it sticks. Opens are fire-and-forget from several places, and
+  // publishing auto-opens what it just signed — so a single request can be
+  // overtaken by an auto-open still in flight from earlier work, leaving the
+  // header on a different thing. That is the app being busy, not broken: the
+  // header still matches what is mounted. Re-issue until the header settles on
+  // the thing this test means to look at.
   try {
     await poll(
-      () => attr(shell, 'header-replies', 'data-envelope-hash'),
+      async () => {
+        await chromeEval(shell, `window.__shellChrome.openThing(${JSON.stringify(hash)})`)
+        return await attr(shell, 'header-replies', 'data-envelope-hash')
+      },
       (h) => h === hash,
       20_000,
       `the header to show ${hash.slice(0, 8)}`
