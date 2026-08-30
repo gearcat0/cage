@@ -321,3 +321,65 @@ test('ESC dismisses the account modal and cancels a danger dialog', async () => 
     await shell.close()
   }
 })
+
+// A second valid phrase (BIP-39's all-ones entropy vector), so "the phrase
+// changed" is a real wallet change rather than a typo the validator rejects.
+const ZOO = 'zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong'
+
+test('the derived account list never outlives the phrase it came from', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shell-acct-stale-'))
+  try {
+    const shell = await launchShell({ extraEnv: { SHELL_USER_DATA_DIR: dir } })
+    await openAccount(shell)
+    await setValue(shell, 'account-mnemonic-input', HARDHAT)
+    await click(shell, 'account-derive')
+    await poll(
+      () => chromeEval<boolean>(shell, `!!document.querySelector('[data-testid=account-option-4]')`),
+      (v) => v
+    )
+
+    // Editing the phrase makes those addresses a claim about a different
+    // wallet. They must go, or you could pick an account from one wallet and
+    // import that index from another — an identity you never saw.
+    await setValue(shell, 'account-mnemonic-input', ZOO)
+    expect(
+      await chromeEval<number>(shell, `document.querySelectorAll('[name=hd-account]').length`),
+      'the stale list must be dropped'
+    ).toBe(0)
+    expect(
+      await chromeEval<boolean>(
+        shell,
+        `(() => { const b = document.querySelector('[data-testid=account-use-seed]'); return b.disabled || b.style.display === 'none' })()`
+      ),
+      'and nothing must be importable from it'
+    ).toBe(true)
+
+    // Belt and braces: even if the box changes WITHOUT the edit being noticed
+    // (no input event), the import uses the phrase the shown addresses came
+    // from — you get the address you approved, not the one now in the box.
+    await setValue(shell, 'account-mnemonic-input', HARDHAT)
+    await click(shell, 'account-derive')
+    await poll(
+      () => chromeEval<boolean>(shell, `!!document.querySelector('[data-testid=account-option-1]')`),
+      (v) => v
+    )
+    await click(shell, 'account-option-1')
+    await chromeEval(
+      shell,
+      `document.querySelector('[data-testid=account-mnemonic-input]').value = ${JSON.stringify(ZOO)}`
+    )
+    await click(shell, 'account-use-seed')
+    await poll(
+      () => chromeEval<boolean>(shell, `!!document.querySelector('[data-testid=danger-confirm]')`),
+      (v) => v
+    )
+    await click(shell, 'danger-confirm')
+    await poll(async () => bakFiles(dir).length, (n) => n === 1)
+    await shell.app.close()
+
+    // HARDHAT's account 1 — the row that was on screen and selected.
+    expect(await identityAfterRestart(dir)).toBe(HARDHAT_1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
