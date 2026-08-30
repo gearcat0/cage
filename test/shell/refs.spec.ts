@@ -101,28 +101,28 @@ const openViaChrome = async (shell: ShellHandle, hash: string): Promise<void> =>
 }
 
 /** Publish whatever the open draft last streamed, approving the confirm.
- *  Waits for Publish to become enabled first — that is precisely the shell's
- *  "the program has streamed a draft" signal, and firing before it would ask
- *  to publish nothing. */
+ *
+ *  Readiness is asked of MAIN, not of the chrome Publish button. Some of these
+ *  tests open a draft through the test hook, which bypasses chrome entirely --
+ *  so the chrome header still describes whatever it last rendered, and its
+ *  Publish button is correctly disabled for a thing that is not the draft.
+ *  Watching that button meant watching the wrong object, and it only ever
+ *  passed because a mode-changed push happened to enable the stale one.
+ *
+ *  publishDraft() refusing with 'nothing to publish' IS main's own "no draft
+ *  streamed yet" signal, and the call that finally succeeds raises the confirm
+ *  we want next — so polling it is both the wait and the action. */
 async function publishOpenDraft(shell: ShellHandle): Promise<Record<string, unknown>> {
-  await poll(
+  const raised = await poll(
     () =>
-      chromeEval<boolean>(
-        shell,
-        // `!el?.disabled` is TRUE when the button is absent, which let this
-        // poll pass before the header existed and then publish nothing.
-        `(() => { const b = document.querySelector('[data-testid=header-publish]'); return !!b && !b.disabled })()`
-      ),
-    (ready) => ready === true,
+      shell.app.evaluate(async (electron) => {
+        const s = (electron.app as unknown as { __shell: { publishDraft: () => Record<string, unknown> } }).__shell
+        return s.publishDraft() as never
+      }) as Promise<Record<string, unknown>>,
+    (r) => r?.status === 'pending',
     20_000,
-    'the Publish button to enable (the draft to be streamed)'
+    'main to accept a publish (the program to stream a draft)'
   )
-  // Assert the answer: 'nothing to publish' here would otherwise surface 20s
-  // later as an unexplained timeout waiting for a confirm that never comes.
-  const raised = (await shell.app.evaluate(async (electron) => {
-    const s = (electron.app as unknown as { __shell: { publishDraft: () => Record<string, unknown> } }).__shell
-    return s.publishDraft() as never
-  })) as Record<string, unknown>
   expect(raised.status, `publishDraft refused: ${JSON.stringify(raised.reason ?? '')}`).toBe('pending')
   await poll(
     () => chromeEval<boolean>(shell, `!!document.querySelector('[data-testid=confirm-approve]')`),
@@ -167,15 +167,27 @@ test('Comment seeds the target, and the article then shows its comment', async (
     expect(replies.rows.length).toBe(1)
 
     // Back on the article: the count is visible and the list opens the comment.
-    await openViaChrome(shell, target)
-    await poll(() => text(shell, 'header-replies'), (t) => t === '1 comment')
+    await poll(
+      async () => {
+        await chromeEval(shell, `window.__shellChrome.openThing(${JSON.stringify(target)})`)
+        return await text(shell, 'header-replies')
+      },
+      (t) => t === '1 comment',
+      20_000,
+      'the target to show its one comment'
+    )
     expect(await attr(shell, 'header-replies', 'data-count')).toBe('1')
     await chromeEval(shell, `document.querySelector('[data-testid=header-replies]').click()`)
     await poll(() => chromeEval<boolean>(shell, `!!document.querySelector('[data-testid=replies-modal]')`), (v) => v)
     await chromeEval(shell, `document.querySelector('[data-testid=reply-item]').click()`)
 
     // The comment says what it replies to, and we hold that target.
-    await poll(() => attr(shell, 'header-replyto', 'data-known'), (k) => k === '1')
+    await poll(
+      () => attr(shell, 'header-replyto', 'data-known'),
+      (k) => k === '1',
+      20_000,
+      'the comment to report that its target is held'
+    )
     expect(await text(shell, 'header-replyto')).toContain('in reply to')
     // A claim is never dressed as verification.
     expect(await text(shell, 'header-replyto')).not.toContain('✓')

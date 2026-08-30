@@ -443,18 +443,52 @@ async function openAccountModal(): Promise<void> {
   useSeedBtn.disabled = true
   useSeedBtn.style.display = 'none'
   let shown = 5
+  // The phrase the addresses on screen were derived FROM. The list is a claim
+  // about one specific wallet, so it is only meaningful paired with the words
+  // that produced it -- keep them together rather than trusting the input to
+  // still say the same thing later.
+  let derivedFrom: string | null = null
+  let deriveSeq = 0
+
+  /** Compare by words, so cosmetic whitespace does not count as a change. */
+  const words = (s: string): string => s.trim().replace(/\s+/g, ' ').toLowerCase()
+
+  function forgetDerived(): void {
+    derivedFrom = null
+    seedError.textContent = '' // callers set their own message after this
+    accountList.replaceChildren()
+    moreBtn.style.display = 'none'
+    useSeedBtn.style.display = 'none'
+    useSeedBtn.disabled = true
+    shown = 5
+  }
+
+  // Editing the phrase makes the listed addresses a statement about a
+  // DIFFERENT wallet. Drop them: leaving them up invites picking an account
+  // from one wallet and importing the same index from another -- an identity
+  // whose address was never on screen.
+  mnemonicInput.addEventListener('input', () => {
+    seedError.textContent = '' // a complaint about the old text, now retyped
+    if (derivedFrom !== null && words(mnemonicInput.value) !== words(derivedFrom)) forgetDerived()
+  })
 
   async function derive(): Promise<void> {
+    const seq = ++deriveSeq
+    // Capture the phrase THIS derivation is about; the box may change under us.
+    const phrase = mnemonicInput.value
     seedError.textContent = ''
-    const r = await shell.accountAccounts(mnemonicInput.value, shown)
+    const r = await shell.accountAccounts(phrase, shown)
+    if (seq !== deriveSeq) return // a later derive superseded this one
     if (!r.ok) {
-      accountList.replaceChildren()
-      moreBtn.style.display = 'none'
-      useSeedBtn.style.display = 'none'
+      forgetDerived()
       seedError.textContent = r.error
       return
     }
+    derivedFrom = phrase
     accountList.replaceChildren()
+    // Nothing is selected in a freshly built list, so the button must not look
+    // armed from a selection that no longer exists.
+    useSeedBtn.disabled = true
     for (const acct of r.accounts) {
       const row = el('label', 'sh-account-row')
       const radio = el('input') as HTMLInputElement
@@ -483,7 +517,11 @@ async function openAccountModal(): Promise<void> {
   useSeedBtn.addEventListener('click', () => {
     const picked = accountList.querySelector('input[name=hd-account]:checked') as HTMLInputElement | null
     if (!picked) return
-    void commit({ mnemonic: mnemonicInput.value, index: Number(picked.value) })
+    // Import from the phrase these addresses CAME FROM, never from whatever
+    // the box says now: the human approved the address they were shown, and
+    // that address is only reproducible from the phrase that produced it.
+    if (derivedFrom === null) return
+    void commit({ mnemonic: derivedFrom, index: Number(picked.value) })
   })
   body.append(deriveBtn, seedError, accountList, moreBtn, useSeedBtn)
 
