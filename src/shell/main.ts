@@ -121,11 +121,29 @@ app.on('open-file', (event, path) => {
 
 // SHELL_ALLOW_MULTI lets a developer run two shells side by side (different
 // profiles) without the lock refusing the second.
+// DIAGNOSTIC (SHELL_EXIT_LOG): the shell has several CLEAN exit paths, so an
+// exit code of 0 does not say which one ran -- and "the app went away
+// mid-test" looks identical from outside whichever it was. Record the reason.
+let quitReason = 'unknown'
+const noteQuit = (why: string): void => {
+  quitReason = why
+}
+if (process.env.SHELL_EXIT_LOG) {
+  app.on('quit', () => {
+    try {
+      appendFileSync(process.env.SHELL_EXIT_LOG!, JSON.stringify({ quitReason, pid: process.pid, at: Date.now() }) + '\n')
+    } catch {
+      /* diagnostics must never break a shutdown */
+    }
+  })
+}
+
 const singleInstance = process.env.SHELL_ALLOW_MULTI === '1' || app.requestSingleInstanceLock()
 if (!singleInstance) {
   // Another shell owns this profile: it has been handed our argv via
   // `second-instance` and will open the file. Leave immediately — two
   // processes on one SQLite library is the thing to avoid.
+  noteQuit('single-instance-lock-lost')
   app.exit(0)
 } else {
   app.on('second-instance', (_event, argv) => {
@@ -1461,6 +1479,7 @@ app.whenReady().then(async () => {
     if (willRestart) {
       // Deferred so this invoke's reply reaches the chrome before quit.
       setImmediate(() => {
+        noteQuit('identity-relaunch')
         app.relaunch()
         app.quit()
       })
@@ -1672,7 +1691,10 @@ app.whenReady().then(async () => {
   dbg('ready-done')
 }).catch((e) => dbg(`whenReady FAILED ${String(e)}\n${(e as Error).stack}`))
 
-app.on('window-all-closed', () => app.quit())
+app.on('window-all-closed', () => {
+  noteQuit('window-all-closed')
+  app.quit()
+})
 
 function base64ToBytes(b64: string): Uint8Array {
   const bin = Buffer.from(b64, 'base64')
