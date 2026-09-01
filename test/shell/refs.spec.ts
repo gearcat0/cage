@@ -12,14 +12,19 @@ import { test, expect, launchShell, buildBundle, ethSigner, secp256k1, type Shel
 
 const NAMETAG = readFileSync(join(__dirname, '..', '..', 'samples', 'nametag.html'))
 
-// One shell for the file: each test works against its own target hash, so they
-// cannot interfere — and every extra Electron launch is real pressure on a
-// two-core CI runner (a starved app is where this suite's flakes come from).
+// A shell PER TEST. These tests were briefly consolidated onto one, to cut
+// Electron launches, on the theory that a starved app dying was behind this
+// suite's flakes. Instrumenting the exits disproved that -- every shell exits
+// cleanly (code 0, no signal) -- and the sharing turned out to cost more than
+// it saved: chrome opens a thing fire-and-forget after a publish, and that
+// open MOUNTS in main. One test's trailing auto-open therefore lands inside
+// the next one and steals `current` from the draft it just opened, which
+// surfaces as "nothing to publish". Isolation is worth two extra launches.
 let shell: ShellHandle
-test.beforeAll(async () => {
+test.beforeEach(async () => {
   shell = await launchShell()
 })
-test.afterAll(async () => {
+test.afterEach(async () => {
   await shell?.close()
 })
 

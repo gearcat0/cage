@@ -208,6 +208,13 @@ test('an article renders headings, a wrapped image with caption, and footnotes',
   expect(published!.attachments).toEqual(['img-1'])
   expect(await shell.drafts()).toEqual([])
 
+  // Open the published thing explicitly. Chrome opens it by itself after a
+  // publish, but that is fire-and-forget: waiting on it means waiting on a
+  // race, and under load the poll below can start while NOTHING is mounted
+  // (modeState: null). Ask for what this test wants to look at.
+  await shell.openThing(published!.envelopeHash as string)
+  await poll(modeState, (s) => s?.activeMode === 'view' && s.viewWcId !== null)
+
   const view = await poll(() => shapeOf('view'), (s) => s.imgLoaded === true)
   expect(view.title).toBe('The cage holds')
   expect(view.kids).toEqual(['h2.a-h', 'figure.a-fig.a-fig--left', 'p.a-p'])
