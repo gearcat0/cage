@@ -62,19 +62,25 @@ async function chromeEval<T>(js: string): Promise<T> {
 
 async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs = 10_000): Promise<T> {
   const deadline = Date.now() + timeoutMs
+  let lastError: unknown = null
   for (;;) {
     let value: T | undefined
     try {
       value = await fn()
       if (pred(value)) return value
-    } catch {
-      /* not ready yet — retry */
+    } catch (e) {
+      // Keep it: a swallowed exception here is why a timeout reads as an
+      // unexplained "undefined" when the real answer was in the error.
+      lastError = e
     }
     if (Date.now() > deadline) {
       // The cage state machine, so a CI timeout says WHICH way it was stuck
       // (no open thing / no preview / preview mid-mount / preview crashed).
       const diag = await modeState().catch(() => null)
-      throw new Error(`poll timed out; last value: ${JSON.stringify(value)}; modeState: ${JSON.stringify(diag)}`)
+      throw new Error(
+        `poll timed out; last value: ${JSON.stringify(value)}; modeState: ${JSON.stringify(diag)}` +
+          (lastError ? `; last error: ${(lastError as Error).message}` : '')
+      )
     }
     await new Promise((r) => setTimeout(r, 150))
   }
