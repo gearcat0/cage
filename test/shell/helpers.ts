@@ -1,7 +1,7 @@
 import { test as base, _electron, type ElectronApplication } from '@playwright/test'
 import { join } from 'node:path'
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { freemem, tmpdir } from 'node:os'
 import { secp256k1, schnorr } from '@noble/curves/secp256k1.js'
 import { keccak_256 } from '@noble/hashes/sha3.js'
 import { sha256 } from '@noble/hashes/sha2.js'
@@ -317,6 +317,34 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
   }
   if (!launched) throw lastErr instanceof Error ? lastErr : new Error('shell failed to launch')
   const app = launched
+
+  // DIAGNOSTIC (SHELL_EXIT_LOG): record HOW an app goes away. A shell that
+  // dies mid-test surfaces only as "Target page, context or browser has been
+  // closed", which says nothing about whether it crashed, was signalled, or
+  // exited cleanly. Capture the exit code/signal, a tail of its stderr, and
+  // the machine's free memory at that moment.
+  if (process.env.SHELL_EXIT_LOG) {
+    const proc = app.process()
+    const tail: string[] = []
+    proc.stderr?.on('data', (b: Buffer) => {
+      tail.push(String(b))
+      while (tail.length > 60) tail.shift()
+    })
+    proc.on('exit', (code: number | null, signal: string | null) => {
+      let mem = ''
+      try {
+        const mi = readFileSync('/proc/meminfo', 'utf8')
+        mem = (mi.match(/MemAvailable:\s+(\d+)/)?.[1] ?? '?') + ' kB available'
+      } catch {
+        mem = `${Math.round(freemem() / 1024)} kB free`
+      }
+      appendFileSync(
+        process.env.SHELL_EXIT_LOG!,
+        JSON.stringify({ pid: proc.pid, code, signal, at: new Date().toISOString(), mem, tail: tail.slice(-25) }) + '\n'
+      )
+    })
+  }
+
   await ackSafetyNotice(app)
 
   return {

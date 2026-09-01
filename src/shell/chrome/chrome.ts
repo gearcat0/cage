@@ -1164,16 +1164,23 @@ function renderHeader(h: HeaderFacts | null): void {
   styleModeButtons()
 }
 
+let openSeq = 0
+
 async function openThing(envelopeHash: string): Promise<void> {
+  const seq = ++openSeq
   selected = envelopeHash
   const header = await shell.open(envelopeHash)
   // Opens overlap: a feed click, a reply-list jump, and the auto-open after a
   // publish are all fire-and-forget, so replies can land out of order. Only
-  // the most recently requested thing is the one actually mounted — an older
-  // reply must not paint its header over it. The header names the author, the
-  // signature status and the content hash, so a stale one would describe a
-  // thing that is NOT the one on screen: a trust claim about the wrong object.
-  if (selected !== envelopeHash) return
+  // the newest request's answer may be painted.
+  //
+  // Counted, not compared by hash: two opens of the SAME thing still carry
+  // different facts, because the header reports library state that moves
+  // underneath it. Publish auto-opens the new comment; you then delete the
+  // thing it replies to; the in-flight answer lands last and restores "in
+  // reply to <target>" as HELD -- the header claiming you hold something you
+  // just deleted. Comparing hashes cannot see that; a sequence number can.
+  if (seq !== openSeq) return
   // An open can fail (e.g. a stale feed row, or a sealed thing after restart)
   // — surface it instead of rendering an error object as header facts.
   if ((header as unknown as { error?: string }).error) {
