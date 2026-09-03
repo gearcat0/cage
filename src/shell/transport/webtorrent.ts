@@ -17,14 +17,25 @@ interface WebTorrentInstance {
   length: number
   files: WebTorrentFile[]
 }
-interface WebTorrentClient {
+/** A seeded torrent: what the DHT is announcing, and who is connected. */
+export interface WebTorrentSeed {
+  magnetURI: string
+  numPeers: number
+  length: number
+  destroy(cb?: () => void): void
+}
+export interface WebTorrentClient {
   add(locator: string, cb: (torrent: WebTorrentInstance) => void): void
+  seed(input: Uint8Array | Buffer, opts: { name: string }, cb: (torrent: WebTorrentSeed) => void): void
   on(event: 'error', cb: (err: unknown) => void): void
   destroy(cb?: () => void): void
 }
-type WebTorrentCtor = new () => WebTorrentClient
+export type WebTorrentCtor = new () => WebTorrentClient
 
-async function loadWebTorrent(): Promise<WebTorrentCtor> {
+/** Exported so the seeding service shares ONE dynamic import and one error
+ *  message with the fetch path -- two copies would drift, and this is the
+ *  message that misreported a broken native dependency as a missing package. */
+export async function loadWebTorrent(): Promise<WebTorrentCtor> {
   try {
     // Non-literal specifier: keeps this an opaque runtime dynamic import, so tsc
     // needn't resolve `webtorrent` at build (it is an optional, uninstalled dep)

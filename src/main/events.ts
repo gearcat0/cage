@@ -37,6 +37,10 @@ export type CageEvent =
   // never appears AND is not retried (the pending draft was already consumed),
   // so without this the symptom is a preview that silently never arrives.
   | { type: 'preview-failed'; reason: string }
+  // Resuming a seed at startup failed (webtorrent missing, bytes gone). The
+  // human asked for this to be shared, so the intent is kept and the failure
+  // is recorded rather than silently dropping it.
+  | { type: 'seed-failed'; envelopeHash: string; reason: string }
 
 /** TEST-ONLY payload capture. A separate buffer that DOES retain emit payloads
  *  so the Playwright suite can assert on them. Populated only when

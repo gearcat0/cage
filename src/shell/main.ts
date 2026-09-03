@@ -18,6 +18,7 @@ import {
 import { STARTERS, starterByKey, starterBytes } from './starters/index.js'
 import { mountThing, type MountedThing } from './mount/index.js'
 import { TransportService, FileTransport, SeedTransport, WebtorrentTransport } from './transport/index.js'
+import { SeedService } from './seed/index.js'
 import { NamingService, DirectResolver, EnsResolver, NostrResolver, type EnsClient } from './naming/index.js'
 import { createMockEnsClient } from './naming/mock-ens.js'
 import { createViemEnsClient } from './naming/ens-viem.js'
@@ -293,6 +294,9 @@ interface ShellSurface {
   publishDraft?: () => Record<string, unknown>
   exportThing?: (envelopeHash: string) => { tarBase64: string; filename: string } | { error: string }
   exportBase64?: (envelopeHash: string) => { base64: string; bytes: number } | { error: string }
+  seedStart?: (envelopeHash: string) => Promise<Record<string, unknown>>
+  seedStop?: (envelopeHash: string) => Record<string, unknown>
+  seedStatus?: () => Record<string, unknown>[]
   /** Types the user can create something of (starters + library programs). */
   knownTypes?: () => { key: string; testKey: string; source: string; type: string; progHash: string }[]
   /** Local unsigned drafts, newest edit first. */
@@ -312,6 +316,9 @@ interface ShellSurface {
 }
 
 const shell: ShellSurface = { ready: false, lastConfirm: null, lastPublish: null, lastFileOpen: null }
+/** Set once the seeder exists, so before-quit can shut it down (the service
+ *  lives inside whenReady's closure, this handler does not). */
+let stopAllSeeding: (() => Promise<void>) | null = null
 ;(app as unknown as { __shell: ShellSurface }).__shell = shell
 // The bridge/cage event log, readable from OUTSIDE the renderer via
 // `evaluate(({ app }) => app.__cage)` — same surface the cage harness exposes.
@@ -392,6 +399,9 @@ app.whenReady().then(async () => {
   // Seed store: retains every admitted bundle's raw tar bytes (content-addressed
   // by tar-hash) so the shell can re-serve it. `bundle:<hash>` fetches from here.
   const seedStore = new CasStore(join(userDataDir, 'seeds'))
+  // Serving bundles to peers. Nothing is announced until a human asks for it.
+  const seeder = new SeedService()
+  stopAllSeeding = () => seeder.destroy()
   const fetchLimits = {
     maxBytes: numEnv('SHELL_MAX_FETCH_BYTES', 256 * 1024 * 1024),
     timeoutMs: numEnv('SHELL_FETCH_TIMEOUT_MS', 30_000)
@@ -430,6 +440,7 @@ app.whenReady().then(async () => {
         label: 'File',
         submenu: [
           { label: 'Account & Keys…', click: () => chrome.webContents.send('shell:open-account') },
+          { label: 'Sharing…', click: () => chrome.webContents.send('shell:open-sharing') },
           { type: 'separator' },
           process.platform === 'darwin' ? { role: 'close' as const } : { role: 'quit' as const }
         ]
@@ -1358,6 +1369,36 @@ app.whenReady().then(async () => {
     for (const tarHash of seedTarHashesFor(envelopeHashHex)) seedStore.delete(tarHash)
   }
 
+  /** Start serving a thing to peers, and remember that we are.
+   *
+   *  Seeds the ORIGINAL admitted tar -- the same bytes Share hands out -- so
+   *  the magnet resolves to exactly what was signed. */
+  async function startSeeding(envelopeHash: string): Promise<Record<string, unknown>> {
+    const r = exportThing(envelopeHash)
+    if ('error' in r) return { error: r.error }
+    const started = await seeder.start(envelopeHash, r.tar, r.filename)
+    if ('error' in started) return { error: started.error }
+    library.rememberSeeding(envelopeHash, started.magnet, Date.now())
+    notifyFeedChanged()
+    return { magnet: started.magnet }
+  }
+
+  function stopSeeding(envelopeHash: string): Record<string, unknown> {
+    const was = seeder.stop(envelopeHash)
+    library.forgetSeeding(envelopeHash)
+    notifyFeedChanged()
+    return { stopped: was }
+  }
+
+  /** What is being announced right now. Live peer counts from the torrents,
+   *  joined to the library so the view can name what it is exposing. */
+  function seedingStatus(): Record<string, unknown>[] {
+    return seeder.status().map((s) => {
+      const row = library.get(s.envelopeHash)
+      return { ...s, type: row?.type ?? 'unknown', missing: row === null }
+    })
+  }
+
   /** The bytes of a thing, ready to leave this machine as a .thing file.
    *
    *  These are the ORIGINAL admitted tar bytes, straight from the seed store —
@@ -1391,6 +1432,10 @@ app.whenReady().then(async () => {
   function deleteThing(envelopeHash: string): Record<string, unknown> {
     if (isDraftId(envelopeHash)) return deleteDraft(envelopeHash)
     if (current?.envelopeHash === envelopeHash) destroyCurrent()
+    // Stop announcing BEFORE the row goes: the library's delete drops the
+    // seeding record, and a live torrent left running would keep serving a
+    // thing the human just deleted.
+    seeder.stop(envelopeHash)
     const deleted = library.delete(envelopeHash)
     if (deleted) {
       removeSeedsFor(envelopeHash)
@@ -1662,6 +1707,13 @@ app.whenReady().then(async () => {
     if ('error' in r) return { error: r.error }
     return { base64: bytesToBase64(r.tar), bytes: r.tar.length, filename: r.filename }
   })
+  ipcMain.handle('shell:seed-start', async (_e, h: unknown) =>
+    typeof h === 'string' ? await startSeeding(h) : { error: 'bad hash' }
+  )
+  ipcMain.handle('shell:seed-stop', (_e, h: unknown) =>
+    typeof h === 'string' ? stopSeeding(h) : { stopped: false }
+  )
+  ipcMain.handle('shell:seed-status', () => seedingStatus())
   ipcMain.handle('shell:close', () => {
     destroyCurrent()
   })
@@ -1680,6 +1732,9 @@ app.whenReady().then(async () => {
     const { tar, outcome } = await composeAndIngest(programBase64, type, attachments)
     return { outcome, tarBase64: bytesToBase64(tar) }
   }
+  shell.seedStart = (h) => startSeeding(h)
+  shell.seedStop = (h) => stopSeeding(h)
+  shell.seedStatus = () => seedingStatus()
   shell.exportBase64 = (h) => {
     const r = exportThing(h)
     return 'error' in r ? { error: r.error } : { base64: bytesToBase64(r.tar), bytes: r.tar.length }
@@ -1784,9 +1839,31 @@ app.whenReady().then(async () => {
   drainOpenFiles = () => void openFilesNow()
   drainOpenFiles() // anything the OS handed us before we were ready
 
+  // Resume whatever this shell was serving when it last ran. Deliberately
+  // AFTER ready and not awaited: loading webtorrent takes a moment, a peer
+  // that cannot be reached must not delay startup, and a shell that opens
+  // slowly because of a torrent is a worse shell.
+  void (async () => {
+    for (const row of library.seeding()) {
+      const r = await startSeeding(row.envelopeHash)
+      if (r.error) {
+        // The row stays: the human asked for this to be shared, and a failure
+        // to resume is not a decision to stop. It shows in the sharing view.
+        record({ type: 'seed-failed', envelopeHash: row.envelopeHash, reason: String(r.error) })
+      }
+    }
+  })()
+
   shell.ready = true
   dbg('ready-done')
 }).catch((e) => dbg(`whenReady FAILED ${String(e)}\n${(e as Error).stack}`))
+
+// Stop announcing before the process goes. Not strictly required -- the OS
+// closes the sockets -- but leaving the DHT with stale peer records for a shell
+// that is gone is rude to the swarm.
+app.on('before-quit', () => {
+  void stopAllSeeding?.()
+})
 
 app.on('window-all-closed', () => {
   noteQuit('window-all-closed')

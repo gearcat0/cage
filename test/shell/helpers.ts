@@ -201,6 +201,10 @@ export interface ShellHandle {
   exportThing(envelopeHash: string): Promise<{ tarBase64?: string; filename?: string; error?: string }>
   /** The bundle as base64 — what Share's "Copy bundle" puts on the clipboard. */
   exportBase64(envelopeHash: string): Promise<{ base64?: string; bytes?: number; error?: string }>
+  /** Serving a thing to peers: start, stop, and what is being served now. */
+  seedStart(envelopeHash: string): Promise<Record<string, unknown>>
+  seedStop(envelopeHash: string): Promise<Record<string, unknown>>
+  seedStatus(): Promise<Record<string, unknown>[]>
   /** Ingest raw bundle bytes (admit + store in the library). */
   ingest(bytes: Uint8Array): Promise<Record<string, unknown>>
   /** Fetch a locator (file:/bundle:/magnet:) then admit it. */
@@ -385,6 +389,22 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
         },
         { programBase64, type, attachments }
       ),
+    seedStart: (envelopeHash: string) =>
+      app.evaluate(async (electron, h) => {
+        const s = (electron.app as unknown as { __shell: { seedStart: (h: string) => Promise<Record<string, unknown>> } })
+          .__shell
+        return s.seedStart(h)
+      }, envelopeHash),
+    seedStop: (envelopeHash: string) =>
+      app.evaluate(async (electron, h) => {
+        const s = (electron.app as unknown as { __shell: { seedStop: (h: string) => Record<string, unknown> } }).__shell
+        return s.seedStop(h)
+      }, envelopeHash),
+    seedStatus: () =>
+      app.evaluate(async (electron) => {
+        const s = (electron.app as unknown as { __shell: { seedStatus: () => Record<string, unknown>[] } }).__shell
+        return s.seedStatus() as never
+      }),
     exportBase64: (envelopeHash: string) =>
       app.evaluate(async (electron, h) => {
         const s = (
