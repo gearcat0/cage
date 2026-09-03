@@ -113,7 +113,22 @@ async function switchMode(mode: 'view' | 'edit'): Promise<void> {
   await poll(modeState, (s) => s?.activeMode === mode)
 }
 
-const editClick = (id: string): Promise<void> => thingEval(`document.getElementById(${JSON.stringify(id)}).click()`, 'edit')
+const editClick = (id: string): Promise<void> =>
+  thingEval(
+    `
+    if (!window.__errProbe) {
+      window.__errProbe = true;
+      window.addEventListener('error', function (ev) {
+        console.log('[bridge-probe] UNCAUGHT ' + ev.message + ' @' + String(ev.filename || '').slice(-24) + ':' + ev.lineno);
+      });
+    }
+    var beforeCount = document.querySelectorAll('#edit-items li').length;
+    document.getElementById(${JSON.stringify(id)}).click();
+    console.log('[bridge-probe] clicked=' + ${JSON.stringify(id)} + ' vis=' + document.visibilityState +
+      ' items=' + beforeCount + '->' + document.querySelectorAll('#edit-items li').length);
+  `,
+    'edit'
+  )
 
 const editType = (id: string, value: string): Promise<void> =>
   thingEval(
@@ -121,6 +136,7 @@ const editType = (id: string, value: string): Promise<void> =>
     var i = document.getElementById(${JSON.stringify(id)});
     i.value = ${JSON.stringify(value)};
     i.dispatchEvent(new Event('input'));
+    console.log('[bridge-probe] typed=' + ${JSON.stringify(id)} + ' vis=' + document.visibilityState);
   `,
     'edit'
   )

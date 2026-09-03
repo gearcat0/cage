@@ -729,9 +729,14 @@ app.whenReady().then(async () => {
     if (!process.env.SHELL_EXIT_LOG) return
     const wc = webContents.fromId(wcId)
     if (!wc) return
-    wc.on('console-message', (_e, _level, message) => {
-      if (typeof message === 'string' && message.startsWith('[bridge-probe]')) {
-        openLog('cage:probe', { role, wcId, msg: message.slice(0, 60) })
+    wc.on('console-message', (_e, level, message, line, sourceId) => {
+      if (typeof message !== 'string') return
+      if (message.startsWith('[bridge-probe]')) {
+        openLog('cage:probe', { role, wcId, msg: message.slice(0, 220) })
+      } else if (level === 3) {
+        // Errors too: a program whose handler THROWS before reaching emit
+        // looks exactly like a program that chose not to emit.
+        openLog('cage:error', { role, wcId, msg: message.slice(0, 220), line, src: String(sourceId).slice(-40) })
       }
     })
   }

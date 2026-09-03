@@ -96,7 +96,44 @@ async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs 
 }
 
 const clickEdit = (id: string): Promise<void> =>
-  cageEval(`document.getElementById(${JSON.stringify(id)}).click()`, 'edit')
+  cageEval(
+    `(() => {
+      // Uncaught exceptions inside a listener do NOT propagate to .click(), and
+      // Electron's console-message may not deliver them at all -- so catch them
+      // in the page and report through the probe channel, which is proven to
+      // arrive. Installed once per renderer.
+      if (!window.__errProbe) {
+        window.__errProbe = true
+        window.addEventListener('error', function (ev) {
+          console.log('[bridge-probe] UNCAUGHT ' + ev.message + ' @' + String(ev.filename || '').slice(-24) + ':' + ev.lineno)
+        })
+      }
+      const b = document.getElementById(${JSON.stringify(id)})
+      b.click()
+      // Report from inside the cage: that this script ran, on which element,
+      // and the page's visibility. An action with no emit after it is either a
+      // script that never ran, a throttled hidden renderer, or a handler that
+      // did not fire -- and these three lines tell them apart.
+      // Did the program's HANDLER run? The block order it leaves behind says so:
+      // reordered means the handler ran and the missing emit is the program's
+      // own; unchanged means the click never reached a live handler.
+      // Each .e-block wrapper is id="block-<i>"; its first control names the
+      // block's kind well enough to see a reorder (text vs image vs caption).
+      // NOTE: this string is evaluated as plain JS inside the cage -- no TS
+      // casts, they are a syntax error there and the whole script throws.
+      var blocks = Array.prototype.slice.call(document.querySelectorAll('[id^=block-]'))
+        .filter(function (e) { return /^block-\\d+$/.test(e.id) })
+      var order = blocks.length + ':' + blocks.map(function (w) {
+        var t = w.querySelector('[id^=block-text-]')
+        var c = w.querySelector('[id^=block-caption-]')
+        return t ? String(t.value).slice(0, 6) : c ? 'IMG' : '?'
+      }).join('|')
+      console.log(
+        '[bridge-probe] clicked=' + ${JSON.stringify(id)} + ' vis=' + document.visibilityState + ' order=' + order
+      )
+    })()`,
+    'edit'
+  )
 
 const typeEdit = (id: string, value: string): Promise<void> =>
   cageEval(
@@ -104,6 +141,7 @@ const typeEdit = (id: string, value: string): Promise<void> =>
       const i = document.getElementById(${JSON.stringify(id)})
       i.value = ${JSON.stringify(value)}
       i.dispatchEvent(new Event('input'))
+      console.log('[bridge-probe] typed=' + ${JSON.stringify(id)} + ' vis=' + document.visibilityState)
     })()`,
     'edit'
   )
