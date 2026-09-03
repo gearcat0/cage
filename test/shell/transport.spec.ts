@@ -76,11 +76,22 @@ test('verify-at-the-gate: a transport delivering HOSTILE bytes is rejected by ad
   await assertKeyringSurvives()
 })
 
-test('magnet: routes to the webtorrent transport and degrades cleanly when absent', async () => {
-  const r = await shell.fetchLocator('magnet:?xt=urn:btih:0000000000000000000000000000000000000000')
-  expect(r.status).toBe('invalid')
-  // webtorrent is not installed in CI — a clear, actionable error, not a crash.
-  expect(String(r.reason)).toMatch(/webtorrent/i)
+test('magnet: routes to the webtorrent transport and fails cleanly with no peers', async () => {
+  // webtorrent IS installed now, so this no longer asserts the missing-module
+  // message. What is still worth pinning is the same thing it always was: a
+  // magnet dispatches to that transport and a failure is a clean `invalid`,
+  // never a crash or a hung shell. A short cap keeps it quick — nobody is
+  // seeding this hash, and CI has no peers to find.
+  const quick = await launchShell({ extraEnv: { SHELL_FETCH_TIMEOUT_MS: '4000' } })
+  try {
+    const r = await quick.fetchLocator('magnet:?xt=urn:btih:0000000000000000000000000000000000000000')
+    expect(r.status).toBe('invalid')
+    // Either it timed out looking for peers, or the module could not load —
+    // both are the transport reporting for itself, which is the property.
+    expect(String(r.reason)).toMatch(/timed out|webtorrent/i)
+  } finally {
+    await quick.close()
+  }
   await assertKeyringSurvives()
 })
 

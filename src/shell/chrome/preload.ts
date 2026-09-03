@@ -42,6 +42,10 @@ const shell = {
    *  bytes, so it stays signed by its author and keeps its envelope hash. */
   exportThing: (envelopeHash: string): Promise<{ path: string | null; error?: string }> =>
     ipcRenderer.invoke('shell:export', envelopeHash),
+  /** The same bytes as exportThing, base64 for the clipboard — what the Ingest
+   *  box's paste path takes, so a thing can move machines with no network. */
+  exportBase64: (envelopeHash: string): Promise<{ base64?: string; bytes?: number; error?: string }> =>
+    ipcRenderer.invoke('shell:export-base64', envelopeHash),
   /** Delete a thing from the library (index row + blob GC + seed removal). */
   deleteThing: (envelopeHash: string): Promise<{ deleted: boolean }> => ipcRenderer.invoke('shell:delete', envelopeHash),
   /** Announce a chrome modal overlay opening (+1) / closing (-1) so main can

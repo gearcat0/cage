@@ -32,9 +32,13 @@ async function loadWebTorrent(): Promise<WebTorrentCtor> {
     const specifier = 'webtorrent'
     const mod = (await import(specifier)) as { default: WebTorrentCtor }
     return mod.default
-  } catch {
+  } catch (e) {
+    // Say WHY. "Not installed" was the only possible answer here, so a module
+    // that IS installed and fails to load (a native dependency that did not
+    // build, an ESM/CJS mismatch) reported the one thing that was not true.
+    const why = (e as Error)?.message ?? String(e)
     throw new TransportError(
-      'webtorrent is not installed — run `pnpm add webtorrent` to enable magnet transport'
+      `webtorrent could not be loaded — ${why}. If it is not installed, run \`pnpm add webtorrent\`.`
     )
   }
 }

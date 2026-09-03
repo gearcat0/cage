@@ -6,6 +6,22 @@ allowBuilds:
   # is not needed; acknowledged as false so `pnpm install` exits cleanly (which
   # electron-builder invokes as its pre-pack deps check).
   electron-winstaller: false
+  # webtorrent's native dependencies.
+  #
+  # node-datachannel is REQUIRED, not optional: webtorrent 3.x imports it at
+  # module load, so with the build declined `import('webtorrent')` throws
+  # "Cannot find module .../node_datachannel.node" and magnet links fail with
+  # what looks like a missing package. Its install fetches an N-API prebuild
+  # (`prebuild-install -r napi`), and N-API is ABI-stable across Node AND
+  # Electron -- so unlike better-sqlite3 it needs no electron-rebuild.
+  node-datachannel: true
+  # The rest are genuinely optional speedups and stay declined: bufferutil and
+  # utf-8-validate are ws micro-optimisations, utp-native is the uTP transport,
+  # ip-set is a lookup helper. webtorrent runs without all four.
+  bufferutil: false
+  ip-set: false
+  utf-8-validate: false
+  utp-native: false
 onlyBuiltDependencies:
   - electron
   - esbuild

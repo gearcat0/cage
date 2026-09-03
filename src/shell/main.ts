@@ -292,6 +292,7 @@ interface ShellSurface {
   /** Raise the publish confirm for the open thing's latest draft. */
   publishDraft?: () => Record<string, unknown>
   exportThing?: (envelopeHash: string) => { tarBase64: string; filename: string } | { error: string }
+  exportBase64?: (envelopeHash: string) => { base64: string; bytes: number } | { error: string }
   /** Types the user can create something of (starters + library programs). */
   knownTypes?: () => { key: string; testKey: string; source: string; type: string; progHash: string }[]
   /** Local unsigned drafts, newest edit first. */
@@ -1651,6 +1652,16 @@ app.whenReady().then(async () => {
     await writeFile(res.filePath, r.tar)
     return { path: res.filePath }
   })
+  /** The same bytes Export writes to a file, as base64 for the clipboard --
+   *  which is exactly what the Ingest box's paste path takes. Sized in the tens
+   *  of KB for a thing with a picture: fine to paste, and it needs no network,
+   *  which makes it the way to test a transfer before torrents work. */
+  ipcMain.handle('shell:export-base64', (_e, h: unknown) => {
+    if (typeof h !== 'string') return { error: 'bad hash' }
+    const r = exportThing(h)
+    if ('error' in r) return { error: r.error }
+    return { base64: bytesToBase64(r.tar), bytes: r.tar.length, filename: r.filename }
+  })
   ipcMain.handle('shell:close', () => {
     destroyCurrent()
   })
@@ -1668,6 +1679,10 @@ app.whenReady().then(async () => {
   shell.compose = async (programBase64, type, attachments) => {
     const { tar, outcome } = await composeAndIngest(programBase64, type, attachments)
     return { outcome, tarBase64: bytesToBase64(tar) }
+  }
+  shell.exportBase64 = (h) => {
+    const r = exportThing(h)
+    return 'error' in r ? { error: r.error } : { base64: bytesToBase64(r.tar), bytes: r.tar.length }
   }
   shell.exportThing = (h) => {
     const r = exportThing(h)

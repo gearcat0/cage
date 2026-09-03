@@ -25,6 +25,7 @@ interface ShellApi {
   publishDraft(): Promise<Record<string, unknown>>
   copyThing(envelopeHash: string): Promise<Record<string, unknown>>
   exportThing(envelopeHash: string): Promise<{ path: string | null; error?: string }>
+  exportBase64(envelopeHash: string): Promise<{ base64?: string; bytes?: number; error?: string }>
   deleteThing(envelopeHash: string): Promise<{ deleted: boolean }>
   overlay(delta: 1 | -1): void
   accountAccounts(mnemonic: string, count?: number): Promise<
@@ -958,6 +959,73 @@ function renderModeToggle(): HTMLElement {
   return wrap
 }
 
+/** Every way a thing can leave this machine, in one place.
+ *
+ *  Copy carries the whole bundle as text, which is what the Ingest box's paste
+ *  path takes — no network, so it is the way to move something between two
+ *  machines today. Save writes the same bytes to a .thing file. Both hand over
+ *  the ORIGINAL admitted bundle, so the thing keeps its author, its signature
+ *  and its hash wherever it lands. */
+async function openShareModal(envelopeHash: string, type: string): Promise<void> {
+  const overlay = el('div', 'evm-modal-overlay')
+  const modal = el('div', 'evm-modal sh-share')
+  modal.setAttribute('data-testid', 'share-modal')
+  const header = el('div', 'evm-modal-header')
+  header.append(el('span', 'evm-modal-title', `Share this ${type}`))
+  const body = el('div', 'evm-modal-body')
+  body.append(
+    el('p', 'sh-hint', 'Whatever leaves here is the bundle exactly as it was signed — same author, same content hash. Nothing is re-signed on the way out.')
+  )
+
+  const copyRow = el('div', 'sh-share-row')
+  const copyBtn = el('button', 'evm-btn evm-btn--primary evm-btn--sm', 'Copy bundle')
+  copyBtn.setAttribute('data-testid', 'share-copy')
+  const copyNote = el('div', 'sh-hint sh-share-note')
+  copyNote.setAttribute('data-testid', 'share-copy-note')
+  copyNote.textContent = 'As text, for pasting into another shell’s Ingest box.'
+  copyBtn.addEventListener('click', async () => {
+    const r = await shell.exportBase64(envelopeHash)
+    if (r.error || !r.base64) {
+      copyNote.textContent = `Could not copy: ${String(r.error ?? 'unknown')}`
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(r.base64)
+      copyNote.textContent = `Copied ${Math.max(1, Math.round((r.bytes ?? 0) / 1024))} KB — paste it into Ingest on the other machine.`
+    } catch {
+      // Clipboard can be refused. Say so rather than claiming success.
+      copyNote.textContent = 'The clipboard refused it — use Save as a file instead.'
+    }
+  })
+  copyRow.append(copyBtn, copyNote)
+
+  const saveRow = el('div', 'sh-share-row')
+  const saveBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Save as file…')
+  saveBtn.setAttribute('data-testid', 'share-save')
+  const saveNote = el('div', 'sh-hint sh-share-note')
+  saveNote.setAttribute('data-testid', 'share-save-note')
+  saveNote.textContent = 'A .thing file to copy across however you like.'
+  saveBtn.addEventListener('click', async () => {
+    const r = await shell.exportThing(envelopeHash)
+    if (r.error) saveNote.textContent = `Save failed: ${r.error}`
+    else if (r.path) saveNote.textContent = `Saved to ${r.path}`
+    // Cancelled: the human closed the dialog, which needs no announcement.
+  })
+  saveRow.append(saveBtn, saveNote)
+
+  body.append(copyRow, saveRow)
+
+  const footer = el('div', 'evm-modal-footer')
+  const close = el('button', 'evm-btn evm-btn--ghost', 'Close')
+  close.setAttribute('data-testid', 'share-close')
+  close.addEventListener('click', () => overlay.remove())
+  footer.append(close)
+
+  modal.append(header, body, footer)
+  overlay.append(modal)
+  document.body.append(trackOverlay(overlay))
+}
+
 let repliesBadge: HTMLElement | null = null
 
 const replyLabel = (n: number): string => (n === 0 ? 'no comments' : n === 1 ? '1 comment' : `${n} comments`)
@@ -1075,18 +1143,13 @@ function renderHeader(h: HeaderFacts | null): void {
     else showText(`Copy failed: ${String(outcome.reason ?? outcome.status)}`, 'danger')
     await refreshFeed()
   })
-  // Export: write this thing out as a .thing file to carry to another machine
-  // (or another account). The ORIGINAL admitted bytes, so it stays signed by
-  // its author and keeps its envelope hash wherever it lands.
-  const exportBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Export\u2026')
+  // Share: every way this thing can leave the machine, behind one control.
+  // Deliberately ONE button rather than three -- this row already carries nine
+  // and overflows its pane at the default window size.
+  const exportBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Share\u2026')
   if (h.draft) exportBtn.style.display = 'none' // nothing signed to hand over yet
   exportBtn.setAttribute('data-testid', 'header-export')
-  exportBtn.addEventListener('click', async () => {
-    const r = await shell.exportThing(h.envelopeHash)
-    if (r.error) showText(`Export failed: ${r.error}`, 'danger')
-    else if (r.path) showText(`Saved to ${r.path}`, 'success')
-    // Cancelled: the human closed the dialog, which needs no announcement.
-  })
+  exportBtn.addEventListener('click', () => openShareModal(h.envelopeHash, h.type))
   const delBtn = el('button', 'evm-btn evm-btn--danger evm-btn--sm', h.draft ? 'Discard' : 'Delete')
   delBtn.setAttribute('data-testid', 'header-delete')
   delBtn.addEventListener('click', () => void deleteWithConfirm(h.envelopeHash, h.type, h.draft === true))

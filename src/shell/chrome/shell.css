@@ -43,7 +43,11 @@ body {
   font-size: var(--evm-text-sm);
 }
 .sh-topbar .evm-input {
-  max-width: 320px;
+  /* Flexes rather than capping at 320px, where it clipped its own hint text.
+     min-width keeps it usable when the topbar is crowded. */
+  flex: 1;
+  min-width: 22em;
+  max-width: 46em;
 }
 .sh-toast {
   max-width: 40ch;
@@ -258,6 +262,13 @@ body {
   justify-self: start;
   white-space: nowrap;
 }
+
+/* Share modal: one row per way out, each with its own status line so a
+   refused clipboard or a cancelled save says so where it happened. */
+.sh-share { max-width: 34em; }
+.sh-share-row { display: flex; align-items: baseline; gap: var(--evm-space-3); margin: var(--evm-space-3) 0; }
+.sh-share-row > button { flex: 0 0 auto; }
+.sh-share-note { margin: 0; }
 
 /* Account & Keys modal. */
 .sh-account {

@@ -103,3 +103,53 @@ test('a thing exported by one account is admitted, intact, by another', async ()
     rmSync(dirB, { recursive: true, force: true })
   }
 })
+
+test('the clipboard bundle is the same bytes, and Ingest takes it back', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shell-clip-'))
+  try {
+    const shell = await launchShell({ extraEnv: { SHELL_USER_DATA_DIR: dir } })
+    try {
+      const composed = await shell.compose(NAMETAG.toString('base64'), 'nametag')
+      const hash = composed.outcome.envelopeHash as string
+
+      // What "Copy bundle" puts on the clipboard is the export, byte for byte.
+      const clip = await shell.exportBase64(hash)
+      expect(clip.error ?? null).toBeNull()
+      expect(clip.base64).toBe(composed.tarBase64)
+      expect(clip.bytes).toBeGreaterThan(0)
+
+      // And the paste path takes it: ingesting the same text is a no-op that
+      // still admits, which is what a second machine would see.
+      const back = await shell.ingest(Buffer.from(clip.base64!, 'base64'))
+      expect(back.status).toBe('valid')
+      expect(back.envelopeHash).toBe(hash)
+
+      // The Share control is present on a signed thing, and opens the modal.
+      await shell.app.evaluate(async (electron, h) => {
+        const wc = electron.webContents
+          .getAllWebContents()
+          .find((w) => !w.isDestroyed() && w.getURL().includes('shell/chrome'))
+        await wc!.executeJavaScript(`window.__shellChrome.openThing(${JSON.stringify(h)})`)
+      }, hash)
+      const opened = (await shell.app.evaluate(async (electron) => {
+        const wc = electron.webContents
+          .getAllWebContents()
+          .find((w) => !w.isDestroyed() && w.getURL().includes('shell/chrome'))
+        return (await wc!.executeJavaScript(`
+          (() => {
+            const b = document.querySelector('[data-testid=header-export]')
+            if (!b) return 'no share button'
+            b.click()
+            const m = document.querySelector('[data-testid=share-modal]')
+            return m ? m.textContent.slice(0, 40) : 'modal did not open'
+          })()
+        `)) as never
+      })) as string
+      expect(opened).toContain('Share this')
+    } finally {
+      await shell.close()
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
