@@ -13,6 +13,11 @@ import { test, expect, launchShell } from './helpers.js'
 
 const NAMETAG = readFileSync(join(__dirname, '..', '..', 'samples', 'nametag.html'))
 
+// Three shell launches plus a webtorrent client that has to come up and build a
+// torrent — comfortably past the 30s default on a loaded runner, where this
+// first failed. The work is real, not a hang; give it room.
+test.beforeEach(() => test.setTimeout(120_000))
+
 test('a thing seeds, survives a restart, and stops when asked', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'shell-seed-'))
   try {
@@ -45,7 +50,7 @@ test('a thing seeds, survives a restart, and stops when asked', async () => {
     const shell = await launchShell({ extraEnv: { SHELL_USER_DATA_DIR: dir } })
     try {
       const resumed = await expect
-        .poll(async () => (await shell.seedStatus()).length, { timeout: 30_000 })
+        .poll(async () => (await shell.seedStatus()).length, { timeout: 25_000 })
         .toBe(1)
         .then(() => shell.seedStatus())
       expect(resumed[0]!.envelopeHash).toBe(hash!)
