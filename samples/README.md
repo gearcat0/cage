@@ -38,12 +38,25 @@ retired): rendering and state are the program's; every control is the shell's.
 
 ## poster.html
 
-The contract with an **attachment**: `args {title, caption}` plus an `image`
-attachment. A program can display its image (`getBlob('image')`) but cannot
-read the bytes back, so its drafts either include freshly picked bytes
-(`blobs: {image: {bytes, mime}}`) or declare `{carry: true}` — "keep my
-current image" — which the shell resolves from the instance's own store.
-Make one with **New → Poster**; pick the image in Edit mode.
+The contract with **attachments**: `args {title, caption, layout, photos}`
+where each photo is `{name, alt, caption}`. A program can display its pictures
+(`getBlob(name)`) but cannot read the bytes back, so its drafts either include
+freshly picked bytes (`blobs: {name: {bytes, mime}}`) or declare
+`{carry: true}` — "keep what you already hold" — which the shell resolves from
+the instance's own store. Make one with **New → Poster**; add photos in Edit
+mode.
+
+**Arrangements** work the way a social photo post does. `auto` follows the
+count: one full-width, two side by side, three as one tall picture beside two
+stacked, four as a 2×2 — and past four it shows four with a `+N` marker rather
+than shrinking them all. `grid`, `row` and `carousel` crop tiles to a shared
+shape so the mosaic reads as one composition; `stack` is the exception and
+shows each picture whole, for photographs whose edges matter.
+
+Posters published before this program held more than one photo carry a single
+`image` attachment and no `photos` list. They still render: the list is
+synthesised from the attachment, and the first picture keeps the id
+`poster-image` that the rest of the world already knows it by.
 
 ## todo.html
 
@@ -62,13 +75,28 @@ a draft on input. Make one with **New → Memo**.
 ## article.html
 
 The richest sample: a news article as a **block document**. `args {title,
-byline, blocks}`, where a block is a heading, subheading, paragraph, image, or
-footnote — strings only, never numbers, so the canonical-CBOR float rules can
-never bite. Image blocks carry `{name, caption, alt, placement}`; `left` and
-`right` float so the text wraps around them, `full` spans the column. A
-footnote marks the block above it and collects into a numbered list with
-back-links at the end. Edit mode is a block editor: add, reorder, delete, pick
-images, set placement.
+deck, authors, …, blocks}`, where a block is a heading, subheading, paragraph,
+image, video, or footnote — strings only, never numbers, so the canonical-CBOR
+float rules can never bite. Media blocks carry `{name, caption, alt,
+placement}`; `left` and `right` float so the text wraps around them, `full`
+spans the column. A footnote marks the block above it and collects into a
+numbered list with back-links at the end. Edit mode is a block editor: add,
+reorder, delete, pick media, set placement.
+
+**Video** blocks play from their attachment — `thing://` serves attachments
+with Range support, so the player seeks rather than buffering the whole clip.
+A draft blob is capped at 32 MiB (64 MiB per draft), so this is a short clip,
+not a film; the editor refuses an oversized file at pick time rather than
+letting the shell reject the draft and leave the preview silently frozen.
+
+**Provenance metadata** — publisher, section, dateline, published/updated/
+retrieved dates, original and archive URLs, language, rights, keywords — is
+carried for articles that are copies of something published elsewhere. Every
+field of it is the author's **claim**, exactly like the envelope's `created`
+timestamp or a comment's `replyTo`: nothing is checked by the shell or anyone
+else. The view says so in as many words and renders URLs as text, not links —
+a thing cannot open your browser, and a link that silently does nothing is
+worse than an address you can read.
 
 Two contract rules it demonstrates, both easy to get wrong elsewhere: args and
 blobs are **whole-set replacement**, so every image still in the article is

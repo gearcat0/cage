@@ -11,7 +11,20 @@
 
   /* ── view ── */
   .a-title { margin: 0 0 4px; font-size: 30px; line-height: 1.2; }
-  .a-byline { margin: 0 0 18px; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: #7a7365;
+  .a-deck { margin: 0 0 10px; font-size: 17px; line-height: 1.45; color: #b9b2a2; }
+  .a-dateline { margin: 0 0 18px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase;
+                color: #8a8272; }
+  /* Provenance is deliberately quiet: it is a claim, not a credential, and it
+     must not read as a masthead that vouches for the article. */
+  .a-prov { margin: 28px 0 0; padding-top: 12px; border-top: 1px solid #3a352c; }
+  .a-prov__h { margin: 0 0 2px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: #8a8272; }
+  .a-prov__note { margin: 0 0 10px; font-size: 12px; color: #7a7365; font-style: italic; }
+  .a-prov__list { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0;
+                  font-size: 13px; color: #9a9384; }
+  .a-prov__list dt { color: #7a7365; }
+  .a-prov__list dd { margin: 0; }
+  .a-prov__v { overflow-wrap: anywhere; }
+  .a-byline { margin: 0 0 4px; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: #7a7365;
               font-family: system-ui, sans-serif; border-bottom: 1px solid #ddd6c6; padding-bottom: 14px; }
   .a-article::after { content: ''; display: block; clear: both; } /* floats never escape */
   .a-h { margin: 22px 0 6px; font-size: 21px; clear: both; }
@@ -19,7 +32,7 @@
            color: #6d6558; font-family: system-ui, sans-serif; clear: both; }
   .a-p { margin: 0 0 12px; }
   .a-fig { margin: .3em 0 .9em; }
-  .a-fig img { display: block; width: 100%; height: auto; background: #e8e2d4; }
+  .a-fig img, .a-fig video { display: block; width: 100%; height: auto; background: #1a1f1c; }
   .a-fig figcaption { font-size: 12px; line-height: 1.45; color: #7a7365; padding-top: 5px;
                       font-family: system-ui, sans-serif; }
   .a-fig--left  { float: left;  width: 44%; margin-right: 1.4em; }
@@ -60,6 +73,12 @@
                    background: #f2eee2; color: #3f3a31; border-radius: 3px; cursor: pointer; }
   .e-img-row { display: grid; grid-template-columns: 5.5em 1fr; gap: 6px; align-items: center; margin-top: 6px; }
   .e-thumb { max-width: 5.5em; max-height: 4em; background: #e8e2d4; }
+  video.e-thumb { max-width: 12em; max-height: 8em; background: #1a1f1c; }
+  .e-warn:empty { display: none; }
+  .e-warn { margin: 4px 0 0; font-size: 12px; color: #c8553d; }
+  .e-meta { margin: 0 0 14px; border: 1px solid #3f4a43; border-radius: 4px; padding: 8px 10px; }
+  .e-meta > summary { cursor: pointer; font-size: 13px; color: #8a978d; }
+  .e-meta__note { margin: 8px 0 10px; font-size: 12px; color: #8a978d; }
   .e-note { font: 12px system-ui, sans-serif; color: #7a7365; margin-top: 10px; }
   .e-warn { font: 12px system-ui, sans-serif; color: #a4441c; margin-top: 6px; }
 </style>
@@ -74,9 +93,19 @@
     // footnotes. The richest sample — and the one that shows the contract
     // scales past flat fields.
     //
-    // State: args {title, byline, blocks:[…]} where a block is one of
+    // State: args {title, deck, byline, authors[], publisher, section,
+    //             location, published, updated, retrieved, sourceUrl,
+    //             archiveUrl, language, rights, keywords[], blocks:[…]}
+    // where a block is one of
     //   {kind:'heading'|'subheading'|'paragraph'|'footnote', text}
-    //   {kind:'image', name, caption, alt, placement:'left'|'right'|'full'}
+    //   {kind:'image'|'video', name, caption, alt, placement:'left'|'right'|'full'}
+    //
+    // The metadata is PROVENANCE, and every field of it is the author's CLAIM
+    // -- exactly like the envelope's `created` timestamp or a comment's
+    // replyTo. Nothing here is checked by anyone: an article can say it came
+    // from any publisher, on any date, at any URL. The view says "as recorded
+    // by whoever made this" and never dresses a claim as verification; the ✓
+    // vocabulary belongs to signatures and verified names, not to this.
     // Deliberately STRINGS ONLY — no numbers anywhere — so the canonical-CBOR
     // rules about floats can never bite. Images live in attachments, addressed
     // by name; the block only holds the name.
@@ -88,13 +117,25 @@
     //     already holds instead of moving megabytes per keystroke.
     //   • image names are never reused or renamed. Renaming would orphan the
     //     carried blob and silently drop the picture.
-    var KINDS = { heading: 'Heading', subheading: 'Subheading', paragraph: 'Paragraph', image: 'Image', footnote: 'Footnote' };
+    var KINDS = {
+      heading: 'Heading', subheading: 'Subheading', paragraph: 'Paragraph',
+      image: 'Image', video: 'Video', footnote: 'Footnote'
+    };
+    // Blocks that carry an attachment, and so share name/caption/alt/placement
+    // and the carry-vs-fresh blob rules.
+    var MEDIA = { image: 1, video: 1 };
     var PLACEMENTS = { left: 'Wrap left', right: 'Wrap right', full: 'Full width' };
     // Admission caps a manifest's arrays at 4096 entries and args at 256 KB;
     // past either, a thing signs and then fails its own re-ingest. Warn well
     // before that rather than let a long article vanish at publish time.
     var MAX_BLOCKS = 400;
     var WARN_ARGS_BYTES = 200 * 1024;
+    // A draft blob is capped at 32 MiB and a whole draft at 64 MiB, so video
+    // here means a short clip, not a film. Warn at pick time: past the cap the
+    // shell refuses the draft and the preview silently stops updating, which
+    // is a miserable way to find out.
+    var MAX_BLOB_BYTES = 32 * 1024 * 1024;
+    var WARN_TOTAL_BYTES = 48 * 1024 * 1024;
 
     var a = window.bridge.getArgs() || {};
     var rawArgs = (a && typeof a.args === 'object' && a.args !== null) ? a.args : {};
@@ -123,9 +164,9 @@
       for (var i = 0; i < raw.length && out.length < MAX_BLOCKS; i++) {
         var b = (raw[i] && typeof raw[i] === 'object') ? raw[i] : {};
         var kind = KINDS[b.kind] ? b.kind : 'paragraph';
-        if (kind === 'image') {
+        if (MEDIA[kind]) {
           out.push({
-            kind: 'image',
+            kind: kind,
             name: str(b.name),
             caption: str(b.caption),
             alt: str(b.alt),
@@ -138,11 +179,47 @@
       return out;
     }
 
+    /** A list of plain strings, or [] -- hostile args may hold anything. */
+    function cleanList(raw) {
+      if (!Array.isArray(raw)) return [];
+      var out = [];
+      for (var i = 0; i < raw.length && out.length < 64; i++) {
+        var v = str(raw[i]).trim();
+        if (v) out.push(v);
+      }
+      return out;
+    }
+
+    // Every metadata field is optional and every one is a CLAIM (see the note
+    // at the top). Strings only, dates included -- the canonical-CBOR rules
+    // about numbers can then never bite, and a date nobody parses cannot be
+    // wrong about a timezone.
+    var META = [
+      ['deck', 'Standfirst', 'One-line summary under the headline'],
+      ['publisher', 'Publisher', 'e.g. The Example Times'],
+      ['section', 'Section', 'e.g. World, Business'],
+      ['location', 'Dateline', 'Where it was reported from'],
+      ['published', 'Published', 'YYYY-MM-DD'],
+      ['updated', 'Updated', 'YYYY-MM-DD, if revised since'],
+      ['retrieved', 'Retrieved', 'YYYY-MM-DD, if captured from elsewhere'],
+      ['sourceUrl', 'Original URL', 'Where this came from'],
+      ['archiveUrl', 'Archive URL', 'A preserved copy, if any'],
+      ['language', 'Language', 'e.g. en, sw'],
+      ['rights', 'Rights', 'Copyright or licence line']
+    ];
+
     var state = {
       title: str(rawArgs.title),
+      deck: str(rawArgs.deck),
+      // byline is the ORIGINAL single-string field. Articles published before
+      // authors[] existed still carry it, so it is kept and still rendered
+      // when no author list is present.
       byline: str(rawArgs.byline),
+      authors: cleanList(rawArgs.authors),
+      keywords: cleanList(rawArgs.keywords),
       blocks: cleanBlocks(rawArgs.blocks)
     };
+    for (var mi = 0; mi < META.length; mi++) state[META[mi][0]] = str(rawArgs[META[mi][0]]);
 
     // ── view ────────────────────────────────────────────────────────────────
     function figureFor(b) {
@@ -150,14 +227,29 @@
       fig.className = 'a-fig a-fig--' + b.placement;
       fig.id = 'fig-' + b.name;
       var url = b.name ? window.bridge.getBlob(b.name) : null;
-      if (url) {
+      if (url && b.kind === 'video') {
+        // thing:// serves attachments with Range support, so the player can
+        // seek instead of buffering the whole clip. No autoplay: a page that
+        // starts making noise on open is a bad neighbour, and the cage denies
+        // the media PERMISSION anyway (that is capture, not playback -- these
+        // are unrelated, and playing an attachment needs no permission).
+        var vid = el('video');
+        vid.src = url;
+        vid.controls = true;
+        vid.preload = 'metadata';
+        vid.playsInline = true;
+        vid.id = 'video-' + b.name;
+        if (b.alt || b.caption) vid.setAttribute('aria-label', b.alt || b.caption);
+        fig.append(vid);
+      } else if (url) {
         var img = el('img');
         img.src = url;
         img.alt = b.alt || b.caption || '';
         fig.append(img);
       } else {
         // A published article can legitimately name a blob that is not here.
-        var missing = el('div', b.name ? 'image not attached: ' + b.name : 'no image');
+        var what = b.kind === 'video' ? 'video' : 'image';
+        var missing = el('div', b.name ? what + ' not attached: ' + b.name : 'no ' + what);
         missing.className = 'a-fig__missing';
         fig.append(missing);
       }
@@ -177,10 +269,29 @@
       var title = el('h1', state.title || 'Untitled');
       title.className = 'a-title'; title.id = 'view-title';
       app.append(title);
-      if (state.byline) {
-        var by = el('p', state.byline);
+      if (state.deck) {
+        var deck = el('p', state.deck);
+        deck.className = 'a-deck'; deck.id = 'view-deck';
+        app.append(deck);
+      }
+      // authors[] supersedes the older single byline string; either may be
+      // absent, and an article from before authors[] existed still renders.
+      var who = state.authors.length ? state.authors.join(', ') : state.byline;
+      if (who) {
+        var by = el('p', who);
         by.className = 'a-byline'; by.id = 'view-byline';
         app.append(by);
+      }
+      // Dateline: LOCATION — date, the way a wire story carries it.
+      var lineBits = [];
+      if (state.location) lineBits.push(state.location);
+      if (state.published) lineBits.push(state.published);
+      if (state.publisher) lineBits.push(state.publisher);
+      if (state.section) lineBits.push(state.section);
+      if (lineBits.length) {
+        var dl = el('p', lineBits.join(' · '));
+        dl.className = 'a-dateline'; dl.id = 'view-dateline';
+        app.append(dl);
       }
 
       var article = el('div'); article.className = 'a-article'; article.id = 'view-article';
@@ -199,7 +310,7 @@
           continue;
         }
         var node;
-        if (b.kind === 'image') {
+        if (MEDIA[b.kind]) {
           node = figureFor(b);
         } else if (b.kind === 'heading') {
           node = el('h2', b.text); node.className = 'a-h';
@@ -232,6 +343,39 @@
         app.append(sec);
       }
 
+      // ── Provenance ────────────────────────────────────────────────────────
+      // Where this says it came from. Every line is the author's CLAIM: no
+      // part of it is checked by the shell or by anyone else, and an article
+      // can name any publisher and any URL it likes. So the heading says so
+      // plainly, and URLs are rendered as TEXT, not links -- a thing cannot
+      // open your browser (navigation is blocked in the cage), and a link that
+      // silently does nothing is worse than an address you can read and copy.
+      var prov = [];
+      if (state.sourceUrl) prov.push(['Original', state.sourceUrl]);
+      if (state.archiveUrl) prov.push(['Archived copy', state.archiveUrl]);
+      if (state.retrieved) prov.push(['Retrieved', state.retrieved]);
+      if (state.updated) prov.push(['Updated', state.updated]);
+      if (state.language) prov.push(['Language', state.language]);
+      if (state.rights) prov.push(['Rights', state.rights]);
+      if (state.keywords.length) prov.push(['Keywords', state.keywords.join(', ')]);
+      if (prov.length) {
+        var psec = el('section'); psec.className = 'a-prov'; psec.id = 'view-provenance';
+        var ph = el('h2', 'Where this came from');
+        ph.className = 'a-prov__h';
+        var pnote = el('p', 'As recorded by whoever made this thing. None of it is verified.');
+        pnote.className = 'a-prov__note';
+        psec.append(ph, pnote);
+        var dl2 = el('dl'); dl2.className = 'a-prov__list';
+        for (var q = 0; q < prov.length; q++) {
+          var dt = el('dt', prov[q][0]);
+          var dd = el('dd', prov[q][1]);
+          dd.className = 'a-prov__v';
+          dl2.append(dt, dd);
+        }
+        psec.append(dl2);
+        app.append(psec);
+      }
+
       // Scroll by hand: the cage blocks navigation, including fragment jumps,
       // so a bare href would do nothing.
       app.addEventListener('click', function (e) {
@@ -245,13 +389,18 @@
     }
 
     // ── edit ────────────────────────────────────────────────────────────────
-    function nextImageName() {
+    /** Attachment names are never reused or renamed -- renaming orphans the
+     *  carried blob and silently drops the media. Images and videos number
+     *  independently (img-1, vid-1) so the prefix says what it holds. */
+    function nextMediaName(kind) {
+      var prefix = kind === 'video' ? 'vid-' : 'img-';
+      var re = new RegExp('^' + prefix + '(\\d+)$');
       var max = 0;
       for (var i = 0; i < state.blocks.length; i++) {
-        var m = /^img-(\d+)$/.exec(str(state.blocks[i].name));
+        var m = re.exec(str(state.blocks[i].name));
         if (m) { var n = parseInt(m[1], 10); if (n > max) max = n; }
       }
-      return 'img-' + String(max + 1);
+      return prefix + String(max + 1);
     }
 
     var picked = {};      // name -> {bytes, mime} for images chosen this session
@@ -262,20 +411,31 @@
       var blocks = [];
       for (var i = 0; i < state.blocks.length; i++) {
         var b = state.blocks[i];
-        if (b.kind === 'image') {
-          blocks.push({ kind: 'image', name: b.name, caption: b.caption, alt: b.alt, placement: b.placement });
+        if (MEDIA[b.kind]) {
+          blocks.push({ kind: b.kind, name: b.name, caption: b.caption, alt: b.alt, placement: b.placement });
         } else {
           blocks.push({ kind: b.kind, text: b.text });
         }
       }
-      return { title: state.title, byline: state.byline, blocks: blocks };
+      // Only fields with something in them: jsToCbor skips undefined, and an
+      // article full of empty strings is 15 wasted keys in every signature.
+      var out = { title: state.title, blocks: blocks };
+      if (state.deck) out.deck = state.deck;
+      if (state.authors.length) out.authors = state.authors.slice();
+      else if (state.byline) out.byline = state.byline; // preserved for older articles
+      if (state.keywords.length) out.keywords = state.keywords.slice();
+      for (var m = 0; m < META.length; m++) {
+        var k = META[m][0];
+        if (state[k]) out[k] = state[k];
+      }
+      return out;
     }
 
     function blobsOut() {
       var blobs = {};
       for (var i = 0; i < state.blocks.length; i++) {
         var b = state.blocks[i];
-        if (b.kind !== 'image' || !b.name) continue;
+        if (!MEDIA[b.kind] || !b.name) continue;
         if (picked[b.name]) blobs[b.name] = picked[b.name];        // chosen just now
         else if (hasAttachment(b.name)) blobs[b.name] = { carry: true }; // the shell already holds it
       }
@@ -307,14 +467,14 @@
 
     function addBlock(kind) {
       if (state.blocks.length >= MAX_BLOCKS) return;
-      if (kind === 'image') {
-        state.blocks.push({ kind: 'image', name: nextImageName(), caption: '', alt: '', placement: 'full' });
+      if (MEDIA[kind]) {
+        state.blocks.push({ kind: kind, name: nextMediaName(kind), caption: '', alt: '', placement: 'full' });
       } else {
         state.blocks.push({ kind: kind, text: '' });
       }
       render();
       streamDraft();
-      var focusId = (kind === 'image' ? 'block-caption-' : 'block-text-') + String(state.blocks.length - 1);
+      var focusId = (MEDIA[kind] ? 'block-caption-' : 'block-text-') + String(state.blocks.length - 1);
       var f = document.getElementById(focusId);
       if (f) f.focus();
     }
@@ -331,7 +491,7 @@
 
     function deleteBlock(i) {
       var b = state.blocks[i];
-      if (b.kind === 'image' && b.name) {
+      if (MEDIA[b.kind] && b.name) {
         delete picked[b.name];
         if (thumbUrls[b.name]) { URL.revokeObjectURL(thumbUrls[b.name]); delete thumbUrls[b.name]; }
       }
@@ -356,14 +516,30 @@
       head.append(up, down, del);
       wrap.append(head);
 
-      if (b.kind === 'image') {
-        var file = el('input'); file.type = 'file'; file.accept = 'image/*'; file.id = 'block-file-' + i;
-        var thumb = el('img'); thumb.className = 'e-thumb'; thumb.id = 'block-thumb-' + i;
+      if (MEDIA[b.kind]) {
+        var isVideo = b.kind === 'video';
+        var file = el('input'); file.type = 'file';
+        file.accept = isVideo ? 'video/*' : 'image/*';
+        file.id = 'block-file-' + i;
+        var thumb = isVideo ? el('video') : el('img');
+        thumb.className = 'e-thumb'; thumb.id = 'block-thumb-' + i;
+        if (isVideo) { thumb.controls = true; thumb.preload = 'metadata'; }
         var current = picked[b.name] ? thumbUrls[b.name] : (hasAttachment(b.name) ? window.bridge.getBlob(b.name) : null);
         if (current) thumb.src = current; else thumb.style.display = 'none';
+        var sizeWarn = el('div'); sizeWarn.className = 'e-warn'; sizeWarn.id = 'block-size-' + i;
         file.addEventListener('change', function () {
           var f = file.files && file.files[0];
           if (!f) return;
+          // Refuse here rather than let the shell reject the whole draft: past
+          // the cap the preview simply stops updating with nothing said, which
+          // is a miserable way to discover a 40 MB clip is too big.
+          if (f.size > MAX_BLOB_BYTES) {
+            sizeWarn.textContent = 'That file is ' + Math.round(f.size / (1024 * 1024)) + ' MB. The limit is ' +
+              Math.round(MAX_BLOB_BYTES / (1024 * 1024)) + ' MB per attachment — use a shorter or smaller clip.';
+            file.value = '';
+            return;
+          }
+          sizeWarn.textContent = '';
           f.arrayBuffer().then(function (buf) {
             picked[b.name] = { bytes: new Uint8Array(buf), mime: f.type || 'application/octet-stream' };
             if (thumbUrls[b.name]) URL.revokeObjectURL(thumbUrls[b.name]);
@@ -377,7 +553,9 @@
         caption.placeholder = 'Caption';
         caption.addEventListener('input', function () { b.caption = caption.value; scheduleDraft(); });
         var alt = el('input'); alt.id = 'block-alt-' + i; alt.value = b.alt;
-        alt.placeholder = 'Alt text (for people who cannot see it)';
+        alt.placeholder = isVideo
+          ? 'Describe the video (for people who cannot see it)'
+          : 'Alt text (for people who cannot see it)';
         alt.addEventListener('input', function () { b.alt = alt.value; scheduleDraft(); });
         var place = el('select'); place.id = 'block-placement-' + i;
         Object.keys(PLACEMENTS).forEach(function (k) {
@@ -390,7 +568,7 @@
         var row = el('div'); row.className = 'e-img-row';
         row.append(thumb, file);
         wrap.append(row);
-        wrap.append(caption, alt, place);
+        wrap.append(sizeWarn, caption, alt, place);
       } else {
         var input = b.kind === 'paragraph' || b.kind === 'footnote' ? el('textarea') : el('input');
         input.id = 'block-text-' + i;
@@ -418,13 +596,62 @@
       title.addEventListener('input', function () { state.title = title.value; scheduleDraft(); });
       tField.append(title);
 
+      var dField = el('div'); dField.className = 'e-field';
+      dField.append(el('label', 'Standfirst'));
+      var deck = el('input'); deck.id = 'edit-deck'; deck.value = state.deck;
+      deck.placeholder = 'One line under the headline';
+      deck.addEventListener('input', function () { state.deck = deck.value; scheduleDraft(); });
+      dField.append(deck);
+
+      // Authors and keywords are lists, edited as comma-separated text: a
+      // repeating row editor for a handful of short strings is more UI than it
+      // is worth, and a comma is how people already write a byline.
       var bField = el('div'); bField.className = 'e-field';
-      bField.append(el('label', 'Byline'));
-      var byline = el('input'); byline.id = 'edit-byline'; byline.value = state.byline;
-      byline.placeholder = 'Who wrote it';
-      byline.addEventListener('input', function () { state.byline = byline.value; scheduleDraft(); });
+      bField.append(el('label', 'Authors'));
+      var byline = el('input'); byline.id = 'edit-byline';
+      byline.value = state.authors.length ? state.authors.join(', ') : state.byline;
+      byline.placeholder = 'Who wrote it — separate several with commas';
+      byline.addEventListener('input', function () {
+        state.authors = byline.value.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+        // Keep the legacy single field in step so an article edited here does
+        // not carry a stale byline that disagrees with its author list.
+        state.byline = state.authors.length ? '' : byline.value;
+        scheduleDraft();
+      });
       bField.append(byline);
-      app.append(tField, bField);
+      app.append(tField, dField, bField);
+
+      // ── Provenance ────────────────────────────────────────────────────────
+      // Folded away by default: most articles are written here and need none
+      // of it. It matters when a thing is a COPY of something published
+      // elsewhere, and then all of it is the copier's claim.
+      var meta = el('details'); meta.className = 'e-meta'; meta.id = 'edit-meta';
+      var sum = el('summary', 'Where this came from (optional)');
+      meta.append(sum);
+      var note = el('p', 'All of this is your claim — nothing here is verified by the shell or by anyone else.');
+      note.className = 'e-meta__note';
+      meta.append(note);
+      META.forEach(function (spec) {
+        var key = spec[0];
+        var f = el('div'); f.className = 'e-field';
+        f.append(el('label', spec[1]));
+        var inp = el('input'); inp.id = 'edit-' + key; inp.value = state[key];
+        inp.placeholder = spec[2];
+        inp.addEventListener('input', function () { state[key] = inp.value; scheduleDraft(); });
+        f.append(inp);
+        meta.append(f);
+      });
+      var kField = el('div'); kField.className = 'e-field';
+      kField.append(el('label', 'Keywords'));
+      var kw = el('input'); kw.id = 'edit-keywords'; kw.value = state.keywords.join(', ');
+      kw.placeholder = 'Separate with commas';
+      kw.addEventListener('input', function () {
+        state.keywords = kw.value.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+        scheduleDraft();
+      });
+      kField.append(kw);
+      meta.append(kField);
+      app.append(meta);
 
       var bar = el('div'); bar.className = 'e-bar';
       Object.keys(KINDS).forEach(function (kind) {

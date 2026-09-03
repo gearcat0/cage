@@ -80,8 +80,14 @@ const imageRenders = (shell: ShellHandle, which: 'edit' | 'view'): Promise<boole
       if (id == null) throw new Error('no cage')
       const wc = electron.webContents.fromId(id)
       if (!wc || wc.isDestroyed()) throw new Error('cage gone')
+      // The picture, in whichever mode: view composes tiles (the first keeps
+      // the id `poster-image`), edit shows a per-photo thumbnail. This test is
+      // about the draft's BYTES surviving, not about the poster's markup.
       return (await wc.executeJavaScript(
-        `(() => { const i = document.getElementById('poster-image'); return !!i && i.complete && i.naturalWidth > 0 })()`
+        `(() => {
+          const i = document.querySelector('#poster-image, #photo-thumb-0')
+          return !!i && i.complete && i.naturalWidth > 0
+        })()`
       )) as never
     },
     which
