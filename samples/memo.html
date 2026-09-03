@@ -19,6 +19,32 @@
   .body { margin-top: 14px; }
   .body .value { white-space: pre-wrap; }
   .note { margin-top: 12px; font-size: 12px; color: #8a8677; font-family: system-ui, sans-serif; }
+
+  /* ── Enclosures ───────────────────────────────────────────────────────────
+     What can be SHOWN is shown; what cannot is listed with its real type and
+     size and said so plainly. A row that looks clickable and does nothing is
+     worse than one that admits it. */
+  .encl { margin-top: 18px; border-top: 1px solid #e2ddcd; padding-top: 10px; }
+  .encl__h { font-weight: 700; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: #5c5c54; }
+  .encl__item { margin-top: 10px; }
+  .encl__meta { font-size: 12px; color: #8a8677; font-family: system-ui, sans-serif; }
+  .encl__label { font-weight: 700; }
+  .encl__note { font-size: 13px; color: #5c5c54; }
+  .encl__media { display: block; max-width: 100%; margin-top: 6px; border: 1px solid #e2ddcd; }
+  audio.encl__media { width: 100%; border: 0; }
+  .encl__closed { margin-top: 4px; font-size: 12px; color: #8a8677; font-family: system-ui, sans-serif; font-style: italic; }
+  .encl__missing { font-size: 12px; color: #a4402c; font-family: system-ui, sans-serif; }
+
+  .e-encl { border: 1px solid #cfcaba; border-radius: 3px; padding: 8px; margin-top: 10px; }
+  .e-encl__head { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #8a8677;
+                  font-family: system-ui, sans-serif; }
+  .e-encl__head .grow { flex: 1; }
+  .e-encl__head button { font: inherit; border: 1px solid #cfcaba; background: #fffef9; border-radius: 3px;
+                         cursor: pointer; padding: 0 7px; }
+  .e-add { font: inherit; margin-top: 12px; border: 1px solid #cfcaba; background: #fffef9; border-radius: 3px;
+           cursor: pointer; padding: 4px 10px; font-family: system-ui, sans-serif; }
+  .warn:empty { display: none; }
+  .warn { margin-top: 6px; font-size: 12px; color: #a4402c; font-family: system-ui, sans-serif; }
 </style>
 </head>
 <body>
@@ -33,11 +59,28 @@
     // the "draft" channel — the shell previews it live and its Publish button
     // signs exactly the latest draft. No controls here; all controls are the
     // shell's. State is passed in as an argument, never fetched.
+    // State: args {to, from, subject, message, enclosures:[{name, label, note}]}
+    // where `name` addresses an attachment and `label` is the human filename.
+    // Strings only.
+    //
+    // What a cage can actually DO with an attachment decides this design. The
+    // CSP allows img-src and media-src from thing:, so pictures, audio and
+    // video are shown in place. It sets frame-src 'none' and no object-src, so
+    // a PDF or a spreadsheet CANNOT be rendered here -- and navigation is
+    // blocked, so a download link would be a lie. Those are therefore LISTED,
+    // with the type and size the manifest actually records, and the memo says
+    // outright that it cannot open them. The bytes are not lost: they travel
+    // with the thing, and Export writes the whole bundle back out as a file.
     var FIELDS = [
       { key: 'to', label: 'To' },
       { key: 'from', label: 'From' },
       { key: 'subject', label: 'Subject' }
     ];
+    var MAX_ENCLOSURES = 12;
+    // A draft blob is capped at 32 MiB and a whole draft at 64 MiB. Refuse an
+    // oversized pick here: past the cap the shell rejects the draft and the
+    // preview simply stops updating, with nothing said about why.
+    var MAX_BLOB_BYTES = 32 * 1024 * 1024;
     var a = window.bridge.getArgs() || {};
     var args = (a && typeof a.args === 'object' && a.args !== null) ? a.args : {};
     var app = document.getElementById('app');
@@ -56,6 +99,60 @@
       return row;
     }
 
+    var attachments = a.attachments || [];
+    var picked = {};     // name -> {bytes, mime, size} chosen this session
+    var localUrls = {};  // name -> object URL, for previewing a fresh pick
+
+    /** The manifest's own record of an attachment: type and size as ADMITTED,
+     *  not as the program claims. A fresh pick is not in the manifest yet, so
+     *  its File stands in until it is. */
+    function attMeta(name) {
+      for (var i = 0; i < attachments.length; i++) {
+        if (attachments[i].name === name) {
+          return { mime: str(attachments[i].mime), size: attachments[i].size, held: true };
+        }
+      }
+      if (picked[name]) return { mime: picked[name].mime, size: picked[name].size, held: true };
+      return { mime: '', size: 0, held: false };
+    }
+
+    function blobUrl(name) {
+      if (picked[name]) return localUrls[name] || null;
+      for (var i = 0; i < attachments.length; i++) {
+        if (attachments[i].name === name) return window.bridge.getBlob(name);
+      }
+      return null;
+    }
+
+    function sizeText(bytes) {
+      if (typeof bytes !== 'number' || bytes <= 0) return '';
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    /** Only what the cage can actually render gets shown in place. */
+    function showable(mime) {
+      if (mime.indexOf('image/') === 0) return 'image';
+      if (mime.indexOf('video/') === 0) return 'video';
+      if (mime.indexOf('audio/') === 0) return 'audio';
+      return null;
+    }
+
+    function cleanEnclosures(raw) {
+      if (!Array.isArray(raw)) return [];
+      var out = [];
+      for (var i = 0; i < raw.length && out.length < MAX_ENCLOSURES; i++) {
+        var e = (raw[i] && typeof raw[i] === 'object') ? raw[i] : {};
+        var name = str(e.name);
+        if (!name) continue;
+        out.push({ name: name, label: str(e.label), note: str(e.note) });
+      }
+      return out;
+    }
+
+    var enclosures = cleanEnclosures(args.enclosures);
+
     function viewMode() {
       app.replaceChildren();
       FIELDS.forEach(function (f) {
@@ -68,6 +165,68 @@
       msg.className = 'value'; msg.id = 'view-message';
       body.append(msg);
       app.append(body);
+      if (enclosures.length) app.append(enclosureList());
+    }
+
+    /** One enclosure. Shown in place when the cage can render it; otherwise
+     *  listed with its real type and size and an honest note that it cannot be
+     *  opened from here. */
+    function enclosureItem(e, i) {
+      // `encl-item-N` and not `encl-N`: the BLOB names are encl-1, encl-2 …,
+      // and two different numbering schemes sharing one id prefix is a trap.
+      var item = el('div'); item.className = 'encl__item'; item.id = 'encl-item-' + i;
+      var meta = attMeta(e.name);
+      var kind = showable(meta.mime);
+      item.setAttribute('data-kind', meta.held ? (kind || 'file') : 'missing');
+
+      var head = el('div'); head.className = 'encl__meta';
+      var label = el('span', e.label || e.name); label.className = 'encl__label';
+      head.append(label);
+      var bits = [];
+      if (meta.mime) bits.push(meta.mime);
+      var sz = sizeText(meta.size);
+      if (sz) bits.push(sz);
+      if (bits.length) head.append(document.createTextNode(' · ' + bits.join(' · ')));
+      item.append(head);
+      if (e.note) {
+        var note = el('div', e.note); note.className = 'encl__note';
+        item.append(note);
+      }
+
+      var url = blobUrl(e.name);
+      if (!meta.held || !url) {
+        var missing = el('div', 'not attached to this memo');
+        missing.className = 'encl__missing';
+        item.append(missing);
+        return item;
+      }
+      if (kind === 'image') {
+        var img = el('img'); img.className = 'encl__media'; img.id = 'encl-media-' + i;
+        img.src = url; img.alt = e.note || e.label || e.name;
+        item.append(img);
+      } else if (kind === 'video' || kind === 'audio') {
+        var m = el(kind); m.className = 'encl__media'; m.id = 'encl-media-' + i;
+        m.src = url; m.controls = true; m.preload = 'metadata';
+        item.append(m);
+      } else {
+        // Deliberately not a link or a button: the cage blocks navigation, so
+        // either would do nothing when clicked. Say what is true instead --
+        // the file is here, it travels with the memo, and Export gets it out.
+        var closed = el('div', 'Travels with this memo. It cannot be opened from here — use Export to write the whole thing out as a file.');
+        closed.className = 'encl__closed'; closed.id = 'encl-closed-' + i;
+        item.append(closed);
+      }
+      return item;
+    }
+
+    function enclosureList() {
+      var sec = el('section'); sec.className = 'encl'; sec.id = 'view-enclosures';
+      sec.setAttribute('data-count', String(enclosures.length));
+      var h = el('div', enclosures.length === 1 ? 'Enclosure' : 'Enclosures (' + enclosures.length + ')');
+      h.className = 'encl__h';
+      sec.append(h);
+      for (var i = 0; i < enclosures.length; i++) sec.append(enclosureItem(enclosures[i], i));
+      return sec;
     }
 
     function editMode() {
@@ -83,21 +242,125 @@
       inputs.message = msg;
       body.append(msg);
       app.append(body);
+      var enclHost = el('div'); enclHost.id = 'enclosures';
+      app.append(enclHost);
+      var add = el('button', '+ Attach a file'); add.className = 'e-add'; add.id = 'add-enclosure';
+      app.append(add);
+
       var note = el('div', 'Preview in View — publish from the shell header when you’re ready.');
       note.className = 'note';
       app.append(note);
 
       function streamDraft() {
+        // args AND blobs are whole-set replacement: every enclosure still on
+        // the memo is re-declared on every emit -- fresh bytes when just
+        // picked, {carry: true} otherwise so the shell reuses what it holds
+        // instead of moving megabytes per keystroke. Names are never renamed:
+        // renaming orphans the carried blob and drops the file.
+        var list = [];
+        var blobs = {};
+        for (var i = 0; i < enclosures.length; i++) {
+          var e = enclosures[i];
+          list.push({ name: e.name, label: e.label, note: e.note });
+          if (picked[e.name]) blobs[e.name] = { bytes: picked[e.name].bytes, mime: picked[e.name].mime };
+          else if (attMeta(e.name).held) blobs[e.name] = { carry: true };
+        }
         window.bridge.emit('draft', {
           type: 'memo',
           args: {
             to: inputs.to.value.trim(),
             from: inputs.from.value.trim(),
             subject: inputs.subject.value.trim(),
-            message: inputs.message.value
-          }
+            message: inputs.message.value,
+            enclosures: list
+          },
+          blobs: blobs
         });
       }
+
+      function nextEnclosureName() {
+        var max = 0;
+        for (var i = 0; i < enclosures.length; i++) {
+          var m = /^encl-(\d+)$/.exec(enclosures[i].name);
+          if (m) { var n = parseInt(m[1], 10); if (n > max) max = n; }
+        }
+        return 'encl-' + String(max + 1);
+      }
+
+      function enclosureEditor(e, i) {
+        var wrap = el('div'); wrap.className = 'e-encl'; wrap.id = 'e-encl-' + i;
+
+        var head = el('div'); head.className = 'e-encl__head';
+        var meta = attMeta(e.name);
+        var bits = [e.label || e.name];
+        if (meta.mime) bits.push(meta.mime);
+        var sz = sizeText(meta.size);
+        if (sz) bits.push(sz);
+        head.append(el('span', bits.join(' · ')));
+        var grow = el('span'); grow.className = 'grow';
+        var del = el('button', '×'); del.id = 'encl-del-' + i; del.title = 'Remove';
+        del.addEventListener('click', function () {
+          delete picked[e.name];
+          if (localUrls[e.name]) { URL.revokeObjectURL(localUrls[e.name]); delete localUrls[e.name]; }
+          enclosures.splice(i, 1);
+          renderEnclosures();
+          streamDraft();
+        });
+        head.append(grow, del);
+        wrap.append(head);
+
+        var file = el('input'); file.type = 'file'; file.id = 'encl-file-' + i;
+        var warn = el('div'); warn.className = 'warn'; warn.id = 'encl-warn-' + i;
+        file.addEventListener('change', function () {
+          var f = file.files && file.files[0];
+          if (!f) return;
+          if (f.size > MAX_BLOB_BYTES) {
+            warn.textContent = 'That file is ' + Math.round(f.size / (1024 * 1024)) + ' MB. The limit is ' +
+              Math.round(MAX_BLOB_BYTES / (1024 * 1024)) + ' MB per attachment.';
+            file.value = '';
+            return;
+          }
+          warn.textContent = '';
+          f.arrayBuffer().then(function (buf) {
+            picked[e.name] = {
+              bytes: new Uint8Array(buf),
+              mime: f.type || 'application/octet-stream',
+              size: f.size
+            };
+            if (localUrls[e.name]) URL.revokeObjectURL(localUrls[e.name]);
+            localUrls[e.name] = URL.createObjectURL(f);
+            if (!e.label) e.label = f.name;
+            renderEnclosures();
+            streamDraft();
+          });
+        });
+
+        var label = el('input'); label.id = 'encl-label-' + i; label.value = e.label;
+        label.placeholder = 'File name to show';
+        label.addEventListener('input', function () { e.label = label.value; streamDraft(); });
+        var desc = el('input'); desc.id = 'encl-note-' + i; desc.value = e.note;
+        desc.placeholder = 'What is it? (optional)';
+        desc.addEventListener('input', function () { e.note = desc.value; streamDraft(); });
+
+        wrap.append(file, warn, label, desc);
+        return wrap;
+      }
+
+      function renderEnclosures() {
+        enclHost.replaceChildren();
+        for (var i = 0; i < enclosures.length; i++) enclHost.append(enclosureEditor(enclosures[i], i));
+      }
+
+      add.addEventListener('click', function () {
+        if (enclosures.length >= MAX_ENCLOSURES) return;
+        enclosures.push({ name: nextEnclosureName(), label: '', note: '' });
+        renderEnclosures();
+        streamDraft();
+        var f = document.getElementById('encl-file-' + String(enclosures.length - 1));
+        if (f) f.focus();
+      });
+
+      renderEnclosures();
       Object.keys(inputs).forEach(function (k) {
         inputs[k].addEventListener('input', streamDraft);
       });

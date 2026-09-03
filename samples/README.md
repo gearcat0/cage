@@ -67,10 +67,23 @@ draft) and made real by publishing. Make one with **New → To-do list**.
 
 ## memo.html
 
-The same contract with structured state: `args: {to, from, subject, message}`.
-View mode renders a classic memo sheet (em-dash placeholders for unset fields,
-line breaks preserved in the message); edit mode is four fields, each streaming
-a draft on input. Make one with **New → Memo**.
+The same contract with structured state: `args: {to, from, subject, message,
+enclosures}`. View mode renders a classic memo sheet (em-dash placeholders for
+unset fields, line breaks preserved in the message); edit mode is four fields
+plus an attachment list, each streaming a draft on input. Make one with
+**New → Memo**.
+
+**Enclosures** are where what a cage can actually *do* shapes the design. The
+CSP allows `img-src` and `media-src` from `thing:`, so pictures, audio and
+video are shown in place. It sets `frame-src 'none'` and no `object-src`, so a
+PDF or a spreadsheet cannot be rendered — and navigation is blocked, so a
+download link would be a lie. Those are therefore listed with the type and size
+the **manifest** records (not what the program claims), and the memo says
+outright that it cannot open them. The bytes are not lost: they travel with the
+thing, and **Export** writes the whole bundle back out as a file.
+
+That honesty is the point of the sample. A row that looks clickable and does
+nothing is worse than one that admits what it is.
 
 ## article.html
 
