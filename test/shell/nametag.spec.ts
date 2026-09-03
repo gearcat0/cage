@@ -90,11 +90,16 @@ async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs 
       // The cage state machine, so a CI timeout says WHICH way it was stuck
       // (no open thing / no preview / preview mid-mount / preview crashed)
       // instead of just "undefined".
-      const diag = await modeState().catch(() => null)
+      // NOT `.catch(() => null)`: that reports a FAILED CALL as "nothing is
+      // open", and the two demand opposite investigations. Say which it was.
+      const diag = await modeState().then(
+        (m) => (m === null ? '<main says nothing is open>' : JSON.stringify(m)),
+        (e: unknown) => `<could not ask main: ${(e as Error).message?.slice(0, 80)}>`
+      )
       throw new Error(
         `poll timed out; last value: ${JSON.stringify(value)}` +
           (threw ? ` (last error: ${threw})` : '') +
-          `; modeState: ${JSON.stringify(diag)}`
+          `; modeState: ${diag}`
       )
     }
     await new Promise((r) => setTimeout(r, 150))

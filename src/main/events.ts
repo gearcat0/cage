@@ -33,6 +33,10 @@ export type CageEvent =
   // A cage's renderer died (crash, OOM kill, GPU reset). Recorded so a blank
   // pane or a frozen preview is diagnosable instead of mysterious.
   | { type: 'cage-gone'; role: 'view' | 'edit' | 'preview'; reason: string; exitCode: number }
+  // A preview mount failed. Same motivation as cage-gone: the preview then
+  // never appears AND is not retried (the pending draft was already consumed),
+  // so without this the symptom is a preview that silently never arrives.
+  | { type: 'preview-failed'; reason: string }
 
 /** TEST-ONLY payload capture. A separate buffer that DOES retain emit payloads
  *  so the Playwright suite can assert on them. Populated only when

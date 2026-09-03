@@ -504,6 +504,7 @@ app.whenReady().then(async () => {
   function destroyCurrent(opts: { flush?: boolean } = {}): void {
     if (!current) return
     const o = current
+    openLog('destroyCurrent', { hash: o.envelopeHash.slice(0, 12), from: new Error().stack?.split('\n')[2]?.trim().slice(0, 90) })
     current = null
     // Persist unsaved draft edits before tearing down — unless the caller is
     // deleting the draft (a flush would resurrect the row it just removed).
@@ -704,7 +705,25 @@ app.whenReady().then(async () => {
     })
   }
 
+  /** DIAGNOSTIC (SHELL_EXIT_LOG): what main was ASKED to open and what it
+   *  answered. A test that hangs with modeState:null cannot tell from outside
+   *  whether the open was refused, never arrived, or never finished. */
+  const openLog = (event: string, detail: Record<string, unknown>): void => {
+    if (!process.env.SHELL_EXIT_LOG) return
+    try {
+      // pid: every shell in a run appends to ONE file, so without it the
+      // separate processes read as a single impossible timeline.
+      appendFileSync(
+        process.env.SHELL_EXIT_LOG,
+        JSON.stringify({ open: event, pid: process.pid, at: Date.now(), ...detail }) + '\n'
+      )
+    } catch {
+      /* diagnostics must never break the shell */
+    }
+  }
+
   async function openThing(envelopeHash: string): Promise<Record<string, unknown>> {
+    openLog('request', { hash: envelopeHash.slice(0, 12), hasCurrent: current !== null })
     const draft = isDraftId(envelopeHash) ? library.getDraft(envelopeHash) : null
     if (isDraftId(envelopeHash) && !draft) return { error: 'draft not found' }
     // Same-id reopen is a mode reset, NOT a remount — unsaved edit state
@@ -730,6 +749,7 @@ app.whenReady().then(async () => {
     }
     const stored = draft ? draftStoredFrom(draft) : library.load(envelopeHash)
     if (!stored) {
+      openLog('refused', { hash: envelopeHash.slice(0, 12), why: draft ? 'draft program missing' : 'not loadable' })
       return { error: draft ? 'draft program missing from the store' : 'not found or not mountable (sealed)' }
     }
     destroyCurrent()
@@ -769,10 +789,14 @@ app.whenReady().then(async () => {
       }
     })
     if (current !== o) {
-      // Raced by a newer open — this mount lost.
+      // Raced by a newer open — this mount lost. NOTE: if `current` was nulled
+      // (destroyCurrent) rather than replaced, nothing re-sets it, and the
+      // shell is left with nothing mounted.
+      openLog('superseded', { hash: envelopeHash.slice(0, 12), currentIsNull: current === null })
       m.destroy()
       return { error: 'superseded' }
     }
+    openLog('mounted', { hash: envelopeHash.slice(0, 12) })
     o.view = m
     m.view.webContents.once('render-process-gone', (_e, details) => {
       record({ type: 'cage-gone', role: 'view', reason: details.reason, exitCode: details.exitCode })
@@ -1104,6 +1128,7 @@ app.whenReady().then(async () => {
     if (!draft) return
     o.pendingDraft = null
     o.previewMounting = true
+    openLog('preview:start', { hash: o.envelopeHash.slice(0, 12), key: draftKey(draft).slice(0, 60) })
     try {
       // jsToCbor may throw (e.g. float args) — keep the last good preview.
       const previewStored = previewStoredFrom(o.stored, draft)
@@ -1121,9 +1146,11 @@ app.whenReady().then(async () => {
         }
       })
       if (current !== o) {
+        openLog('preview:superseded', { hash: o.envelopeHash.slice(0, 12) })
         m.destroy()
         return
       }
+      openLog('preview:mounted', { hash: o.envelopeHash.slice(0, 12), wcId: m.view.webContents.id })
       const oldPreviewId = o.preview ? o.preview.view.webContents.id : null
       if (o.preview) {
         o.preview.destroy()
@@ -1159,8 +1186,15 @@ app.whenReady().then(async () => {
       enforceCageFocus()
       const settle = setTimeout(enforceCageFocus, 250)
       settle.unref?.()
-    } catch {
-      /* invalid draft — previous preview (or the signed view) stays */
+    } catch (e) {
+      // Previously swallowed whole. An invalid draft (float args, say) is an
+      // expected miss and the last good preview stays -- but a FAILED MOUNT
+      // lands here too, and then the preview simply never appears, with
+      // nothing said and no retry: pendingDraft was cleared above, so the
+      // finally below has nothing to re-run. Silence made the two
+      // indistinguishable from outside.
+      openLog('preview:failed', { hash: o.envelopeHash.slice(0, 12), why: (e as Error).message?.slice(0, 120) })
+      record({ type: 'preview-failed', reason: (e as Error).message ?? 'unknown' })
     } finally {
       o.previewMounting = false
       if (o.pendingDraft && current === o) void mountPreview(o)
