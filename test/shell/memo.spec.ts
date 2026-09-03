@@ -9,6 +9,7 @@ import { test, expect, launchShell, type ShellHandle } from './helpers.js'
 // message body).
 
 const MEMO_HTML = readFileSync(join(__dirname, '..', '..', 'samples', 'memo.html'))
+const PNG = readFileSync(join(__dirname, '..', 'fixtures', 'poster.png'))
 
 let shell: ShellHandle
 test.beforeAll(async () => {
@@ -144,4 +145,80 @@ test('memo: multi-field args round-trip through draft, preview, and publish', as
   expect(await viewField('to', 'view')).toBe('All staff')
   expect(await viewField('from', 'view')).toBe('The shell')
   expect(await viewField('subject', 'view')).toBe('Composition conventions')
+})
+
+test('enclosures show what the cage can render, and say so when it cannot', async () => {
+  const types = await shell.knownTypes()
+  const memo = types.find((t) => t.testKey === 'starter-memo')!
+  const draftId = (await shell.newDraft(memo.key, {
+    to: 'All staff',
+    from: 'Facilities',
+    subject: 'Roof works',
+    message: 'Scaffolding goes up Monday.',
+    enclosures: [
+      { name: 'encl-1', label: 'site-plan.png', note: 'Where the scaffolding goes' },
+      { name: 'encl-2', label: 'contract.pdf', note: 'The signed contract' }
+    ]
+  })).id!
+  await shell.openThing(draftId)
+  await poll(modeState, (s) => s?.activeMode === 'edit' && s.editWcId !== null)
+
+  // Give the memo real bytes: a PNG it CAN show, and a PDF it cannot.
+  await shell.app.evaluate(
+    async (electron, a) => {
+      const s = (electron.app as unknown as { __shell: { modeState: () => { editWcId: number | null } | null } })
+        .__shell.modeState()
+      const wc = electron.webContents.fromId(s!.editWcId!)
+      await wc!.executeJavaScript(`
+        window.bridge.emit('draft', {
+          type: 'memo',
+          args: {
+            to: 'All staff', from: 'Facilities', subject: 'Roof works',
+            message: 'Scaffolding goes up Monday.',
+            enclosures: [
+              { name: 'encl-1', label: 'site-plan.png', note: 'Where the scaffolding goes' },
+              { name: 'encl-2', label: 'contract.pdf', note: 'The signed contract' }
+            ]
+          },
+          blobs: {
+            'encl-1': { bytes: Uint8Array.from(${JSON.stringify(a.png)}), mime: 'image/png' },
+            'encl-2': { bytes: Uint8Array.from(${JSON.stringify(a.pdf)}), mime: 'application/pdf' }
+          }
+        })
+      `)
+    },
+    { png: Array.from(PNG), pdf: Array.from(new TextEncoder().encode('%PDF-1.4 not really')) }
+  )
+
+  const shape = await poll(
+    () =>
+      thingEval<{ count: string | null; kinds: string[]; img: boolean; closed: string | null }>(
+        `(() => {
+          const sec = document.getElementById('view-enclosures')
+          return {
+            count: sec ? sec.getAttribute('data-count') : null,
+            kinds: Array.from(document.querySelectorAll('.encl__item')).map((e) => e.getAttribute('data-kind')),
+            img: !!document.querySelector('#encl-media-0'),
+            closed: document.getElementById('encl-closed-1')?.textContent ?? null
+          }
+        })()`,
+        'preview'
+      ),
+    (v) => v.count === '2' && v.kinds.length === 2,
+    20_000
+  )
+
+  // The picture is shown in place; the PDF is not pretended to be openable.
+  expect(shape.kinds).toEqual(['image', 'file'])
+  expect(shape.img).toBe(true)
+  expect(shape.closed).toContain('cannot be opened from here')
+  expect(shape.closed).toContain('Export')
+
+  // The type and size come from the MANIFEST, not from the program's claim.
+  const meta = await thingEval<string>(
+    `document.querySelector('#encl-item-0 .encl__meta').textContent`,
+    'preview'
+  )
+  expect(meta).toContain('site-plan.png')
+  expect(meta).toContain('image/png')
 })
