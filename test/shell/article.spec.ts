@@ -57,8 +57,13 @@ async function chromeEval<T>(js: string): Promise<T> {
   }, js)
 }
 
-async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs = 25_000): Promise<T> {
+async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs = 25_000, what = ''): Promise<T> {
+  const site = new Error().stack?.split('\n')[2]?.trim().replace(/^at\s+/, '').slice(0, 90) ?? ''
   const deadline = Date.now() + timeoutMs
+  // The FIRST error is the diagnostic one; the last is almost always the
+  // teardown ("browser has been closed") overwriting it once the test has
+  // already given up.
+  let firstError: string | null = null
   let lastError: unknown = null
   for (;;) {
     let value: T | undefined
@@ -69,12 +74,21 @@ async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs 
       // Keep it: a swallowed exception here is why a timeout reads as an
       // unexplained "undefined" when the real answer was in the error.
       lastError = e
+      if (firstError === null) firstError = (e as Error).message
     }
     if (Date.now() > deadline) {
-      const diag = await modeState().catch(() => null)
+      // NOT `.catch(() => null)`: that reports a FAILED CALL as "nothing is
+      // open", and the two demand opposite investigations. Say which it was.
+      const diag = await modeState().then(
+        (m) => (m === null ? '<main says nothing is open>' : JSON.stringify(m)),
+        (e: unknown) => `<could not ask main: ${(e as Error).message?.slice(0, 80)}>`
+      )
       throw new Error(
-        `poll timed out; last value: ${JSON.stringify(value)}; modeState: ${JSON.stringify(diag)}` +
-          (lastError ? `; last error: ${(lastError as Error).message}` : '')
+        `poll timed out at ${site}${what ? ` waiting for ${what}` : ''}; last value: ${JSON.stringify(value)}; modeState: ${diag}` +
+          (firstError ? `; first error: ${firstError}` : '') +
+          (lastError && (lastError as Error).message !== firstError
+            ? `; last error: ${(lastError as Error).message}`
+            : '')
       )
     }
     await new Promise((r) => setTimeout(r, 150))
@@ -82,7 +96,44 @@ async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs 
 }
 
 const clickEdit = (id: string): Promise<void> =>
-  cageEval(`document.getElementById(${JSON.stringify(id)}).click()`, 'edit')
+  cageEval(
+    `(() => {
+      // Uncaught exceptions inside a listener do NOT propagate to .click(), and
+      // Electron's console-message may not deliver them at all -- so catch them
+      // in the page and report through the probe channel, which is proven to
+      // arrive. Installed once per renderer.
+      if (!window.__errProbe) {
+        window.__errProbe = true
+        window.addEventListener('error', function (ev) {
+          console.log('[bridge-probe] UNCAUGHT ' + ev.message + ' @' + String(ev.filename || '').slice(-24) + ':' + ev.lineno)
+        })
+      }
+      const b = document.getElementById(${JSON.stringify(id)})
+      b.click()
+      // Report from inside the cage: that this script ran, on which element,
+      // and the page's visibility. An action with no emit after it is either a
+      // script that never ran, a throttled hidden renderer, or a handler that
+      // did not fire -- and these three lines tell them apart.
+      // Did the program's HANDLER run? The block order it leaves behind says so:
+      // reordered means the handler ran and the missing emit is the program's
+      // own; unchanged means the click never reached a live handler.
+      // Each .e-block wrapper is id="block-<i>"; its first control names the
+      // block's kind well enough to see a reorder (text vs image vs caption).
+      // NOTE: this string is evaluated as plain JS inside the cage -- no TS
+      // casts, they are a syntax error there and the whole script throws.
+      var blocks = Array.prototype.slice.call(document.querySelectorAll('[id^=block-]'))
+        .filter(function (e) { return /^block-\\d+$/.test(e.id) })
+      var order = blocks.length + ':' + blocks.map(function (w) {
+        var t = w.querySelector('[id^=block-text-]')
+        var c = w.querySelector('[id^=block-caption-]')
+        return t ? String(t.value).slice(0, 6) : c ? 'IMG' : '?'
+      }).join('|')
+      console.log(
+        '[bridge-probe] clicked=' + ${JSON.stringify(id)} + ' vis=' + document.visibilityState + ' order=' + order
+      )
+    })()`,
+    'edit'
+  )
 
 const typeEdit = (id: string, value: string): Promise<void> =>
   cageEval(
@@ -90,6 +141,7 @@ const typeEdit = (id: string, value: string): Promise<void> =>
       const i = document.getElementById(${JSON.stringify(id)})
       i.value = ${JSON.stringify(value)}
       i.dispatchEvent(new Event('input'))
+      console.log('[bridge-probe] typed=' + ${JSON.stringify(id)} + ' vis=' + document.visibilityState)
     })()`,
     'edit'
   )
@@ -125,8 +177,13 @@ test('an article renders headings, a wrapped image with caption, and footnotes',
   const article = types.find((t) => t.testKey === 'starter-article')!
   const draftId = (await shell.newDraft(article.key)).id!
   await shell.openThing(draftId)
-  await poll(modeState, (s) => s?.activeMode === 'edit' && s.editWcId !== null)
-  await poll(() => cageEval<boolean>(`!!document.getElementById('edit-title')`, 'edit'), (v) => v)
+  await poll(modeState, (s) => s?.activeMode === 'edit' && s.editWcId !== null, 25_000, 'the draft to open in edit mode')
+  await poll(
+    () => cageEval<boolean>(`!!document.getElementById('edit-title')`, 'edit'),
+    (v) => v,
+    25_000,
+    'the edit cage to render its form'
+  )
 
   // Build the document in one burst, then look at the preview once.
   await typeEdit('edit-title', 'The cage holds')
@@ -174,7 +231,12 @@ test('an article renders headings, a wrapped image with caption, and footnotes',
     { png: Array.from(PNG) }
   )
 
-  const preview = await poll(() => shapeOf('preview'), (s) => s.imgLoaded === true)
+  const preview = await poll(
+    () => shapeOf('preview'),
+    (s) => s.imgLoaded === true,
+    25_000,
+    'the preview to render the picked image'
+  )
   expect(preview.title).toBe('The cage holds')
   expect(preview.byline).toBe('By a tester')
   // Heading, paragraph, figure — in document order, with the float class.
@@ -190,7 +252,9 @@ test('an article renders headings, a wrapped image with caption, and footnotes',
   await clickEdit('block-up-2')
   await poll(
     () => shapeOf('preview'),
-    (s) => JSON.stringify(s.kids) === JSON.stringify(['h2.a-h', 'figure.a-fig.a-fig--left', 'p.a-p'])
+    (s) => JSON.stringify(s.kids) === JSON.stringify(['h2.a-h', 'figure.a-fig.a-fig--left', 'p.a-p']),
+    25_000,
+    'the preview to reflect the moved image'
   )
 
   // Publish, and the signed instance renders exactly the same document.
@@ -201,7 +265,12 @@ test('an article renders headings, a wrapped image with caption, and footnotes',
     return s.publishDraft() as never
   })) as Record<string, unknown>
   expect(pending.status).toBe('pending')
-  await poll(() => chromeEval<boolean>(`!!document.querySelector('[data-testid=confirm-approve]')`), (v) => v)
+  await poll(
+    () => chromeEval<boolean>(`!!document.querySelector('[data-testid=confirm-approve]')`),
+    (v) => v,
+    25_000,
+    'the publish confirm to appear'
+  )
   await chromeEval(`document.querySelector('[data-testid=confirm-approve]').click()`)
   const published = await poll(
     () =>
@@ -219,9 +288,19 @@ test('an article renders headings, a wrapped image with caption, and footnotes',
   // race, and under load the poll below can start while NOTHING is mounted
   // (modeState: null). Ask for what this test wants to look at.
   await shell.openThing(published!.envelopeHash as string)
-  await poll(modeState, (s) => s?.activeMode === 'view' && s.viewWcId !== null)
+  await poll(
+    modeState,
+    (s) => s?.activeMode === 'view' && s.viewWcId !== null,
+    25_000,
+    'the published article to open in view mode'
+  )
 
-  const view = await poll(() => shapeOf('view'), (s) => s.imgLoaded === true)
+  const view = await poll(
+    () => shapeOf('view'),
+    (s) => s.imgLoaded === true,
+    25_000,
+    'the published view to render its image'
+  )
   expect(view.title).toBe('The cage holds')
   expect(view.kids).toEqual(['h2.a-h', 'figure.a-fig.a-fig--left', 'p.a-p'])
   expect(view.caption).toBe('The observatory at dusk')

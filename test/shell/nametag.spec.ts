@@ -72,8 +72,13 @@ async function shellSurface<T>(field: 'lastConfirm' | 'lastPublish'): Promise<T>
   }, field)
 }
 
-async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs = 20_000): Promise<T> {
+async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs = 20_000, what = ''): Promise<T> {
+  const site = new Error().stack?.split('\n')[2]?.trim().replace(/^at\s+/, '').slice(0, 90) ?? ''
   const deadline = Date.now() + timeoutMs
+  // The FIRST error is the diagnostic one; the last is almost always the
+  // teardown ("browser has been closed") overwriting it once the test has
+  // already given up.
+  let firstError: string | null = null
   for (;;) {
     let value: T | undefined
     let threw: string | null = null
@@ -85,16 +90,33 @@ async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs 
       // Keep the reason: "no preview cage" and "cage wc gone" are different
       // failures, and `value` stays undefined for both.
       threw = (e as Error).message
+      if (firstError === null) firstError = threw
     }
     if (Date.now() > deadline) {
       // The cage state machine, so a CI timeout says WHICH way it was stuck
       // (no open thing / no preview / preview mid-mount / preview crashed)
       // instead of just "undefined".
-      const diag = await modeState().catch(() => null)
+      // NOT `.catch(() => null)`: that reports a FAILED CALL as "nothing is
+      // open", and the two demand opposite investigations. Say which it was.
+      // Ask WHICH main answered: `current` has exactly two assignments (null in
+      // destroyCurrent, the open in openThing), so a null here with no
+      // destroyCurrent in the trace means a different process replied -- or
+      // none did.
+      const diag = await shell.app
+        .evaluate(async (electron) => {
+          const s = (electron.app as unknown as { __shell: { modeState: () => unknown } }).__shell
+          return { pid: process.pid, mode: s.modeState() } as never
+        })
+        .then(
+          (r: { pid: number; mode: unknown }) =>
+            r.mode === null ? `<pid ${r.pid} says nothing is open>` : `<pid ${r.pid}> ${JSON.stringify(r.mode)}`,
+          (e: unknown) => `<could not ask main: ${(e as Error).message?.slice(0, 80)}>`
+        )
       throw new Error(
-        `poll timed out; last value: ${JSON.stringify(value)}` +
-          (threw ? ` (last error: ${threw})` : '') +
-          `; modeState: ${JSON.stringify(diag)}`
+        `poll timed out at ${site}${what ? ` waiting for ${what}` : ''}; last value: ${JSON.stringify(value)}` +
+          (firstError ? ` (first error: ${firstError})` : '') +
+          (threw && threw !== firstError ? ` (last error: ${threw})` : '') +
+          `; modeState: ${diag}`
       )
     }
     await new Promise((r) => setTimeout(r, 150))
@@ -111,13 +133,18 @@ const resetLastPublish = (): Promise<void> =>
  *  mode toggle (the __shell.open hook alone would leave the header stale). */
 async function openViaChrome(envelopeHash: string): Promise<void> {
   await chromeEval(`window.__shellChrome.openThing(${JSON.stringify(envelopeHash)})`)
-  await poll(modeState, (s) => s != null && s.viewWcId !== null && s.activeMode === 'view')
+  await poll(
+    modeState,
+    (s) => s != null && s.viewWcId !== null && s.activeMode === 'view',
+    20_000,
+    'the thing to open in view mode'
+  )
 }
 
 /** Switch mode through the REAL chrome toggle; wait for main to confirm. */
 async function switchMode(mode: 'view' | 'edit'): Promise<void> {
   await chromeEval(`document.querySelector('[data-testid=mode-${mode}]').click()`)
-  await poll(modeState, (s) => s?.activeMode === mode)
+  await poll(modeState, (s) => s?.activeMode === mode, 20_000, `mode to become ${mode}`)
 }
 
 const displayText = (which: 'view' | 'edit' | 'preview' = 'view'): Promise<string | null> =>
@@ -148,6 +175,11 @@ const typeName = (value: string): Promise<void> =>
     var i = document.getElementById('name');
     i.value = ${JSON.stringify(value)};
     i.dispatchEvent(new Event('input'));
+    // Report from INSIDE the cage: whether this script ran at all, and what
+    // the page's visibility was. nametag.html emits synchronously on 'input',
+    // so an emit probe MUST follow this line -- if it does not, the handler
+    // did not run, and visibility says whether a hidden/frozen renderer is why.
+    console.log('[bridge-probe] typed=' + i.value + ' vis=' + document.visibilityState);
   `,
     'edit'
   )
@@ -350,11 +382,16 @@ test('live preview works when editing an EXISTING instance, without stealing foc
 
   await openViaChrome(namedHash)
   await switchMode('edit')
-  await poll(() => thingEval<boolean>(`!!document.getElementById('name')`, 'edit'), (v) => v)
+  await poll(
+    () => thingEval<boolean>(`!!document.getElementById('name')`, 'edit'),
+    (v) => v,
+    20_000,
+    'the edit cage to render its input'
+  )
 
   // Switching to edit hands the edit cage keyboard focus.
   const editWcId = (await modeState())!.editWcId
-  await poll(focusedId, (id) => id === editWcId)
+  await poll(focusedId, (id) => id === editWcId, 20_000, 'the edit cage to take focus (after switching to edit)')
 
   // Type — drafts stream and previews remount UNDER the typing user.
   await thingEval(
@@ -365,10 +402,10 @@ test('live preview works when editing an EXISTING instance, without stealing foc
   `,
     'edit'
   )
-  await poll(modeState, (s) => s?.previewWcId != null)
+  await poll(modeState, (s) => s?.previewWcId != null, 20_000, 'the first preview to mount')
   // The remount must not steal focus from the edit cage (typing was unusable
   // when every keystroke's preview grabbed the keyboard).
-  await poll(focusedId, (id) => id === editWcId)
+  await poll(focusedId, (id) => id === editWcId, 20_000, 'focus to stay with the edit cage after preview #1')
 
   // A SECOND remount (fresh preview cage): focus still with the edit cage.
   const firstPreview = (await modeState())!.previewWcId
@@ -380,8 +417,13 @@ test('live preview works when editing an EXISTING instance, without stealing foc
   `,
     'edit'
   )
-  await poll(modeState, (s) => s?.previewWcId != null && s.previewWcId !== firstPreview)
-  await poll(focusedId, (id) => id === editWcId)
+  await poll(
+    modeState,
+    (s) => s?.previewWcId != null && s.previewWcId !== firstPreview,
+    20_000,
+    'the SECOND preview to replace the first'
+  )
+  await poll(focusedId, (id) => id === editWcId, 20_000, 'focus to stay with the edit cage after preview #2')
 
   // REAL keystrokes, spread across several preview remounts: every character
   // must land (this is exactly the "focus lost constantly while typing" bug).
@@ -398,13 +440,15 @@ test('live preview works when editing an EXISTING instance, without stealing foc
     await new Promise((r) => setTimeout(r, 90))
   }
   expect(await thingEval<string>(`document.getElementById('name').value`, 'edit')).toBe('Real Name')
-  await poll(focusedId, (id) => id === editWcId)
+  await poll(focusedId, (id) => id === editWcId, 20_000, 'focus to survive the whole typing burst')
 
   // And the preview really is the draft of the EXISTING instance's edit.
   await switchMode('view')
   await poll(
     () => thingEval<string | null>(`document.getElementById('display')?.textContent ?? null`, 'preview'),
-    (v) => v === 'Real Name'
+    (v) => v === 'Real Name',
+    20_000,
+    'the preview to show the edited name in view mode'
   )
 })
 
