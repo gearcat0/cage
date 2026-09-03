@@ -1,5 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+// DIAGNOSTIC flag only. A sandboxed preload has a reduced `process`, so read it
+// defensively and default to off: a probe must never be the reason the bridge
+// fails to load.
+let probeEmits = false
+try {
+  probeEmits = process.env.SHELL_EXIT_LOG !== undefined
+} catch {
+  probeEmits = false
+}
+
 // ── The bridge (renderer side) ───────────────────────────────────────────────
 // This preload runs with `sandbox: true` and `contextIsolation: true`. It is the
 // ENTIRE trusted surface a thing can see. It exposes exactly four functions on a
@@ -40,6 +50,19 @@ const bridge = Object.freeze({
     return ipcRenderer.sendSync('cage:viewerInfo')
   },
   emit(channel: string, data: unknown): void {
+    // DIAGNOSTIC: say that the program CALLED emit, before the send. Main
+    // records what it receives; without this there is no way to tell a
+    // program that stopped emitting from an emit lost in transit. Console
+    // only -- the preload has no filesystem, and the bridge surface the
+    // program sees is unchanged.
+    if (probeEmits) {
+      try {
+        // eslint-disable-next-line no-console
+        console.log(`[bridge-probe] emit ${channel}`)
+      } catch {
+        /* never let a probe break the bridge */
+      }
+    }
     ipcRenderer.send('cage:emit', channel, data)
   }
 })

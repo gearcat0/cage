@@ -722,6 +722,20 @@ app.whenReady().then(async () => {
     }
   }
 
+  /** DIAGNOSTIC: forward the cage renderer's bridge probe lines into the trace.
+   *  Only [bridge-probe] lines, and only when SHELL_EXIT_LOG is set -- a cage
+   *  can say anything, so nothing else it prints is copied. */
+  function probeCageConsole(wcId: number, role: string): void {
+    if (!process.env.SHELL_EXIT_LOG) return
+    const wc = webContents.fromId(wcId)
+    if (!wc) return
+    wc.on('console-message', (_e, _level, message) => {
+      if (typeof message === 'string' && message.startsWith('[bridge-probe]')) {
+        openLog('cage:probe', { role, wcId, msg: message.slice(0, 60) })
+      }
+    })
+  }
+
   async function openThing(envelopeHash: string): Promise<Record<string, unknown>> {
     openLog('request', { hash: envelopeHash.slice(0, 12), hasCurrent: current !== null })
     const draft = isDraftId(envelopeHash) ? library.getDraft(envelopeHash) : null
@@ -786,6 +800,7 @@ app.whenReady().then(async () => {
       onBound: (wcId) => {
         o.wcIds.add(wcId)
         guardCageFocus(wcId)
+        probeCageConsole(wcId, 'view')
       }
     })
     if (current !== o) {
@@ -852,6 +867,7 @@ app.whenReady().then(async () => {
             // Recorded BEFORE the program loads: an initial draft emitted
             // during the edit cage's own load must be accepted.
             o.editWcId = wcId
+            probeCageConsole(wcId, 'edit')
           }
         })
       }
@@ -1123,9 +1139,15 @@ app.whenReady().then(async () => {
   }
 
   async function mountPreview(o: OpenThing): Promise<void> {
-    if (o.previewMounting) return // the running mount re-checks pendingDraft when done
+    if (o.previewMounting) {
+      openLog('preview:busy', { hasPending: o.pendingDraft !== null })
+      return // the running mount re-checks pendingDraft when done
+    }
     const draft = o.pendingDraft
-    if (!draft) return
+    if (!draft) {
+      openLog('preview:nothing-pending', {})
+      return
+    }
     o.pendingDraft = null
     o.previewMounting = true
     openLog('preview:start', { hash: o.envelopeHash.slice(0, 12), key: draftKey(draft).slice(0, 60) })
@@ -1143,6 +1165,7 @@ app.whenReady().then(async () => {
         onBound: (wcId) => {
           o.wcIds.add(wcId)
           guardCageFocus(wcId)
+          probeCageConsole(wcId, 'preview')
         }
       })
       if (current !== o) {
@@ -1216,7 +1239,16 @@ app.whenReady().then(async () => {
     // load counts). The preview cage runs the same program in view mode —
     // accepting drafts from any cage would let a program remount its own
     // preview in a loop.
-    if (!o || o.editWcId === null || req.senderId !== o.editWcId) return
+    if (!o || o.editWcId === null || req.senderId !== o.editWcId) {
+      // The one draft path with no record of itself. A program whose drafts
+      // are all rejected looks exactly like a program that stopped emitting.
+      openLog('draft:rejected', {
+        why: !o ? 'nothing open' : o.editWcId === null ? 'no edit cage' : 'sender is not the edit cage',
+        senderId: req.senderId,
+        editWcId: o ? o.editWcId : null
+      })
+      return
+    }
     const publishableBefore = o.latestDraft != null
     // The latest draft is what the chrome Publish button signs.
     o.latestDraft = req.draft
@@ -1229,13 +1261,16 @@ app.whenReady().then(async () => {
     if (!publishableBefore) notifyModeChanged(o.activeMode) // enable Publish
     // Identical draft → identical preview: skip the remount (visible flicker).
     if (o.lastPreviewKey !== null && draftKey(req.draft) === o.lastPreviewKey) {
+      openLog('draft:dedupe-skip', { key: draftKey(req.draft).slice(0, 50) })
       o.pendingDraft = null
       return
     }
+    openLog('draft:accepted', { key: draftKey(req.draft).slice(0, 50), timerPending: o.draftTimer !== null })
     o.pendingDraft = req.draft
     if (o.draftTimer) return
     o.draftTimer = setTimeout(() => {
       o.draftTimer = null
+      openLog('draft:timer-fired', { hasPending: o.pendingDraft !== null, mounting: o.previewMounting })
       if (current === o) void mountPreview(o)
     }, PREVIEW_DEBOUNCE_MS)
     o.draftTimer.unref?.()
@@ -1647,8 +1682,15 @@ app.whenReady().then(async () => {
   shell.deleteDraft = (id) => deleteDraft(id)
   shell.copyThing = (h) => copyThing(h)
   shell.deleteThing = (h) => deleteThing(h)
-  shell.modeState = () =>
-    current
+  // If `current` ever reads null without a destroyCurrent immediately before
+  // it in the trace, something impossible happened (those are the only two
+  // assignments) -- so record the transition, not every poll.
+  let lastModeStateWasNull = false
+  shell.modeState = () => {
+    const isNull = current === null
+    if (isNull && !lastModeStateWasNull) openLog('modeState:became-null', { pid: process.pid })
+    lastModeStateWasNull = isNull
+    return current
       ? {
           activeMode: current.activeMode,
           viewWcId: current.view ? current.view.view.webContents.id : null,
@@ -1664,6 +1706,7 @@ app.whenReady().then(async () => {
           previewDestroyed: current.preview ? current.preview.view.webContents.isDestroyed() : null
         }
       : null
+  }
   shell.signAndAdmit = async (type: string) => {
     const program = new TextEncoder().encode('<!doctype html><h1>self-signed</h1>')
     const manifest: Manifest = { v: 1, prog: hash(program), type, args: null, att: new Map() }

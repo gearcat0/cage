@@ -61,7 +61,15 @@ async function chromeEval<T>(js: string): Promise<T> {
 }
 
 async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs = 10_000): Promise<T> {
+  // Which poll this is, taken from the stack rather than a hand-written label:
+  // an unlabelled wait that hangs is an anonymous timeout, and labelling every
+  // call site by hand has already been missed twice.
+  const site = new Error().stack?.split('\n')[2]?.trim().replace(/^at\s+/, '').slice(0, 90) ?? ''
   const deadline = Date.now() + timeoutMs
+  // The FIRST error is the diagnostic one; the last is almost always the
+  // teardown ("browser has been closed") overwriting it once the test has
+  // already given up.
+  let firstError: string | null = null
   let lastError: unknown = null
   for (;;) {
     let value: T | undefined
@@ -72,6 +80,7 @@ async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs 
       // Keep it: a swallowed exception here is why a timeout reads as an
       // unexplained "undefined" when the real answer was in the error.
       lastError = e
+      if (firstError === null) firstError = (e as Error).message
     }
     if (Date.now() > deadline) {
       // The cage state machine, so a CI timeout says WHICH way it was stuck
@@ -83,8 +92,11 @@ async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs 
         (e: unknown) => `<could not ask main: ${(e as Error).message?.slice(0, 80)}>`
       )
       throw new Error(
-        `poll timed out; last value: ${JSON.stringify(value)}; modeState: ${diag}` +
-          (lastError ? `; last error: ${(lastError as Error).message}` : '')
+        `poll timed out at ${site}; last value: ${JSON.stringify(value)}; modeState: ${diag}` +
+          (firstError ? `; first error: ${firstError}` : '') +
+          (lastError && (lastError as Error).message !== firstError
+            ? `; last error: ${(lastError as Error).message}`
+            : '')
       )
     }
     await new Promise((r) => setTimeout(r, 150))
