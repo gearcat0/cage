@@ -341,3 +341,105 @@ test('a blank article is honest, and hostile args still render', async () => {
     'img-9'
   )
 })
+
+test('provenance metadata renders as a claim, and survives a publish', async () => {
+  const types = await shell.knownTypes()
+  const article = types.find((t) => t.testKey === 'starter-article')!
+  const draftId = (await shell.newDraft(article.key, {
+    title: 'The cage holds',
+    deck: 'A short summary under the headline',
+    authors: ['Ada Lovelace', 'Charles Babbage'],
+    publisher: 'The Example Times',
+    section: 'World',
+    location: 'NAIROBI',
+    published: '2026-09-01',
+    updated: '2026-09-02',
+    retrieved: '2026-09-03',
+    sourceUrl: 'https://example.com/a/story',
+    archiveUrl: 'https://archive.example/x',
+    language: 'en',
+    rights: '© Example Times',
+    keywords: ['cage', 'format'],
+    blocks: [{ kind: 'paragraph', text: 'Body text.' }]
+  })).id!
+  await shell.openThing(draftId)
+  await poll(modeState, (s) => s?.activeMode === 'edit' && s.editWcId !== null, 25_000, 'the draft to open')
+  await shell.app.evaluate(async (electron) => {
+    const s = (electron.app as unknown as { __shell: { setMode: (m: string) => Promise<string> } }).__shell
+    await s.setMode('view')
+  })
+  await poll(modeState, (s) => s?.activeMode === 'view' && s.viewWcId !== null, 25_000, 'view mode')
+
+  const shown = await poll(
+    () =>
+      cageEval<Record<string, string | null>>(
+        `(() => ({
+          deck: document.getElementById('view-deck')?.textContent ?? null,
+          byline: document.getElementById('view-byline')?.textContent ?? null,
+          dateline: document.getElementById('view-dateline')?.textContent ?? null,
+          prov: document.getElementById('view-provenance')?.textContent ?? null
+        }))()`,
+        'view'
+      ),
+    (v) => v.deck !== null,
+    25_000,
+    'the masthead to render'
+  )
+  expect(shown.deck).toBe('A short summary under the headline')
+  expect(shown.byline).toBe('Ada Lovelace, Charles Babbage') // authors[] supersedes byline
+  expect(shown.dateline).toContain('NAIROBI')
+  expect(shown.dateline).toContain('The Example Times')
+  // Provenance is presented as a CLAIM, never as verification.
+  expect(shown.prov).toContain('https://example.com/a/story')
+  expect(shown.prov).toContain('None of it is verified')
+  expect(shown.prov).not.toContain('✓')
+})
+
+test('a video block plays from its attachment', async () => {
+  const types = await shell.knownTypes()
+  const article = types.find((t) => t.testKey === 'starter-article')!
+  const draftId = (await shell.newDraft(article.key)).id!
+  await shell.openThing(draftId)
+  await poll(modeState, (s) => s?.activeMode === 'edit' && s.editWcId !== null, 25_000, 'the draft to open')
+  await poll(() => cageEval<boolean>(`!!document.getElementById('edit-title')`, 'edit'), (v) => v, 25_000, 'the form')
+
+  await typeEdit('edit-title', 'With video')
+  await clickEdit('add-video')
+  await typeEdit('block-caption-0', 'The launch, as it happened')
+
+  // Real bytes through the program's own picker, as the image test does. The
+  // clip need not decode: what is under test is that a video BLOCK mounts a
+  // <video> pointed at its attachment, served over thing:// with Range.
+  await shell.app.evaluate(async (electron, bytes) => {
+    const s = (electron.app as unknown as { __shell: { modeState: () => { editWcId: number | null } | null } })
+      .__shell.modeState()
+    const wc = electron.webContents.fromId(s!.editWcId!)
+    await wc!.executeJavaScript(`
+      (() => {
+        const file = new File([Uint8Array.from(${JSON.stringify(bytes)})], 'clip.mp4', { type: 'video/mp4' })
+        const dt = new DataTransfer()
+        dt.items.add(file)
+        const input = document.getElementById('block-file-0')
+        input.files = dt.files
+        input.dispatchEvent(new Event('change'))
+      })()
+    `)
+  }, Array.from(new Uint8Array([0, 0, 0, 32, 102, 116, 121, 112, 105, 115, 111, 109])))
+
+  const vid = await poll(
+    () =>
+      cageEval<{ tag: string | null; src: string | null; controls: boolean } | null>(
+        `(() => {
+          const v = document.querySelector('#view-article video')
+          return v ? { tag: v.tagName, src: v.getAttribute('src'), controls: v.controls } : null
+        })()`,
+        'preview'
+      ),
+    (v) => v !== null && v.src !== null,
+    25_000,
+    'the preview to mount a <video> for the attachment'
+  )
+  expect(vid!.tag).toBe('VIDEO')
+  expect(vid!.src).toContain('/att/vid-1') // its own name space, never reusing img-N
+  expect(vid!.controls).toBe(true)
+})

@@ -197,3 +197,77 @@ test('carry-over: editing keeps the current image without resending bytes', asyn
     'Cage Night — encore'
   )
 })
+
+test('photo arrangements follow the count, and older single-image posters still render', async () => {
+  const types = await shell.knownTypes()
+  const poster = types.find((t) => t.testKey === 'starter-poster')!
+
+  /** The rendered set: which arrangement class, how many tiles, any "+N". */
+  const setShape = (): Promise<{ cls: string | null; tiles: number; more: string | null; count: string | null }> =>
+    thingEval(
+      `(() => {
+        const s = document.getElementById('poster-set')
+        return {
+          cls: s ? s.className : null,
+          tiles: document.querySelectorAll('.p-tile').length,
+          more: document.getElementById('poster-more')?.textContent ?? null,
+          count: s ? s.getAttribute('data-count') : null
+        }
+      })()`,
+      'view'
+    )
+
+  const openWith = async (args: Record<string, unknown>): Promise<void> => {
+    const id = (await shell.newDraft(poster.key, args)).id!
+    await shell.openThing(id)
+    await poll(modeState, (s) => s?.activeMode === 'edit' && s.editWcId !== null)
+    await shell.app.evaluate(async (electron) => {
+      const s = (electron.app as unknown as { __shell: { setMode: (m: string) => Promise<string> } }).__shell
+      await s.setMode('view')
+    })
+    await poll(modeState, (s) => s?.activeMode === 'view' && s.viewWcId !== null)
+  }
+
+  const photos = (n: number): { name: string; alt: string; caption: string }[] =>
+    Array.from({ length: n }, (_, i) => ({ name: `photo-${i + 1}`, alt: '', caption: '' }))
+
+  // Auto follows the count, the way a photo post does.
+  for (const [n, cls] of [
+    [1, 'p-set--n1'],
+    [2, 'p-set--n2'],
+    [3, 'p-set--n3'],
+    [4, 'p-set--n4']
+  ] as [number, string][]) {
+    await openWith({ title: 'Set', layout: 'auto', photos: photos(n) })
+    const shape = await poll(setShape, (s) => s.tiles === n, 20_000)
+    expect(shape.cls, `${n} photos`).toContain(cls)
+    expect(shape.more).toBeNull()
+  }
+
+  // Past four: show four and say how many more, rather than shrink them all.
+  await openWith({ title: 'Many', layout: 'auto', photos: photos(7) })
+  const many = await poll(setShape, (s) => s.tiles === 4, 20_000)
+  expect(many.cls).toContain('p-set--n4')
+  expect(many.more).toBe('+3')
+  expect(many.count).toBe('7')
+
+  // An explicit arrangement overrides the count-based one.
+  await openWith({ title: 'Row', layout: 'row', photos: photos(3) })
+  expect((await poll(setShape, (s) => s.tiles === 3, 20_000)).cls).toContain('p-set--row')
+
+  // A poster from before this program held several photos: no photos[] at all.
+  // It must still render, and its single picture keeps the id others know.
+  const { outcome } = await shell.compose(POSTER_HTML.toString('base64'), 'poster', [
+    { name: 'image', base64: PNG.toString('base64'), mime: 'image/png' }
+  ])
+  expect(outcome.status).toBe('valid')
+  await chromeEval(`window.__shellChrome.openThing(${JSON.stringify(outcome.envelopeHash)})`)
+  await poll(modeState, (s) => s?.activeMode === 'view' && s.viewWcId !== null)
+  expect(
+    await poll(
+      () => thingEval<boolean>(`!!document.getElementById('poster-image')`, 'view'),
+      (v) => v,
+      20_000
+    )
+  ).toBe(true)
+})

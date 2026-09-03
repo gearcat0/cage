@@ -5,17 +5,67 @@
 <title>poster</title>
 <style>
   body { margin: 0; font: 15px/1.4 Futura, 'Trebuchet MS', system-ui, sans-serif; background: #1d2320; color: #eee;
-         display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; box-sizing: border-box; }
-  .poster { background: #f4efe3; color: #22252b; width: 26em; max-width: 100%; padding: 22px 22px 26px;
+         display: flex; align-items: flex-start; justify-content: center; min-height: 100vh; padding: 24px; box-sizing: border-box; }
+  .poster { background: #f4efe3; color: #22252b; width: 30em; max-width: 100%; padding: 22px 22px 26px;
             box-shadow: 0 10px 30px rgba(0, 0, 0, .45); }
+
+  /* ── Arrangements ────────────────────────────────────────────────────────
+     Tiles crop to a shared shape (object-fit: cover) the way a social photo
+     post does — a mosaic only reads as one composition if the pieces agree.
+     `stack` is the exception: it shows each photo whole, for pictures whose
+     edges matter. */
   .frame { background: #dcd5c3; min-height: 12em; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-  .frame img { max-width: 100%; max-height: 22em; display: block; }
   .frame .empty { color: #8b8471; font-size: 13px; letter-spacing: .15em; text-transform: uppercase; }
+  .p-set { display: grid; gap: 3px; background: #dcd5c3; }
+  .p-tile { position: relative; overflow: hidden; background: #dcd5c3; min-height: 0; }
+  .p-tile img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .p-tile figcaption { position: absolute; left: 0; right: 0; bottom: 0; margin: 0; padding: 4px 6px;
+                       font-size: 11px; color: #f6f2e8; background: rgba(0, 0, 0, .5); }
+  .p-more { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+            background: rgba(0, 0, 0, .55); color: #fff; font-size: 28px; letter-spacing: .04em; }
+
+  .p-set--n1 { grid-template-columns: 1fr; }
+  .p-set--n1 .p-tile { aspect-ratio: 4 / 3; }
+  .p-set--n2 { grid-template-columns: 1fr 1fr; }
+  .p-set--n2 .p-tile { aspect-ratio: 3 / 4; }
+  /* Three reads best as one tall picture beside two stacked — the arrangement
+     every social client reaches for, because a 3-across row goes thin fast. */
+  .p-set--n3 { grid-template-columns: 2fr 1fr; grid-template-rows: 1fr 1fr; }
+  .p-set--n3 .p-tile:first-child { grid-row: span 2; }
+  .p-set--n3 .p-tile { aspect-ratio: auto; min-height: 6em; }
+  .p-set--n4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+  .p-set--n4 .p-tile { aspect-ratio: 1 / 1; }
+
+  .p-set--grid { grid-template-columns: 1fr 1fr; }
+  .p-set--grid .p-tile { aspect-ratio: 1 / 1; }
+  .p-set--row { grid-auto-flow: column; grid-auto-columns: 1fr; }
+  .p-set--row .p-tile { aspect-ratio: 3 / 4; }
+  .p-set--stack { grid-template-columns: 1fr; gap: 8px; background: transparent; }
+  .p-set--stack .p-tile { aspect-ratio: auto; }
+  .p-set--stack .p-tile img { height: auto; max-height: 26em; object-fit: contain; }
+
+  .p-carousel { position: relative; }
+  .p-carousel .p-tile { aspect-ratio: 4 / 3; }
+  .p-nav { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; font-size: 12px; color: #565043; }
+  .p-nav button { font: inherit; border: 1px solid #b9b19c; background: #fffdf6; border-radius: 3px; cursor: pointer; padding: 2px 10px; }
+
   h1 { margin: 18px 0 6px; font-size: 26px; line-height: 1.15; text-transform: uppercase; letter-spacing: .06em; }
   .caption { margin: 0; color: #565043; }
+
   input[type='text'] { font: inherit; width: 100%; box-sizing: border-box; border: 1px solid #b9b19c;
                        border-radius: 3px; padding: 5px 8px; background: #fffdf6; margin-top: 10px; }
+  select { font: inherit; margin-top: 10px; padding: 4px 6px; background: #fffdf6; border: 1px solid #b9b19c; border-radius: 3px; }
   .note { margin-top: 12px; font-size: 12px; color: #8b8471; }
+  .warn:empty { display: none; }
+  .warn { margin-top: 6px; font-size: 12px; color: #a4402c; }
+  .e-photo { border: 1px solid #cfc7b2; border-radius: 3px; padding: 8px; margin-top: 10px; }
+  .e-photo__head { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #8b8471; }
+  .e-photo__head button { font: inherit; border: 1px solid #b9b19c; background: #fffdf6; border-radius: 3px;
+                          cursor: pointer; padding: 0 7px; }
+  .e-photo__head .grow { flex: 1; }
+  .e-thumb { max-width: 6em; max-height: 4.5em; display: block; margin-top: 6px; }
+  .e-add { font: inherit; margin-top: 12px; border: 1px solid #b9b19c; background: #fffdf6; border-radius: 3px;
+           cursor: pointer; padding: 4px 10px; }
 </style>
 </head>
 <body>
@@ -24,15 +74,40 @@
   </div>
   <script>
     'use strict';
-    // The draft contract with an ATTACHMENT. This program can DISPLAY its
-    // image (getBlob → thing:// URL) but cannot read the bytes back (CSP), so
-    // its drafts either include freshly picked bytes ({bytes, mime}) or
-    // declare "keep my current image" with {carry: true} — the shell resolves
-    // that from the instance's own store. As always: the shell previews the
-    // latest draft live and its Publish button signs exactly that draft.
+    // A photo post: one picture or several, arranged the way social clients
+    // arrange them.
+    //
+    // State: args {title, caption, layout, photos:[{name, alt, caption}]}
+    // Strings only. Pictures live in attachments addressed by name; a photo
+    // entry holds the NAME, never bytes.
+    //
+    // Contract rules this program obeys, both easy to get wrong:
+    //   • args AND blobs are whole-set replacement on every emit. Every photo
+    //     still in the post must be re-declared each time — fresh bytes if just
+    //     picked, otherwise {carry: true} so the shell reuses what it holds
+    //     rather than moving megabytes per keystroke.
+    //   • names are never reused or renamed. Renaming orphans the carried blob
+    //     and silently drops the picture.
+    //
+    // Back-compat: posters published before this program held several photos
+    // carry a single attachment called `image` and no photos[]. Those still
+    // render — the list is synthesised from the attachment.
+    var LAYOUTS = {
+      auto: 'Auto (like a photo post)',
+      grid: 'Grid',
+      row: 'Single row',
+      stack: 'Stacked, uncropped',
+      carousel: 'One at a time'
+    };
+    var MAX_PHOTOS = 20;
+    // A draft blob is capped at 32 MiB and a whole draft at 64 MiB. Refuse an
+    // oversized pick here: past the cap the shell rejects the draft and the
+    // preview just stops updating, with nothing said about why.
+    var MAX_BLOB_BYTES = 32 * 1024 * 1024;
+
     var a = window.bridge.getArgs() || {};
     var args = (a && typeof a.args === 'object' && a.args !== null) ? a.args : {};
-    var hasImage = (a.attachments || []).some(function (x) { return x.name === 'image'; });
+    var attachments = a.attachments || [];
     var app = document.getElementById('app');
 
     function str(v) { return typeof v === 'string' ? v : ''; }
@@ -43,64 +118,292 @@
       return e;
     }
 
-    function frame() {
-      var f = el('div'); f.className = 'frame';
-      var url = hasImage ? window.bridge.getBlob('image') : null;
-      if (url) {
-        var img = el('img'); img.id = 'poster-image'; img.src = url; img.alt = str(args.title);
-        f.append(img);
-      } else {
-        var empty = el('div', 'no image'); empty.className = 'empty'; empty.id = 'poster-empty';
-        f.append(empty);
+    function hasAttachment(name) {
+      for (var i = 0; i < attachments.length; i++) if (attachments[i].name === name) return true;
+      return false;
+    }
+
+    /** Photos from args, or — for a poster made before this program handled
+     *  more than one — the lone `image` attachment. Hostile args may hold
+     *  anything, so every entry is coerced. */
+    function cleanPhotos(raw) {
+      var out = [];
+      if (Array.isArray(raw)) {
+        for (var i = 0; i < raw.length && out.length < MAX_PHOTOS; i++) {
+          var p = (raw[i] && typeof raw[i] === 'object') ? raw[i] : {};
+          var name = str(p.name);
+          if (!name) continue;
+          out.push({ name: name, alt: str(p.alt), caption: str(p.caption) });
+        }
       }
+      if (out.length === 0 && hasAttachment('image')) out.push({ name: 'image', alt: '', caption: '' });
+      return out;
+    }
+
+    var state = {
+      title: str(args.title),
+      caption: str(args.caption),
+      layout: LAYOUTS[str(args.layout)] ? str(args.layout) : 'auto',
+      photos: cleanPhotos(args.photos)
+    };
+
+    var picked = {};     // name -> {bytes, mime} chosen this session
+    var thumbUrls = {};  // name -> object URL for the edit thumbnail
+
+    function photoUrl(name) {
+      if (picked[name]) return thumbUrls[name] || null;
+      return hasAttachment(name) ? window.bridge.getBlob(name) : null;
+    }
+
+    // ── view ──────────────────────────────────────────────────────────────
+    /** One tile. The FIRST photo keeps the id `poster-image`: that is the name
+     *  the rest of the world already knows this program by, and a rename would
+     *  break every caller for no gain. The others follow as poster-photo-N. */
+    function tile(p, i, moreCount) {
+      var fig = el('figure'); fig.className = 'p-tile';
+      var url = photoUrl(p.name);
+      if (url) {
+        var img = el('img');
+        img.id = i === 0 ? 'poster-image' : 'poster-photo-' + String(i + 1);
+        img.src = url;
+        img.alt = p.alt || p.caption || str(state.title);
+        fig.append(img);
+      } else {
+        var missing = el('div', 'not attached: ' + p.name);
+        missing.className = 'empty';
+        fig.append(missing);
+      }
+      if (p.caption) fig.append(el('figcaption', p.caption));
+      if (moreCount > 0) {
+        var more = el('div', '+' + String(moreCount));
+        more.className = 'p-more'; more.id = 'poster-more';
+        fig.append(more);
+      }
+      return fig;
+    }
+
+    function emptyFrame() {
+      var f = el('div'); f.className = 'frame';
+      var empty = el('div', 'no image'); empty.className = 'empty'; empty.id = 'poster-empty';
+      f.append(empty);
       return f;
+    }
+
+    /** Auto follows the count, the way a photo post does: past four, show four
+     *  and say how many more there are rather than shrinking them all. */
+    function autoClass(n) {
+      if (n <= 1) return 'p-set--n1';
+      if (n === 2) return 'p-set--n2';
+      if (n === 3) return 'p-set--n3';
+      return 'p-set--n4';
+    }
+
+    function carousel(photos) {
+      var wrap = el('div'); wrap.className = 'p-set p-set--n1 p-carousel'; wrap.id = 'poster-set';
+      var at = 0;
+      var host = el('div');
+      var nav = el('div'); nav.className = 'p-nav';
+      var prev = el('button', '‹ Prev'); prev.id = 'poster-prev';
+      var next = el('button', 'Next ›'); next.id = 'poster-next';
+      var count = el('span'); count.id = 'poster-count';
+      function draw() {
+        host.replaceChildren(tile(photos[at], at, 0));
+        count.textContent = String(at + 1) + ' of ' + String(photos.length);
+        prev.disabled = at === 0;
+        next.disabled = at === photos.length - 1;
+      }
+      prev.addEventListener('click', function () { if (at > 0) { at--; draw(); } });
+      next.addEventListener('click', function () { if (at < photos.length - 1) { at++; draw(); } });
+      nav.append(prev, count, next);
+      draw();
+      var outer = el('div');
+      wrap.append(host);
+      outer.append(wrap, nav);
+      return outer;
+    }
+
+    function photoSet() {
+      var photos = state.photos;
+      if (photos.length === 0) return emptyFrame();
+      if (state.layout === 'carousel') return carousel(photos);
+
+      var shown = photos;
+      var more = 0;
+      if (state.layout === 'auto' && photos.length > 4) {
+        shown = photos.slice(0, 4);
+        more = photos.length - 4;
+      }
+      var set = el('div'); set.id = 'poster-set';
+      set.className = 'p-set ' + (state.layout === 'auto' ? autoClass(shown.length) : 'p-set--' + state.layout);
+      set.setAttribute('data-layout', state.layout);
+      set.setAttribute('data-count', String(photos.length));
+      for (var i = 0; i < shown.length; i++) {
+        set.append(tile(shown[i], i, i === shown.length - 1 ? more : 0));
+      }
+      return set;
     }
 
     function viewMode() {
       app.replaceChildren();
-      app.append(frame());
-      var title = el('h1', str(args.title) || '—'); title.id = 'view-title';
-      var caption = el('p', str(args.caption) || '—'); caption.className = 'caption'; caption.id = 'view-caption';
+      app.append(photoSet());
+      var title = el('h1', state.title || '—'); title.id = 'view-title';
+      var caption = el('p', state.caption || '—'); caption.className = 'caption'; caption.id = 'view-caption';
       app.append(title, caption);
+    }
+
+    // ── edit ──────────────────────────────────────────────────────────────
+    function nextPhotoName() {
+      var max = 0;
+      for (var i = 0; i < state.photos.length; i++) {
+        var m = /^photo-(\d+)$/.exec(state.photos[i].name);
+        if (m) { var n = parseInt(m[1], 10); if (n > max) max = n; }
+      }
+      return 'photo-' + String(max + 1);
+    }
+
+    function blobsOut() {
+      var blobs = {};
+      for (var i = 0; i < state.photos.length; i++) {
+        var name = state.photos[i].name;
+        if (picked[name]) blobs[name] = picked[name];
+        else if (hasAttachment(name)) blobs[name] = { carry: true };
+      }
+      return blobs;
+    }
+
+    function streamDraft() {
+      var photos = [];
+      for (var i = 0; i < state.photos.length; i++) {
+        var p = state.photos[i];
+        photos.push({ name: p.name, alt: p.alt, caption: p.caption });
+      }
+      window.bridge.emit('draft', {
+        type: 'poster',
+        args: { title: state.title, caption: state.caption, layout: state.layout, photos: photos },
+        blobs: blobsOut()
+      });
+    }
+
+    var photosHost = null;
+
+    function photoEditor(p, i) {
+      var wrap = el('div'); wrap.className = 'e-photo'; wrap.id = 'photo-' + i;
+
+      var head = el('div'); head.className = 'e-photo__head';
+      head.append(el('span', 'Photo ' + String(i + 1)));
+      var grow = el('span'); grow.className = 'grow';
+      var up = el('button', '↑'); up.id = 'photo-up-' + i; up.title = 'Move up';
+      up.addEventListener('click', function () { movePhoto(i, -1); });
+      var down = el('button', '↓'); down.id = 'photo-down-' + i; down.title = 'Move down';
+      down.addEventListener('click', function () { movePhoto(i, 1); });
+      var del = el('button', '×'); del.id = 'photo-del-' + i; del.title = 'Remove';
+      del.addEventListener('click', function () { removePhoto(i); });
+      head.append(grow, up, down, del);
+      wrap.append(head);
+
+      var thumb = el('img'); thumb.className = 'e-thumb'; thumb.id = 'photo-thumb-' + i;
+      var url = photoUrl(p.name);
+      if (url) thumb.src = url; else thumb.style.display = 'none';
+
+      var file = el('input'); file.type = 'file'; file.accept = 'image/*'; file.id = 'photo-file-' + i;
+      var warn = el('div'); warn.className = 'warn'; warn.id = 'photo-warn-' + i;
+      file.addEventListener('change', function () {
+        var f = file.files && file.files[0];
+        if (!f) return;
+        if (f.size > MAX_BLOB_BYTES) {
+          warn.textContent = 'That photo is ' + Math.round(f.size / (1024 * 1024)) + ' MB. The limit is ' +
+            Math.round(MAX_BLOB_BYTES / (1024 * 1024)) + ' MB — use a smaller one.';
+          file.value = '';
+          return;
+        }
+        warn.textContent = '';
+        f.arrayBuffer().then(function (buf) {
+          picked[p.name] = { bytes: new Uint8Array(buf), mime: f.type || 'application/octet-stream' };
+          if (thumbUrls[p.name]) URL.revokeObjectURL(thumbUrls[p.name]);
+          thumbUrls[p.name] = URL.createObjectURL(f);
+          thumb.src = thumbUrls[p.name];
+          thumb.style.display = '';
+          streamDraft();
+        });
+      });
+
+      var alt = el('input'); alt.type = 'text'; alt.id = 'photo-alt-' + i; alt.value = p.alt;
+      alt.placeholder = 'Alt text (for people who cannot see it)';
+      alt.addEventListener('input', function () { p.alt = alt.value; streamDraft(); });
+      var cap = el('input'); cap.type = 'text'; cap.id = 'photo-caption-' + i; cap.value = p.caption;
+      cap.placeholder = 'Caption for this photo';
+      cap.addEventListener('input', function () { p.caption = cap.value; streamDraft(); });
+
+      wrap.append(thumb, file, warn, alt, cap);
+      return wrap;
+    }
+
+    function renderPhotos() {
+      photosHost.replaceChildren();
+      for (var i = 0; i < state.photos.length; i++) photosHost.append(photoEditor(state.photos[i], i));
+    }
+
+    function movePhoto(i, delta) {
+      var j = i + delta;
+      if (j < 0 || j >= state.photos.length) return;
+      var tmp = state.photos[i];
+      state.photos[i] = state.photos[j];
+      state.photos[j] = tmp;
+      renderPhotos();
+      streamDraft();
+    }
+
+    function removePhoto(i) {
+      var name = state.photos[i].name;
+      delete picked[name];
+      if (thumbUrls[name]) { URL.revokeObjectURL(thumbUrls[name]); delete thumbUrls[name]; }
+      state.photos.splice(i, 1);
+      renderPhotos();
+      streamDraft();
+    }
+
+    function addPhoto() {
+      if (state.photos.length >= MAX_PHOTOS) return;
+      state.photos.push({ name: nextPhotoName(), alt: '', caption: '' });
+      renderPhotos();
+      streamDraft();
+      var f = document.getElementById('photo-file-' + String(state.photos.length - 1));
+      if (f) f.focus();
     }
 
     function editMode() {
       app.replaceChildren();
-      app.append(frame()); // shows the CURRENT image (a new pick previews via the shell)
-      var title = el('input'); title.type = 'text'; title.id = 'edit-title'; title.value = str(args.title);
+
+      var title = el('input'); title.type = 'text'; title.id = 'edit-title'; title.value = state.title;
       title.placeholder = 'Title';
-      var caption = el('input'); caption.type = 'text'; caption.id = 'edit-caption'; caption.value = str(args.caption);
+      title.addEventListener('input', function () { state.title = title.value; streamDraft(); });
+
+      var caption = el('input'); caption.type = 'text'; caption.id = 'edit-caption'; caption.value = state.caption;
       caption.placeholder = 'Caption';
-      var file = el('input'); file.type = 'file'; file.id = 'edit-image'; file.accept = 'image/*';
-      file.style.marginTop = '12px';
-      var note = el('div', hasImage ? 'Keeping the current image unless you pick a new one.' : 'Pick an image.');
-      note.className = 'note'; note.id = 'note';
-      app.append(title, caption, file, note);
+      caption.addEventListener('input', function () { state.caption = caption.value; streamDraft(); });
 
-      var picked = null; // { bytes, mime } once the user chooses a file
-
-      function streamDraft() {
-        var blobs = {};
-        if (picked) blobs.image = picked;
-        else if (hasImage) blobs.image = { carry: true };
-        window.bridge.emit('draft', {
-          type: 'poster',
-          args: { title: title.value.trim(), caption: caption.value.trim() },
-          blobs: blobs
-        });
-      }
-
-      title.addEventListener('input', streamDraft);
-      caption.addEventListener('input', streamDraft);
-      file.addEventListener('change', function () {
-        var f = file.files && file.files[0];
-        if (!f) return;
-        f.arrayBuffer().then(function (buf) {
-          picked = { bytes: new Uint8Array(buf), mime: f.type || 'application/octet-stream' };
-          note.textContent = 'Picked: ' + f.name + ' — check the View preview.';
-          streamDraft();
-        });
+      var layout = el('select'); layout.id = 'edit-layout';
+      Object.keys(LAYOUTS).forEach(function (k) {
+        var o = el('option', LAYOUTS[k]); o.value = k;
+        if (state.layout === k) o.selected = true;
+        layout.append(o);
       });
+      layout.addEventListener('change', function () { state.layout = layout.value; streamDraft(); });
+
+      app.append(title, caption, layout);
+
+      photosHost = el('div'); photosHost.id = 'photos';
+      app.append(photosHost);
+      renderPhotos();
+
+      var add = el('button', '+ Add photo'); add.className = 'e-add'; add.id = 'add-photo';
+      add.addEventListener('click', addPhoto);
+      app.append(add);
+
+      var note = el('div', 'Arrangement and captions preview live — publish from the shell header when you’re ready.');
+      note.className = 'note'; note.id = 'note';
+      app.append(note);
+
       streamDraft(); // initial state, so the shell's Publish enables immediately
       title.focus();
     }
