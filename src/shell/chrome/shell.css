@@ -43,7 +43,11 @@ body {
   font-size: var(--evm-text-sm);
 }
 .sh-topbar .evm-input {
-  max-width: 320px;
+  /* Flexes rather than capping at 320px, where it clipped its own hint text.
+     min-width keeps it usable when the topbar is crowded. */
+  flex: 1;
+  min-width: 22em;
+  max-width: 46em;
 }
 .sh-toast {
   max-width: 40ch;
@@ -258,6 +262,27 @@ body {
   justify-self: start;
   white-space: nowrap;
 }
+
+/* Share modal: one row per way out, each with its own status line so a
+   refused clipboard or a cancelled save says so where it happened. */
+.sh-share { max-width: 34em; }
+.sh-share-row { display: flex; align-items: baseline; gap: var(--evm-space-3); margin: var(--evm-space-3) 0; }
+.sh-share-row > button { flex: 0 0 auto; }
+.sh-share-note { margin: 0; }
+/* The seeding warning sits ABOVE its control, not beside it: it is the one row
+   here that exposes something to the network, and it should be read first. */
+.sh-share-warn { margin: var(--evm-space-4) 0 var(--evm-space-2); padding-top: var(--evm-space-3);
+                 border-top: 1px solid var(--evm-border); font-size: var(--evm-text-sm);
+                 color: var(--evm-warning, #e0a03a); }
+.sh-share-magnet { margin-top: var(--evm-space-2); }
+.sh-share-magnet:empty { display: none; }
+
+/* Sharing view. */
+.sh-sharing { max-width: 40em; }
+.sh-sharing-list { margin-top: var(--evm-space-3); }
+.sh-sharing-row { border-top: 1px solid var(--evm-border); padding: var(--evm-space-3) 0; }
+.sh-sharing-head { display: flex; align-items: center; gap: var(--evm-space-2); margin-bottom: var(--evm-space-2); }
+.sh-sharing-head > .sh-hint { flex: 1; }
 
 /* Account & Keys modal. */
 .sh-account {

@@ -25,6 +25,10 @@ interface ShellApi {
   publishDraft(): Promise<Record<string, unknown>>
   copyThing(envelopeHash: string): Promise<Record<string, unknown>>
   exportThing(envelopeHash: string): Promise<{ path: string | null; error?: string }>
+  exportBase64(envelopeHash: string): Promise<{ base64?: string; bytes?: number; error?: string }>
+  seedStart(envelopeHash: string): Promise<{ magnet?: string; error?: string }>
+  seedStop(envelopeHash: string): Promise<{ stopped: boolean }>
+  seedStatus(): Promise<{ envelopeHash: string; magnet: string; peers: number; bytes: number; type: string }[]>
   deleteThing(envelopeHash: string): Promise<{ deleted: boolean }>
   overlay(delta: 1 | -1): void
   accountAccounts(mnemonic: string, count?: number): Promise<
@@ -36,6 +40,7 @@ interface ShellApi {
   accountGenerate(): Promise<{ mnemonic: string; address: string }>
   accountExport(): Promise<{ privkeyHex: string }>
   onOpenAccount(cb: () => void): void
+  onOpenSharing(cb: () => void): void
   onFileOpened(cb: (r: Record<string, unknown>) => void): void
   knownTypes(): Promise<KnownTypeEntry[]>
   drafts(): Promise<DraftRow[]>
@@ -958,6 +963,200 @@ function renderModeToggle(): HTMLElement {
   return wrap
 }
 
+/** Every way a thing can leave this machine, in one place.
+ *
+ *  Copy carries the whole bundle as text, which is what the Ingest box's paste
+ *  path takes — no network, so it is the way to move something between two
+ *  machines today. Save writes the same bytes to a .thing file. Both hand over
+ *  the ORIGINAL admitted bundle, so the thing keeps its author, its signature
+ *  and its hash wherever it lands. */
+function openShareModal(envelopeHash: string, type: string): void {
+  const overlay = el('div', 'evm-modal-overlay')
+  const modal = el('div', 'evm-modal sh-share')
+  modal.setAttribute('data-testid', 'share-modal')
+  const header = el('div', 'evm-modal-header')
+  header.append(el('span', 'evm-modal-title', `Share this ${type}`))
+  const body = el('div', 'evm-modal-body')
+  body.append(
+    el('p', 'sh-hint', 'Whatever leaves here is the bundle exactly as it was signed — same author, same content hash. Nothing is re-signed on the way out.')
+  )
+
+  const copyRow = el('div', 'sh-share-row')
+  const copyBtn = el('button', 'evm-btn evm-btn--primary evm-btn--sm', 'Copy bundle')
+  copyBtn.setAttribute('data-testid', 'share-copy')
+  const copyNote = el('div', 'sh-hint sh-share-note')
+  copyNote.setAttribute('data-testid', 'share-copy-note')
+  copyNote.textContent = 'As text, for pasting into another shell’s Ingest box.'
+  copyBtn.addEventListener('click', async () => {
+    const r = await shell.exportBase64(envelopeHash)
+    if (r.error || !r.base64) {
+      copyNote.textContent = `Could not copy: ${String(r.error ?? 'unknown')}`
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(r.base64)
+      copyNote.textContent = `Copied ${Math.max(1, Math.round((r.bytes ?? 0) / 1024))} KB — paste it into Ingest on the other machine.`
+    } catch {
+      // Clipboard can be refused. Say so rather than claiming success.
+      copyNote.textContent = 'The clipboard refused it — use Save as a file instead.'
+    }
+  })
+  copyRow.append(copyBtn, copyNote)
+
+  const saveRow = el('div', 'sh-share-row')
+  const saveBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Save as file…')
+  saveBtn.setAttribute('data-testid', 'share-save')
+  const saveNote = el('div', 'sh-hint sh-share-note')
+  saveNote.setAttribute('data-testid', 'share-save-note')
+  saveNote.textContent = 'A .thing file to copy across however you like.'
+  saveBtn.addEventListener('click', async () => {
+    const r = await shell.exportThing(envelopeHash)
+    if (r.error) saveNote.textContent = `Save failed: ${r.error}`
+    else if (r.path) saveNote.textContent = `Saved to ${r.path}`
+    // Cancelled: the human closed the dialog, which needs no announcement.
+  })
+  saveRow.append(saveBtn, saveNote)
+
+  // ── Seed over BitTorrent ────────────────────────────────────────────────
+  // The only row here that exposes anything: the others hand bytes to the
+  // human, this one announces to the network. So it says what that means
+  // BEFORE the control, in the same register as the software-keys warning,
+  // and it is off until asked.
+  const seedRow = el('div', 'sh-share-row sh-share-row--seed')
+  const seedBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Seed over BitTorrent') as HTMLButtonElement
+  seedBtn.setAttribute('data-testid', 'share-seed')
+  const seedNote = el('div', 'sh-hint sh-share-note')
+  seedNote.setAttribute('data-testid', 'share-seed-note')
+  const magnetSlot = el('div', 'sh-share-magnet')
+  magnetSlot.setAttribute('data-testid', 'share-magnet-slot')
+
+  const warn = el('p', 'sh-share-warn')
+  warn.textContent =
+    'Seeding announces this to the BitTorrent DHT: anyone with the link learns the address of whoever is serving it. A sealed thing stays encrypted, but that you hold it does not.'
+
+  const paintSeed = (magnet: string | null): void => {
+    magnetSlot.replaceChildren()
+    if (magnet) {
+      seedBtn.textContent = 'Stop seeding'
+      seedNote.textContent = 'Being served to peers. The link works while this shell is running.'
+      magnetSlot.append(copyField('magnet link', magnet, 'share-magnet'))
+    } else {
+      seedBtn.textContent = 'Seed over BitTorrent'
+      seedNote.textContent = 'Off. Nothing about this thing is announced.'
+    }
+  }
+
+  let seeding: string | null = null
+  seedBtn.addEventListener('click', async () => {
+    seedBtn.disabled = true
+    try {
+      if (seeding) {
+        await shell.seedStop(envelopeHash)
+        seeding = null
+        paintSeed(null)
+      } else {
+        seedNote.textContent = 'Starting…'
+        const r = await shell.seedStart(envelopeHash)
+        if (r.error || !r.magnet) {
+          seedNote.textContent = `Could not seed: ${String(r.error ?? 'unknown')}`
+          return
+        }
+        seeding = r.magnet
+        paintSeed(r.magnet)
+      }
+    } finally {
+      seedBtn.disabled = false
+    }
+  })
+
+  seedNote.textContent = 'Checking…'
+  // Reflect what is ALREADY being seeded, so reopening this does not offer to
+  // start something that is already running. Deliberately NOT awaited before
+  // the modal is shown: a dialog that waits on anything before appearing feels
+  // broken, and this only decides which label the button carries.
+  void shell
+    .seedStatus()
+    .then((current) => {
+      seeding = current.find((x) => x.envelopeHash === envelopeHash)?.magnet ?? null
+      paintSeed(seeding)
+    })
+    .catch(() => paintSeed(null))
+
+  seedRow.append(seedBtn, seedNote)
+  body.append(copyRow, saveRow, warn, seedRow, magnetSlot)
+
+  const footer = el('div', 'evm-modal-footer')
+  const close = el('button', 'evm-btn evm-btn--ghost', 'Close')
+  close.setAttribute('data-testid', 'share-close')
+  close.addEventListener('click', () => overlay.remove())
+  footer.append(close)
+
+  modal.append(header, body, footer)
+  overlay.append(modal)
+  document.body.append(trackOverlay(overlay))
+}
+
+/** Everything this shell is currently announcing to the network, in one place.
+ *
+ *  The convenience — stop one, copy its link — matters less than the question
+ *  it answers: what am I exposing right now? That should be answerable without
+ *  opening each thing in turn. */
+function openSharingModal(): void {
+  const overlay = el('div', 'evm-modal-overlay')
+  const modal = el('div', 'evm-modal sh-sharing')
+  modal.setAttribute('data-testid', 'sharing-modal')
+  const header = el('div', 'evm-modal-header')
+  header.append(el('span', 'evm-modal-title', 'Sharing'))
+  const body = el('div', 'evm-modal-body')
+  const list = el('div', 'sh-sharing-list')
+  list.setAttribute('data-testid', 'sharing-list')
+  body.append(
+    el('p', 'sh-hint', 'Things this shell is serving to peers. Each one announces to the BitTorrent DHT while it runs — anyone with the link learns the address serving it.'),
+    list
+  )
+
+  const paint = async (): Promise<void> => {
+    const rows = await shell.seedStatus().catch(() => [])
+    list.replaceChildren()
+    list.setAttribute('data-count', String(rows.length))
+    if (rows.length === 0) {
+      const none = el('p', 'sh-hint', 'Nothing is being shared.')
+      none.setAttribute('data-testid', 'sharing-empty')
+      list.append(none)
+      return
+    }
+    for (const r of rows) {
+      const row = el('div', 'sh-sharing-row')
+      row.setAttribute('data-envelope-hash', r.envelopeHash)
+      const head = el('div', 'sh-sharing-head')
+      head.append(el('span', 'evm-badge evm-badge--neutral', r.type))
+      head.append(el('span', 'sh-hash evm-address evm-address--muted', short(r.envelopeHash, 8)))
+      // Peers is the honest measure of whether sharing is doing anything.
+      head.append(el('span', 'sh-hint', r.peers === 1 ? '1 peer' : `${r.peers} peers`))
+      const stop = el('button', 'evm-btn evm-btn--ghost evm-btn--sm', 'Stop')
+      stop.setAttribute('data-testid', 'sharing-stop')
+      stop.addEventListener('click', async () => {
+        await shell.seedStop(r.envelopeHash)
+        await paint()
+      })
+      head.append(stop)
+      row.append(head, copyField('magnet link', r.magnet, `sharing-magnet-${r.envelopeHash.slice(0, 8)}`))
+      list.append(row)
+    }
+  }
+
+  const footer = el('div', 'evm-modal-footer')
+  const close = el('button', 'evm-btn evm-btn--ghost', 'Close')
+  close.setAttribute('data-testid', 'sharing-close')
+  close.addEventListener('click', () => overlay.remove())
+  footer.append(close)
+
+  modal.append(header, body, footer)
+  overlay.append(modal)
+  document.body.append(trackOverlay(overlay))
+  void paint()
+}
+
 let repliesBadge: HTMLElement | null = null
 
 const replyLabel = (n: number): string => (n === 0 ? 'no comments' : n === 1 ? '1 comment' : `${n} comments`)
@@ -1075,18 +1274,13 @@ function renderHeader(h: HeaderFacts | null): void {
     else showText(`Copy failed: ${String(outcome.reason ?? outcome.status)}`, 'danger')
     await refreshFeed()
   })
-  // Export: write this thing out as a .thing file to carry to another machine
-  // (or another account). The ORIGINAL admitted bytes, so it stays signed by
-  // its author and keeps its envelope hash wherever it lands.
-  const exportBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Export\u2026')
+  // Share: every way this thing can leave the machine, behind one control.
+  // Deliberately ONE button rather than three -- this row already carries nine
+  // and overflows its pane at the default window size.
+  const exportBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Share\u2026')
   if (h.draft) exportBtn.style.display = 'none' // nothing signed to hand over yet
   exportBtn.setAttribute('data-testid', 'header-export')
-  exportBtn.addEventListener('click', async () => {
-    const r = await shell.exportThing(h.envelopeHash)
-    if (r.error) showText(`Export failed: ${r.error}`, 'danger')
-    else if (r.path) showText(`Saved to ${r.path}`, 'success')
-    // Cancelled: the human closed the dialog, which needs no announcement.
-  })
+  exportBtn.addEventListener('click', () => openShareModal(h.envelopeHash, h.type))
   const delBtn = el('button', 'evm-btn evm-btn--danger evm-btn--sm', h.draft ? 'Discard' : 'Delete')
   delBtn.setAttribute('data-testid', 'header-delete')
   delBtn.addEventListener('click', () => void deleteWithConfirm(h.envelopeHash, h.type, h.draft === true))
@@ -1279,6 +1473,7 @@ shell.onPublishResult((o) => {
     if (o.draftConsumed === true && typeof o.envelopeHash === 'string') void openThing(o.envelopeHash)
   } else showText(`Publish failed: ${String(o.reason ?? o.status)}`, 'danger')
 })
+shell.onOpenSharing(() => openSharingModal())
 shell.onOpenAccount(() => void openAccountModal()) // File → Account & Keys…
 // A .thing double-clicked in the file manager: say what became of it, using
 // the same wording as any other ingest (it went through the same gate).

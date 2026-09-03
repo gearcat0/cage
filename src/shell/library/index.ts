@@ -255,6 +255,17 @@ export class Library {
       );
       CREATE INDEX IF NOT EXISTS idx_refs_target ON refs(target_hash, rel);
 
+      -- Which things this shell is SERVING to peers. Local bookkeeping only:
+      -- it never enters a thing, and it says nothing about who has fetched
+      -- one. A new table, not a column on things -- migrate() is idempotent
+      -- CREATE-IF-NOT-EXISTS with no version column, so an added column would
+      -- silently not apply to an existing library.
+      CREATE TABLE IF NOT EXISTS seeding (
+        envelope_hash TEXT PRIMARY KEY,
+        magnet        TEXT NOT NULL,
+        started_at    INTEGER NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
     `)
     this.backfillRefs()
@@ -443,6 +454,24 @@ export class Library {
     return rows.map(toThingRow)
   }
 
+  /** Things this shell was seeding when it last ran, so it can resume. */
+  seeding(): { envelopeHash: string; magnet: string; startedAt: number }[] {
+    const rows = this.db
+      .prepare('SELECT envelope_hash, magnet, started_at FROM seeding ORDER BY started_at')
+      .all() as { envelope_hash: string; magnet: string; started_at: number }[]
+    return rows.map((r) => ({ envelopeHash: r.envelope_hash, magnet: r.magnet, startedAt: r.started_at }))
+  }
+
+  rememberSeeding(envelopeHash: string, magnet: string, now: number): void {
+    this.db
+      .prepare('INSERT OR REPLACE INTO seeding (envelope_hash, magnet, started_at) VALUES (?,?,?)')
+      .run(envelopeHash, magnet, now)
+  }
+
+  forgetSeeding(envelopeHash: string): void {
+    this.db.prepare('DELETE FROM seeding WHERE envelope_hash = ?').run(envelopeHash)
+  }
+
   get(envelopeHash: string): ThingRow | null {
     const r = this.db.prepare('SELECT * FROM things WHERE envelope_hash = ?').get(envelopeHash) as Row | undefined
     return r ? toThingRow(r) : null
@@ -499,6 +528,10 @@ export class Library {
       // they are still real, the target just is not local any more — which is
       // exactly what the reply's header then says.
       this.db.prepare('DELETE FROM refs WHERE envelope_hash = ?').run(envelopeHash)
+      // Stop remembering that we were serving it. The live torrent is stopped
+      // by the caller (deleteThing); this is the record that would otherwise
+      // resume seeding a thing the human deleted, on the next start.
+      this.db.prepare('DELETE FROM seeding WHERE envelope_hash = ?').run(envelopeHash)
     })()
     this.gc(candidates)
     return true
