@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { appendFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test, expect, launchShell, type ShellHandle } from './helpers.js'
 
@@ -48,7 +48,18 @@ async function thingEval<T>(js: string, which: 'view' | 'edit' | 'preview' = 'vi
       if (id == null) throw new Error(`no ${a.which} cage`)
       const wc = electron.webContents.fromId(id)
       if (!wc || wc.isDestroyed()) throw new Error('cage wc gone')
-      return (await wc.executeJavaScript(a.js)) as never
+      // BOUNDED. The isDestroyed check above is a moment in time: a cage
+      // remounted between it and this call leaves an executeJavaScript that
+      // NEVER SETTLES, and nothing here has a timeout of its own — so one
+      // unlucky read consumed the test's whole 90s budget and the failure
+      // surfaced somewhere else entirely. Time it out and let the caller
+      // retry, which is what the polls around this already do.
+      return (await Promise.race([
+        wc.executeJavaScript(a.js),
+        new Promise((_r, reject) =>
+          setTimeout(() => reject(new Error(`read of the ${a.which} cage did not answer in 8s`)), 8000)
+        )
+      ])) as never
     },
     { which, js }
   )
@@ -72,8 +83,39 @@ async function shellSurface<T>(field: 'lastConfirm' | 'lastPublish'): Promise<T>
   }, field)
 }
 
+/** A progress trail that survives a HARD test timeout.
+ *
+ *  Playwright kills the test at its budget, so nothing this file throws after
+ *  that ever runs — which is why every capture so far reported the poll that
+ *  happened to be running during teardown rather than the step that hung. The
+ *  bare awaits here (sendInputEvent, thingEval reads, switchMode) have NO
+ *  timeout of their own, so one of them stalling consumes the whole budget
+ *  silently. Writing each step to a file as it happens is the only record that
+ *  outlives the kill. */
+const TRAIL = process.env.NAMETAG_TRAIL ?? ''
+function mark(step: string): void {
+  if (!TRAIL) return
+  try {
+    appendFileSync(TRAIL, `${Date.now()} ${step}\n`)
+  } catch {
+    /* diagnostics must never break the test */
+  }
+}
+
+/** How long each poll in the CURRENT test actually took. This test runs ~10
+ *  sequential polls inside a 90s budget, so "which poll hung" and "the budget
+ *  ran out earlier" look identical from the failure alone — the timings tell
+ *  them apart. Reset per test. */
+let pollLog: string[] = []
+let testStartedAt = Date.now()
+test.beforeEach(() => {
+  pollLog = []
+  testStartedAt = Date.now()
+})
+
 async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs = 20_000, what = ''): Promise<T> {
   const site = new Error().stack?.split('\n')[2]?.trim().replace(/^at\s+/, '').slice(0, 90) ?? ''
+  const began = Date.now()
   const deadline = Date.now() + timeoutMs
   // The FIRST error is the diagnostic one; the last is almost always the
   // teardown ("browser has been closed") overwriting it once the test has
@@ -85,7 +127,12 @@ async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs 
     try {
       value = await fn()
       threw = null
-      if (pred(value)) return value
+      if (pred(value)) {
+        const label = `${what || site.slice(-28)}: ${Date.now() - began}ms (at +${Math.round((Date.now() - testStartedAt) / 1000)}s)`
+        pollLog.push(label)
+        mark(`poll done ${label}`)
+        return value
+      }
     } catch (e) {
       // Keep the reason: "no preview cage" and "cage wc gone" are different
       // failures, and `value` stays undefined for both.
@@ -114,6 +161,7 @@ async function poll<T>(fn: () => Promise<T>, pred: (v: T) => boolean, timeoutMs 
         )
       throw new Error(
         `poll timed out at ${site}${what ? ` waiting for ${what}` : ''}; last value: ${JSON.stringify(value)}` +
+          `; polls so far: [${pollLog.join(' | ')}]` +
           (firstError ? ` (first error: ${firstError})` : '') +
           (threw && threw !== firstError ? ` (last error: ${threw})` : '') +
           `; modeState: ${diag}`
@@ -280,8 +328,11 @@ test('a denied publish is dropped', async () => {
 
 test('edit mode re-publishes with a changed name', async () => {
   await resetLastPublish()
+  mark('opening the named instance')
   await openViaChrome(namedHash)
+  mark('opened; switching to edit')
   await switchMode('edit')
+  mark('in edit mode')
   const prefill = await poll(
     () => thingEval<string | null>(`document.getElementById('name')?.value ?? null`, 'edit'),
     (v) => v !== null
@@ -330,7 +381,14 @@ test('live preview: view mode shows the unpublished draft in final form', async 
 
   // View mode now shows the DRAFT rendered in final form...
   await switchMode('view')
-  expect(await displayText('preview')).toBe('Previewed')
+  mark('switched to view; reading the preview')
+  await poll(
+    () => displayText('preview'),
+    (t) => t === 'Previewed',
+    20_000,
+    'the preview to still show the typed draft after switching to view'
+  )
+  mark('preview read OK')
   // ...and the View/Edit/Publish controls have NOT moved despite the badge swap.
   // Compared with a sub-pixel tolerance: the property under test is "the
   // controls do not shift", and exact float equality also fails on harmless
@@ -377,6 +435,7 @@ test('live preview: view mode shows the unpublished draft in final form', async 
 })
 
 test('live preview works when editing an EXISTING instance, without stealing focus', async () => {
+  mark('--- test start ---')
   const focusedId = (): Promise<number | null> =>
     shell.app.evaluate(async (electron) => (electron.webContents.getFocusedWebContents()?.id ?? null) as never)
 
@@ -427,8 +486,11 @@ test('live preview works when editing an EXISTING instance, without stealing foc
 
   // REAL keystrokes, spread across several preview remounts: every character
   // must land (this is exactly the "focus lost constantly while typing" bug).
+  mark('clearing the input before the typing burst')
   await thingEval(`var i = document.getElementById('name'); i.value = ''; i.focus();`, 'edit')
+  mark('input cleared; starting keystrokes')
   for (const ch of 'Real Name') {
+    mark(`keystroke ${ch}`)
     await shell.app.evaluate(
       async (electron, a) => {
         const wc = electron.webContents.fromId(a.id)
@@ -439,11 +501,15 @@ test('live preview works when editing an EXISTING instance, without stealing foc
     )
     await new Promise((r) => setTimeout(r, 90))
   }
+  mark('keystrokes done; reading the value back')
   expect(await thingEval<string>(`document.getElementById('name').value`, 'edit')).toBe('Real Name')
+  mark('value read back OK')
   await poll(focusedId, (id) => id === editWcId, 20_000, 'focus to survive the whole typing burst')
 
   // And the preview really is the draft of the EXISTING instance's edit.
+  mark('switching to view')
   await switchMode('view')
+  mark('switched to view; waiting for the preview to show the edit')
   await poll(
     () => thingEval<string | null>(`document.getElementById('display')?.textContent ?? null`, 'preview'),
     (v) => v === 'Real Name',
