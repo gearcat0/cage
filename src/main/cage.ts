@@ -75,6 +75,13 @@ export async function createCage(opts: CageOptions): Promise<CageHandle> {
     }
   })
 
+  // An unpainted view is WHITE by default, so switching things flashed white
+  // before the program's own background landed -- harsh, and worse in a dark
+  // app. Match the shell's window/cage-area colour (--evm-bg) so the gap is
+  // invisible instead of a strobe. This is chrome-side presentation only: the
+  // thing still paints whatever it likes over the top.
+  view.setBackgroundColor('#08080a')
+
   const contents = view.webContents
 
   await hardenSession(ses, opts.resources)

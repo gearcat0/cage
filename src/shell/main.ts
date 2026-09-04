@@ -916,6 +916,14 @@ app.whenReady().then(async () => {
       }
     }
     o.activeMode = mode
+    // Entering view: build the preview the human is about to look at, if the
+    // latest draft is not already what it shows. While editing, drafts are
+    // recorded but NOT mounted (see the observer), so this is where the wait
+    // is paid -- once, when it buys something.
+    if (mode === 'view' && o.latestDraft && o.lastPreviewKey !== draftKey(o.latestDraft)) {
+      o.pendingDraft = o.latestDraft
+      void mountPreview(o)
+    }
     applyVisibility()
     applyZoom()
     // Hand keyboard focus to the cage that just became visible, so e.g.
@@ -1269,6 +1277,10 @@ app.whenReady().then(async () => {
 
   // Coalesce keystroke-rate drafts into one remount per quiet period.
   const PREVIEW_DEBOUNCE_MS = 600
+  // Quiet period before pre-warming a preview nobody is looking at yet. Long
+  // enough that ordinary typing never triggers it, short enough that a pause
+  // leaves View ready before the human gets there.
+  const PREVIEW_IDLE_MS = 1200
   setDraftObserver((req) => {
     const o = current
     // Drafts drive the editing session: accept them only from the edit cage
@@ -1304,12 +1316,32 @@ app.whenReady().then(async () => {
     }
     openLog('draft:accepted', { key: draftKey(req.draft).slice(0, 50), timerPending: o.draftTimer !== null })
     o.pendingDraft = req.draft
-    if (o.draftTimer) return
-    o.draftTimer = setTimeout(() => {
+    // How soon to rebuild depends on whether anyone is LOOKING at the preview.
+    //
+    // Visible (view mode, the preview is on screen): coalesce at 600ms and
+    // fire repeatedly, so what is on screen keeps up.
+    //
+    // Hidden (edit mode): the preview cannot be seen -- applyVisibility shows
+    // it in view mode only -- so rebuilding per keystroke burst was an entire
+    // cage (new renderer, program load, swap, destroy) for nobody. Measured at
+    // SEVEN mounts in four seconds of ordinary typing: that is the lag, and
+    // the focus flicker as views swap under the typist. So while editing this
+    // is a TRAILING debounce that resets on every keystroke: nothing rebuilds
+    // while keys are flowing, and one rebuild happens once typing settles, so
+    // switching to View is still instant.
+    const visible = o.activeMode === 'view'
+    const fire = (): void => {
       o.draftTimer = null
       openLog('draft:timer-fired', { hasPending: o.pendingDraft !== null, mounting: o.previewMounting })
       if (current === o) void mountPreview(o)
-    }, PREVIEW_DEBOUNCE_MS)
+    }
+    if (visible) {
+      if (o.draftTimer) return // already coalescing; keep the cadence steady
+      o.draftTimer = setTimeout(fire, PREVIEW_DEBOUNCE_MS)
+    } else {
+      if (o.draftTimer) clearTimeout(o.draftTimer)
+      o.draftTimer = setTimeout(fire, PREVIEW_IDLE_MS)
+    }
     o.draftTimer.unref?.()
   })
 
