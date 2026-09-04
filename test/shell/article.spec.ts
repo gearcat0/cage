@@ -41,7 +41,16 @@ async function cageEval<T>(js: string, which: 'view' | 'edit' | 'preview'): Prom
       if (id == null) throw new Error(`no ${a.which} cage`)
       const wc = electron.webContents.fromId(id)
       if (!wc || wc.isDestroyed()) throw new Error('cage gone')
-      return (await wc.executeJavaScript(a.js)) as never
+      // BOUNDED: a cage remounted between the isDestroyed check above and this
+      // call leaves an executeJavaScript that never settles, and nothing here
+      // has a timeout — one unlucky read then eats the whole test budget and
+      // the failure surfaces somewhere else. Time out and let the caller retry.
+      return (await Promise.race([
+        wc.executeJavaScript(a.js),
+        new Promise((_r, reject) =>
+          setTimeout(() => reject(new Error(`read of the ${a.which} cage did not answer in 8s`)), 8000)
+        )
+      ])) as never
     },
     { which, js }
   )
