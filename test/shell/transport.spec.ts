@@ -77,6 +77,11 @@ test('verify-at-the-gate: a transport delivering HOSTILE bytes is rejected by ad
 })
 
 test('magnet: routes to the webtorrent transport and fails cleanly with no peers', async () => {
+  // Its own budget: this launches a second shell AND brings up a real
+  // webtorrent client, which bootstraps the DHT before it can fail. That is
+  // comfortably past the 30s default on Windows, where it first blew. Every
+  // webtorrent-touching test has needed this -- client startup is the cost.
+  test.setTimeout(90_000)
   // webtorrent IS installed now, so this no longer asserts the missing-module
   // message. What is still worth pinning is the same thing it always was: a
   // magnet dispatches to that transport and a failure is a clean `invalid`,

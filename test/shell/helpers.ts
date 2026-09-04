@@ -221,6 +221,9 @@ export interface ShellHandle {
   drafts(): Promise<{ id: string; type: string; progHash: string; args: unknown; created: number; updated: number }[]>
   newDraft(key: string, args?: unknown): Promise<{ id?: string; error?: string }>
   newComment(targetHash: string): Promise<{ id?: string; error?: string }>
+  /** Start an attestation about a thing, and read the ones pointing at it. */
+  newAttestation(targetHash: string): Promise<{ id?: string; error?: string }>
+  attestations(targetHash: string): Promise<{ count: number; rows: { envelopeHash: string; authorKey: string }[] }>
   draftBlobs(draftId: string): Promise<{ name: string; hash: string; mime: string; size: number }[]>
   replies(targetHash: string): Promise<{ count: number; rows: Record<string, unknown>[] }>
   deleteDraft(id: string): Promise<{ deleted: boolean }>
@@ -463,6 +466,20 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
         },
         { key, args }
       ),
+    newAttestation: (targetHash: string) =>
+      app.evaluate(async (electron, h) => {
+        const s = (
+          electron.app as unknown as { __shell: { newAttestation: (h: string) => Record<string, unknown> } }
+        ).__shell
+        return s.newAttestation(h)
+      }, targetHash),
+    attestations: (targetHash: string) =>
+      app.evaluate(async (electron, h) => {
+        const s = (
+          electron.app as unknown as { __shell: { attestations: (h: string) => { count: number; rows: unknown[] } } }
+        ).__shell
+        return s.attestations(h) as never
+      }, targetHash),
     newComment: (targetHash: string) =>
       app.evaluate(async (electron, h) => {
         const s = (electron.app as unknown as { __shell: { newComment: (x: string) => unknown } }).__shell

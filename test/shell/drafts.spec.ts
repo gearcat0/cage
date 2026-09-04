@@ -81,7 +81,17 @@ test('the built app ships the starter programs', async () => {
     // packaging proof that ?raw inlining really shipped the samples.
     const types = await shell.knownTypes()
     const starters = types.filter((t) => t.source === 'starter')
-    expect(starters.map((s) => s.type)).toEqual(['nametag', 'card', 'memo', 'invite', 'todo', 'article', 'comment', 'poster'])
+    expect(starters.map((s) => s.type)).toEqual([
+      'nametag',
+      'card',
+      'memo',
+      'invite',
+      'todo',
+      'article',
+      'comment',
+      'attestation',
+      'poster'
+    ])
     for (const s of starters) expect(s.progHash).toBe(sampleHash(s.type))
   } finally {
     await shell.close()

@@ -38,6 +38,11 @@ const shell = {
   publishDraft: (): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:publish'),
   /** Copy a thing: a new instance, same program/args, signed by this identity. */
   copyThing: (envelopeHash: string): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:copy', envelopeHash),
+  /** Start an attestation about a thing, and read the ones pointing at it. */
+  newAttestation: (targetHash: string): Promise<{ id?: string; error?: string }> =>
+    ipcRenderer.invoke('shell:new-attestation', targetHash),
+  attestations: (targetHash: string): Promise<{ count: number; rows: unknown[] }> =>
+    ipcRenderer.invoke('shell:attestations', targetHash),
   /** Save a thing to a .thing file the human picks — the ORIGINAL admitted
    *  bytes, so it stays signed by its author and keeps its envelope hash. */
   exportThing: (envelopeHash: string): Promise<{ path: string | null; error?: string }> =>

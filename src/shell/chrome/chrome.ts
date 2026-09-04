@@ -46,6 +46,8 @@ interface ShellApi {
   drafts(): Promise<DraftRow[]>
   newDraft(key: string, args?: unknown): Promise<{ id?: string; type?: string; error?: string }>
   newComment(targetHash: string): Promise<{ id?: string; error?: string }>
+  newAttestation(targetHash: string): Promise<{ id?: string; error?: string }>
+  attestations(targetHash: string): Promise<{ count: number; rows: ThingRow[] }>
   replies(targetHash: string): Promise<{ count: number; rows: ThingRow[] }>
   deleteDraft(id: string): Promise<{ deleted: boolean }>
   onFeedChanged(cb: () => void): void
@@ -101,6 +103,11 @@ interface HeaderFacts {
   replyTo?: string | null
   replyToKnown?: boolean
   replyCount?: number
+  /** What this thing attests to, and how many things attest to IT. Claims, as
+   *  replyTo is — the header labels them, never verifies them. */
+  attests?: string | null
+  attestsKnown?: boolean
+  attestCount?: number
 }
 type Outcome =
   | { status: 'valid'; type: string; author?: { k: string } }
@@ -1158,8 +1165,64 @@ function openSharingModal(): void {
 }
 
 let repliesBadge: HTMLElement | null = null
+let attestBadge: HTMLElement | null = null
 
 const replyLabel = (n: number): string => (n === 0 ? 'no comments' : n === 1 ? '1 comment' : `${n} comments`)
+const attestLabel = (n: number): string =>
+  n === 0 ? 'no attestations' : n === 1 ? '1 attestation' : `${n} attestations`
+
+/** Who has put their signature behind a statement about this thing.
+ *
+ *  The count is deliberately not a score. A signature proves WHO said
+ *  something, never that it is so, and an attestation from a key you know
+ *  nothing about tells you nothing — so this lists them with their authors and
+ *  leaves the judgement where it belongs. */
+async function openAttestationsModal(target: string): Promise<void> {
+  const { rows } = await shell.attestations(target)
+  const overlay = el('div', 'evm-modal-overlay')
+  const modal = el('div', 'evm-modal')
+  modal.setAttribute('data-testid', 'attestations-modal')
+  const header = el('div', 'evm-modal-header')
+  header.append(el('span', 'evm-modal-title', 'Attestations'))
+  const body = el('div', 'evm-modal-body')
+  body.append(
+    el(
+      'p',
+      'sh-hint',
+      'Things in your library that put a signature behind a statement about this. Each signature proves who said it — not that it is true, and not that this thing’s author agreed.'
+    )
+  )
+  if (rows.length === 0) body.append(el('div', 'evm-empty', 'Nothing in your library attests to this.'))
+  for (const row of rows) {
+    const item = el('button', 'sh-feed-item')
+    item.setAttribute('data-testid', 'attestation-item')
+    item.setAttribute('data-envelope-hash', row.envelopeHash)
+    const line = el('div', 'sh-feed-line')
+    line.append(
+      el('span', 'evm-badge evm-badge--neutral', row.type),
+      el(
+        'span',
+        'sh-feed-author evm-address evm-address--muted',
+        row.authorScheme === 'eth-eip191' ? shortAddress(row.authorKey) : short(row.authorKey)
+      ),
+      el('span', 'sh-feed-flags')
+    )
+    item.append(line)
+    item.addEventListener('click', () => {
+      overlay.remove()
+      void openThing(row.envelopeHash)
+    })
+    body.append(item)
+  }
+  const footer = el('div', 'evm-modal-footer')
+  const close = el('button', 'evm-btn evm-btn--ghost', 'Close')
+  close.setAttribute('data-testid', 'attestations-close')
+  close.addEventListener('click', () => overlay.remove())
+  footer.append(close)
+  modal.append(header, body, footer)
+  overlay.append(modal)
+  document.body.append(trackOverlay(overlay))
+}
 
 /** Things in THIS library that claim to reply to `target`. */
 async function openRepliesModal(target: string): Promise<void> {
@@ -1321,6 +1384,29 @@ function renderHeader(h: HeaderFacts | null): void {
     repliesBadge.setAttribute('data-envelope-hash', h.envelopeHash)
     repliesBadge.addEventListener('click', () => void openRepliesModal(h.envelopeHash))
     replyBits.push(repliesBadge)
+
+    // Attest: put your signature behind a statement about this thing. Distinct
+    // from Comment on purpose -- a comment says something, an attestation
+    // stakes a signature on it.
+    const attestBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Attest')
+    attestBtn.setAttribute('data-testid', 'header-attest')
+    attestBtn.addEventListener('click', async () => {
+      const r = await shell.newAttestation(h.envelopeHash)
+      if (!r.id) {
+        showText(`Could not start an attestation: ${String(r.error ?? 'unknown')}`, 'danger')
+        return
+      }
+      await openThing(r.id)
+    })
+    replyBits.push(attestBtn)
+
+    const attests = h.attestCount ?? 0
+    attestBadge = el('button', 'evm-btn evm-btn--ghost evm-btn--sm', attestLabel(attests))
+    attestBadge.setAttribute('data-testid', 'header-attestations')
+    attestBadge.setAttribute('data-count', String(attests))
+    attestBadge.setAttribute('data-envelope-hash', h.envelopeHash)
+    attestBadge.addEventListener('click', () => void openAttestationsModal(h.envelopeHash))
+    replyBits.push(attestBadge)
   }
   if (h.replyTo) {
     const known = h.replyToKnown === true
@@ -1335,6 +1421,23 @@ function renderHeader(h: HeaderFacts | null): void {
       rt.addEventListener('click', () => void openThing(h.replyTo!))
     }
     replyBits.push(rt)
+  }
+  // What THIS thing attests to, when it is an attestation. Same honesty as
+  // replyTo: it is a claim, the target's author never agreed, and we say when
+  // the target is not held rather than hiding the mismatch.
+  if (h.attests) {
+    const known = h.attestsKnown === true
+    const at = el('span', `sh-replyto${known ? ' sh-replyto--known' : ''}`, `about ${short(h.attests, 6)}`)
+    at.setAttribute('data-testid', 'header-attests')
+    at.setAttribute('data-known', known ? '1' : '0')
+    at.title = known
+      ? `${h.attests} — click to open`
+      : `${h.attests} — not in your library: you have the attestation, not the thing it speaks about`
+    if (known) {
+      at.setAttribute('role', 'button')
+      at.addEventListener('click', () => void openThing(h.attests!))
+    }
+    replyBits.push(at)
   }
 
   thingHeader.append(
@@ -1453,6 +1556,17 @@ shell.onFeedChanged(() => {
         if (!repliesBadge || repliesBadge.getAttribute('data-envelope-hash') !== asked) return
         repliesBadge.textContent = replyLabel(r.count)
         repliesBadge.setAttribute('data-count', String(r.count))
+      })
+      .catch(() => {
+        /* a stale count is not worth an unhandled rejection */
+      })
+    // Same for attestations, guarded the same way and for the same reason.
+    void shell
+      .attestations(asked)
+      .then((r) => {
+        if (!attestBadge || attestBadge.getAttribute('data-envelope-hash') !== asked) return
+        attestBadge.textContent = attestLabel(r.count)
+        attestBadge.setAttribute('data-count', String(r.count))
       })
       .catch(() => {
         /* a stale count is not worth an unhandled rejection */

@@ -42,6 +42,8 @@ export interface FeedQuery {
   author?: string
   /** Only things that CLAIM to reply to this envelope hash. */
   replyTo?: string
+  /** Things claiming to attest to this envelope hash. */
+  attests?: string
   limit?: number
   offset?: number
 }
@@ -66,6 +68,13 @@ export interface DraftRow {
 /** The reference a manifest's args CLAIM, or null. Pure and shared by store()
  *  and the header so the index and the UI can never disagree. Only a bare
  *  64-hex string counts — anything else is just program data. */
+/** The relations the shell indexes, which are also the args field names that
+ *  carry them. Both are author CLAIMS and neither is verified: anyone may claim
+ *  to reply to, or to attest to, anything at all. The shell indexes the claim
+ *  so a thing can show what points at it; it never treats one as evidence. */
+export const INDEXED_RELS = ['replyTo', 'attests'] as const
+export type IndexedRel = (typeof INDEXED_RELS)[number]
+
 export function refTarget(args: unknown, rel = 'replyTo'): string | null {
   if (args instanceof Map) {
     const v = args.get(rel)
@@ -281,7 +290,10 @@ export class Library {
    *  the in-memory store and is deliberately unreadable here. Never allowed to
    *  make the library unopenable: a bad manifest is skipped. */
   private backfillRefs(): void {
-    if (this.metaGet('refs_backfill_v1')) return
+    // v2: the pass now indexes `attests` as well as `replyTo`. A library that
+    // ran v1 has never looked for the new relation, so it must run again --
+    // otherwise attestations imported into an existing library are invisible.
+    if (this.metaGet('refs_backfill_v2')) return
     try {
       const rows = this.db.prepare('SELECT envelope_hash, manifest_hash FROM things WHERE sealed = 0').all() as {
         envelope_hash: string
@@ -293,8 +305,11 @@ export class Library {
           const bytes = this.cas.readAll(r.manifest_hash)
           if (!bytes) continue
           try {
-            const target = refTarget(decodeManifest(bytes).args)
-            if (target) insert.run(r.envelope_hash, 'replyTo', target)
+            const args = decodeManifest(bytes).args
+            for (const rel of INDEXED_RELS) {
+              const t = refTarget(args, rel)
+              if (t) insert.run(r.envelope_hash, rel, t)
+            }
           } catch {
             /* undecodable manifest — skip it, never fail the open */
           }
@@ -303,7 +318,7 @@ export class Library {
     } catch {
       /* backfill is best-effort; the library must still open */
     }
-    this.db.prepare('INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)').run('refs_backfill_v1', '1')
+    this.db.prepare('INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)').run('refs_backfill_v2', '1')
   }
 
   /** How many things in this library claim to reply to `targetHash`. */
@@ -416,11 +431,12 @@ export class Library {
     // Index the reference this thing CLAIMS to make. Sealed things are skipped
     // on purpose: their decrypted metadata must never reach sqlite.
     if (!result.sealed) {
-      const target = refTarget(result.manifest.args)
-      if (target) {
-        this.db
-          .prepare('INSERT OR IGNORE INTO refs (envelope_hash, rel, target_hash) VALUES (?,?,?)')
-          .run(envelopeHash, 'replyTo', target)
+      const insertRef = this.db.prepare(
+        'INSERT OR IGNORE INTO refs (envelope_hash, rel, target_hash) VALUES (?,?,?)'
+      )
+      for (const rel of INDEXED_RELS) {
+        const target = refTarget(result.manifest.args, rel)
+        if (target) insertRef.run(envelopeHash, rel, target)
       }
     }
 
@@ -440,10 +456,16 @@ export class Library {
       params.push(query.author)
     }
     let join = ''
-    if (query.replyTo) {
+    // Both relations are claims pointing AT a thing; only the rel differs.
+    const refFilter = query.replyTo
+      ? { rel: 'replyTo', target: query.replyTo }
+      : query.attests
+        ? { rel: 'attests', target: query.attests }
+        : null
+    if (refFilter) {
       join = ' JOIN refs r ON r.envelope_hash = t.envelope_hash'
-      where.push("r.rel = 'replyTo'", 'r.target_hash = ?')
-      params.push(query.replyTo)
+      where.push('r.rel = ?', 'r.target_hash = ?')
+      params.push(refFilter.rel, refFilter.target)
     }
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : ''
     const limit = query.limit ?? 200

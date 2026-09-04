@@ -1,6 +1,7 @@
 import articleHtml from '../../../samples/article.html?raw'
 import cardHtml from '../../../samples/card.html?raw'
 import commentHtml from '../../../samples/comment.html?raw'
+import attestationHtml from '../../../samples/attestation.html?raw'
 import inviteHtml from '../../../samples/invite.html?raw'
 import memoHtml from '../../../samples/memo.html?raw'
 import nametagHtml from '../../../samples/nametag.html?raw'
@@ -77,6 +78,13 @@ export const STARTERS: readonly Starter[] = [
     label: 'Comment',
     description: 'Say something about another thing.',
     html: commentHtml
+  },
+  {
+    key: 'starter:attestation',
+    type: 'attestation',
+    label: 'Attestation',
+    description: 'Put your signature behind a statement about another thing.',
+    html: attestationHtml
   },
   {
     key: 'starter:poster',
