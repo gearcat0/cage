@@ -47,6 +47,11 @@ interface ShellApi {
   newDraft(key: string, args?: unknown): Promise<{ id?: string; type?: string; error?: string }>
   newComment(targetHash: string): Promise<{ id?: string; error?: string }>
   newAttestation(targetHash: string): Promise<{ id?: string; error?: string }>
+  people(): Promise<
+    { authorScheme: string; authorKey: string; name: string | null; note: string; things: number; lastSeen: number }[]
+  >
+  setPetname(p: { scheme: string; key: string; name: string; note?: string }): Promise<{ ok: boolean }>
+  onOpenPeople(cb: () => void): void
   attestations(targetHash: string): Promise<{ count: number; rows: ThingRow[] }>
   replies(targetHash: string): Promise<{ count: number; rows: ThingRow[] }>
   deleteDraft(id: string): Promise<{ deleted: boolean }>
@@ -95,6 +100,8 @@ interface HeaderFacts {
   /** Verified primary name for the author, or null if none confirmed. */
   name?: string | null
   nameStatus?: 'verified' | 'mismatch' | 'unresolvable' | null
+  /** YOUR name for the author. Never shown as verification — see authorLabel. */
+  petname?: string | null
   /** True when this is a local, unsigned draft — the header must NOT claim it
    *  is signed. The renderer never parses ids; this is the discriminant. */
   draft?: boolean
@@ -796,6 +803,32 @@ let myAuthorKey: string | null = null
 let feedScope: 'all' | 'mine' = 'all'
 
 /** Is this row signed by the identity currently loaded in this shell? */
+/** How an author is written, everywhere one appears.
+ *
+ *  Three kinds of name meet here and they are NOT interchangeable:
+ *
+ *    verified  proven to belong to this key (ENS, reverse+forward confirmed).
+ *              Carries the ✓ treatment; the shell vouches for it.
+ *    petname   what YOU call this key. Local, and the one name nobody else can
+ *              influence -- an author may claim anything and may even prove an
+ *              ENS name, but they cannot make you call them something.
+ *    neither   the key itself, shortened.
+ *
+ *  A petname must never be mistaken for verification, so it is rendered plainly
+ *  and the address stays reachable in the title. */
+function authorLabel(row: { authorScheme: string; authorKey: string; petname?: string | null }): {
+  text: string
+  title: string
+  named: boolean
+} {
+  const addr = row.authorScheme === 'eth-eip191' ? shortAddress(row.authorKey) : short(row.authorKey)
+  const full = `${row.authorScheme}:${row.authorKey}`
+  if (row.petname) {
+    return { text: row.petname, title: `${row.petname} — your name for ${full}`, named: true }
+  }
+  return { text: addr, title: full, named: false }
+}
+
 function isMine(row: { authorScheme: string; authorKey: string }): boolean {
   return myAuthorKey !== null && row.authorScheme === 'eth-eip191' && row.authorKey === myAuthorKey
 }
@@ -809,15 +842,15 @@ function thingItem(row: ThingRow): HTMLElement {
   // Your own things read "by you" rather than your address — the whole point
   // of the column is telling authors apart at a glance.
   const mine = isMine(row)
+  const lab = authorLabel(row)
+  // A named key drops the monospace address styling: it is a name now, and
+  // should read like one rather than like a hash.
   const author = mine
     ? el('span', 'sh-feed-author sh-feed-you', 'by you')
-    : el(
-        'span',
-        'sh-feed-author evm-address evm-address--muted',
-        row.authorScheme === 'eth-eip191' ? shortAddress(row.authorKey) : short(row.authorKey)
-      )
+    : el('span', `sh-feed-author${lab.named ? ' sh-feed-named' : ' evm-address evm-address--muted'}`, lab.text)
   if (mine) author.setAttribute('data-testid', 'feed-you')
-  author.setAttribute('title', `${row.authorScheme}:${row.authorKey}`)
+  if (!mine && lab.named) author.setAttribute('data-testid', 'feed-petname')
+  author.setAttribute('title', mine ? `${row.authorScheme}:${row.authorKey}` : lab.title)
   const flags = el('span', 'sh-feed-flags')
   if (row.isFork) flags.append(el('span', 'evm-badge evm-badge--danger', 'FORK'))
   if (row.sealed) flags.append(el('span', 'evm-badge evm-badge--purple', 'sealed'))
@@ -1164,6 +1197,126 @@ function openSharingModal(): void {
   void paint()
 }
 
+/** Name a key, or change/clear the name you gave it.
+ *
+ *  This is the one name in the system nobody else can influence. An author may
+ *  call themselves anything, and may even prove an ENS name — but what you call
+ *  them is yours, stays on this machine, and never enters a thing. */
+function openPetnameModal(scheme: string, key: string, current: string | null): void {
+  const overlay = el('div', 'evm-modal-overlay')
+  const modal = el('div', 'evm-modal sh-petname')
+  modal.setAttribute('data-testid', 'petname-modal')
+  const header = el('div', 'evm-modal-header')
+  header.append(el('span', 'evm-modal-title', current ? 'Rename this key' : 'Name this key'))
+  const body = el('div', 'evm-modal-body')
+  body.append(
+    el('p', 'sh-hint', 'Your name for this key, kept on this machine. It never enters a thing and nobody else sees it — which is exactly why it is worth something: they cannot choose it.')
+  )
+  body.append(copyField('key', `${scheme}:${key}`, 'petname-key'))
+
+  const nameField = el('div', 'e-field')
+  nameField.append(el('label', 'Name'))
+  const name = el('input', 'evm-input') as HTMLInputElement
+  name.setAttribute('data-testid', 'petname-input')
+  name.value = current ?? ''
+  name.placeholder = 'e.g. Ada, or “the ops account”'
+  nameField.append(name)
+
+  const noteField = el('div', 'e-field')
+  noteField.append(el('label', 'Note (optional)'))
+  const note = el('input', 'evm-input') as HTMLInputElement
+  note.setAttribute('data-testid', 'petname-note')
+  note.placeholder = 'How you know them, or how you checked'
+  noteField.append(note)
+  body.append(nameField, noteField)
+
+  const footer = el('div', 'evm-modal-footer')
+  const save = el('button', 'evm-btn evm-btn--primary', 'Save')
+  save.setAttribute('data-testid', 'petname-save')
+  save.addEventListener('click', async () => {
+    await shell.setPetname({ scheme, key, name: name.value, note: note.value })
+    overlay.remove()
+    if (selected) await openThing(selected) // repaint the header with the new name
+  })
+  const clear = el('button', 'evm-btn evm-btn--ghost', 'Clear name')
+  clear.setAttribute('data-testid', 'petname-clear')
+  clear.style.display = current ? '' : 'none'
+  clear.addEventListener('click', async () => {
+    await shell.setPetname({ scheme, key, name: '' })
+    overlay.remove()
+    if (selected) await openThing(selected)
+  })
+  const cancel = el('button', 'evm-btn evm-btn--ghost', 'Cancel')
+  cancel.setAttribute('data-testid', 'petname-cancel')
+  cancel.addEventListener('click', () => overlay.remove())
+  footer.append(clear, cancel, save)
+
+  modal.append(header, body, footer)
+  overlay.append(modal)
+  document.body.append(trackOverlay(overlay))
+  name.focus()
+  name.select()
+}
+
+/** Everyone whose things you hold, and what you call them.
+ *
+ *  Deliberately just a list of keys and names: there is no reputation here, no
+ *  score, and no notion of anyone being trustworthy. Naming someone records
+ *  that YOU recognise them, and nothing more. */
+function openPeopleModal(): void {
+  const overlay = el('div', 'evm-modal-overlay')
+  const modal = el('div', 'evm-modal sh-people')
+  modal.setAttribute('data-testid', 'people-modal')
+  const header = el('div', 'evm-modal-header')
+  header.append(el('span', 'evm-modal-title', 'People'))
+  const body = el('div', 'evm-modal-body')
+  const list = el('div', 'sh-people-list')
+  list.setAttribute('data-testid', 'people-list')
+  body.append(
+    el('p', 'sh-hint', 'Every key whose things you hold. A name here is yours alone — it stays on this machine, and says you recognise the key, not that you trust it.'),
+    list
+  )
+
+  const paint = async (): Promise<void> => {
+    const rows = await shell.people().catch(() => [])
+    list.replaceChildren()
+    list.setAttribute('data-count', String(rows.length))
+    if (rows.length === 0) {
+      list.append(el('p', 'sh-hint', 'Nobody yet — admit something and its author appears here.'))
+      return
+    }
+    for (const r of rows) {
+      const row = el('div', 'sh-people-row')
+      row.setAttribute('data-author-key', r.authorKey)
+      const lab = authorLabel({ authorScheme: r.authorScheme, authorKey: r.authorKey, petname: r.name })
+      const nameEl = el('span', lab.named ? 'sh-name sh-name--pet' : 'evm-address evm-address--muted', lab.text)
+      nameEl.setAttribute('title', lab.title)
+      const count = el('span', 'sh-hint', r.things === 1 ? '1 thing' : `${r.things} things`)
+      const mine = isMine(r)
+      const btn = el('button', 'evm-btn evm-btn--ghost evm-btn--sm', r.name ? 'Rename' : 'Name…') as HTMLButtonElement
+      btn.setAttribute('data-testid', 'people-name')
+      btn.disabled = mine
+      btn.title = mine ? 'This is your own key' : ''
+      btn.addEventListener('click', () => {
+        openPetnameModal(r.authorScheme, r.authorKey, r.name)
+      })
+      row.append(nameEl, count, mine ? el('span', 'sh-feed-you', 'you') : btn)
+      if (r.note) row.append(el('div', 'sh-people-note', r.note))
+      list.append(row)
+    }
+  }
+
+  const footer = el('div', 'evm-modal-footer')
+  const close = el('button', 'evm-btn evm-btn--ghost', 'Close')
+  close.setAttribute('data-testid', 'people-close')
+  close.addEventListener('click', () => overlay.remove())
+  footer.append(close)
+  modal.append(header, body, footer)
+  overlay.append(modal)
+  document.body.append(trackOverlay(overlay))
+  void paint()
+}
+
 let repliesBadge: HTMLElement | null = null
 let attestBadge: HTMLElement | null = null
 
@@ -1203,7 +1356,7 @@ async function openAttestationsModal(target: string): Promise<void> {
       el(
         'span',
         'sh-feed-author evm-address evm-address--muted',
-        row.authorScheme === 'eth-eip191' ? shortAddress(row.authorKey) : short(row.authorKey)
+        authorLabel(row).text
       ),
       el('span', 'sh-feed-flags')
     )
@@ -1251,7 +1404,7 @@ async function openRepliesModal(target: string): Promise<void> {
       el(
         'span',
         'sh-feed-author evm-address evm-address--muted',
-        row.authorScheme === 'eth-eip191' ? shortAddress(row.authorKey) : short(row.authorKey)
+        authorLabel(row).text
       ),
       el('span', 'sh-feed-flags')
     )
@@ -1313,16 +1466,23 @@ function renderHeader(h: HeaderFacts | null): void {
     authorEl.setAttribute('title', `${h.authorScheme}:${h.authorKey}`)
   } else {
     const mine = isMine(h)
+    // A petname is YOUR label, so it reads as a name but never borrows the
+    // verified treatment above: data-name stays 'petname', not 'verified'.
+    const lab = authorLabel(h)
     authorEl = mine
       ? el('span', 'sh-feed-you', 'you')
-      : el(
-          'span',
-          'evm-address evm-address--muted',
-          h.authorScheme === 'eth-eip191' ? shortAddress(h.authorKey) : `${h.authorScheme}:${short(h.authorKey)}`
-        )
-    authorEl.setAttribute('data-name', mine ? 'self' : 'unverified')
+      : el('span', lab.named ? 'sh-name sh-name--pet' : 'evm-address evm-address--muted', lab.text)
+    authorEl.setAttribute('data-name', mine ? 'self' : lab.named ? 'petname' : 'unverified')
     if (mine) authorEl.setAttribute('data-testid', 'header-you')
-    authorEl.setAttribute('title', `${h.authorScheme}:${h.authorKey}`)
+    authorEl.setAttribute('title', mine ? `${h.authorScheme}:${h.authorKey}` : lab.title)
+  }
+  // Naming a key is a per-author action, so it hangs off the author itself
+  // rather than adding another control to a crowded row.
+  if (!isMine(h)) {
+    authorEl.setAttribute('role', 'button')
+    authorEl.setAttribute('data-testid', 'header-author')
+    authorEl.classList.add('sh-nameable')
+    authorEl.addEventListener('click', () => openPetnameModal(h.authorScheme, h.authorKey, h.petname ?? null))
   }
   const typeBadge = el('span', 'evm-badge evm-badge--neutral', h.type)
   const hashEl = el('span', 'sh-hash evm-address evm-address--muted', short(h.envelopeHash, 8))
@@ -1588,6 +1748,7 @@ shell.onPublishResult((o) => {
   } else showText(`Publish failed: ${String(o.reason ?? o.status)}`, 'danger')
 })
 shell.onOpenSharing(() => openSharingModal())
+shell.onOpenPeople(() => openPeopleModal())
 shell.onOpenAccount(() => void openAccountModal()) // File → Account & Keys…
 // A .thing double-clicked in the file manager: say what became of it, using
 // the same wording as any other ingest (it went through the same gate).

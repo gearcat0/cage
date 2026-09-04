@@ -39,6 +39,15 @@ const shell = {
   /** Copy a thing: a new instance, same program/args, signed by this identity. */
   copyThing: (envelopeHash: string): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:copy', envelopeHash),
   /** Start an attestation about a thing, and read the ones pointing at it. */
+  /** Everyone whose things you hold, and YOUR name for them. Local only. */
+  people: (): Promise<
+    { authorScheme: string; authorKey: string; name: string | null; note: string; things: number; lastSeen: number }[]
+  > => ipcRenderer.invoke('shell:people'),
+  setPetname: (p: { scheme: string; key: string; name: string; note?: string }): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('shell:set-petname', p),
+  onOpenPeople: (cb: () => void): void => {
+    ipcRenderer.on('shell:open-people', () => cb())
+  },
   newAttestation: (targetHash: string): Promise<{ id?: string; error?: string }> =>
     ipcRenderer.invoke('shell:new-attestation', targetHash),
   attestations: (targetHash: string): Promise<{ count: number; rows: unknown[] }> =>

@@ -277,6 +277,22 @@ body {
 .sh-share-magnet { margin-top: var(--evm-space-2); }
 .sh-share-magnet:empty { display: none; }
 
+/* A petname reads as a NAME, never with the ✓ treatment a verified name gets:
+   one is proof, the other is what you decided to call someone. */
+.sh-name--pet { font-weight: var(--evm-weight-semibold); color: var(--evm-text-1); }
+.sh-feed-named { color: var(--evm-text-1); }
+.sh-nameable { cursor: pointer; }
+.sh-nameable:hover { text-decoration: underline dotted; }
+.sh-petname { max-width: 32em; }
+
+/* People. */
+.sh-people { max-width: 36em; }
+.sh-people-list { margin-top: var(--evm-space-3); }
+.sh-people-row { display: flex; align-items: center; gap: var(--evm-space-3);
+                 border-top: 1px solid var(--evm-border); padding: var(--evm-space-2) 0; flex-wrap: wrap; }
+.sh-people-row > .sh-hint { flex: 1; }
+.sh-people-note { flex-basis: 100%; font-size: var(--evm-text-sm); color: var(--evm-text-3); }
+
 /* Sharing view. */
 .sh-sharing { max-width: 40em; }
 .sh-sharing-list { margin-top: var(--evm-space-3); }

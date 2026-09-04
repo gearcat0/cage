@@ -25,6 +25,9 @@ export interface ThingRow {
   envelopeHash: string
   authorScheme: string
   authorKey: string
+  /** YOUR name for the author, if you have given one. Local, never in a thing,
+   *  and never a substitute for a verified name — see the chrome. */
+  petname?: string | null
   type: string
   progHash: string
   manifestHash: string
@@ -151,7 +154,10 @@ function toThingRow(r: Row): ThingRow {
     seq: r.seq,
     sealed: r.sealed === 1,
     read: r.read_state === 1,
-    isFork: r.is_fork === 1
+    isFork: r.is_fork === 1,
+    // Your name for the author, when the query joined it. Local only; a row
+    // read without the join simply has none.
+    petname: (r as Row & { petname?: string | null }).petname ?? null
   }
 }
 
@@ -273,6 +279,19 @@ export class Library {
         envelope_hash TEXT PRIMARY KEY,
         magnet        TEXT NOT NULL,
         started_at    INTEGER NOT NULL
+      );
+
+      -- What YOU call a key. Local, and deliberately so: a petname is the one
+      -- kind of name nobody else can influence -- an author may claim any name
+      -- they like and may even prove an ENS name, but they cannot make you
+      -- call them anything. It never enters a thing and never leaves here.
+      CREATE TABLE IF NOT EXISTS petnames (
+        author_scheme TEXT NOT NULL,
+        author_key    TEXT NOT NULL,
+        name          TEXT NOT NULL,
+        note          TEXT NOT NULL DEFAULT '',
+        set_at        INTEGER NOT NULL,
+        PRIMARY KEY (author_scheme, author_key)
       );
 
       CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -447,12 +466,14 @@ export class Library {
   feed(query: FeedQuery = {}): ThingRow[] {
     const where: string[] = []
     const params: unknown[] = []
+    // QUALIFIED: petnames carries author_key/author_scheme too, so an
+    // unqualified column here silently stops filtering once that join exists.
     if (query.type) {
-      where.push('type = ?')
+      where.push('t.type = ?')
       params.push(query.type)
     }
     if (query.author) {
-      where.push('author_key = ?')
+      where.push('t.author_key = ?')
       params.push(query.author)
     }
     let join = ''
@@ -471,7 +492,11 @@ export class Library {
     const limit = query.limit ?? 200
     const offset = query.offset ?? 0
     const rows = this.db
-      .prepare(`SELECT t.* FROM things t${join} ${clause} ORDER BY t.received_at DESC, t.rowid DESC LIMIT ? OFFSET ?`)
+      .prepare(
+        `SELECT t.*, p.name AS petname FROM things t${join}
+           LEFT JOIN petnames p ON p.author_scheme = t.author_scheme AND p.author_key = t.author_key
+         ${clause} ORDER BY t.received_at DESC, t.rowid DESC LIMIT ? OFFSET ?`
+      )
       .all(...params, limit, offset) as Row[]
     return rows.map(toThingRow)
   }
@@ -494,8 +519,68 @@ export class Library {
     this.db.prepare('DELETE FROM seeding WHERE envelope_hash = ?').run(envelopeHash)
   }
 
+  /** Your name for a key, or null. */
+  petname(scheme: string, key: string): { name: string; note: string } | null {
+    const r = this.db
+      .prepare('SELECT name, note FROM petnames WHERE author_scheme = ? AND author_key = ?')
+      .get(scheme, key) as { name: string; note: string } | undefined
+    return r ?? null
+  }
+
+  /** Name a key, or clear it by passing an empty name. */
+  setPetname(scheme: string, key: string, name: string, note: string, now: number): void {
+    const trimmed = name.trim()
+    if (!trimmed) {
+      this.db.prepare('DELETE FROM petnames WHERE author_scheme = ? AND author_key = ?').run(scheme, key)
+      return
+    }
+    this.db
+      .prepare(
+        `INSERT INTO petnames (author_scheme, author_key, name, note, set_at) VALUES (?,?,?,?,?)
+         ON CONFLICT(author_scheme, author_key) DO UPDATE SET name = excluded.name, note = excluded.note,
+           set_at = excluded.set_at`
+      )
+      .run(scheme, key, trimmed, note.trim(), now)
+  }
+
+  /** Every key that has authored something here, with your name for it and how
+   *  much of what you hold came from it. The People view's whole content. */
+  people(): { authorScheme: string; authorKey: string; name: string | null; note: string; things: number; lastSeen: number }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT t.author_scheme, t.author_key, COUNT(*) AS things, MAX(t.received_at) AS last_seen,
+                p.name AS name, p.note AS note
+           FROM things t
+           LEFT JOIN petnames p ON p.author_scheme = t.author_scheme AND p.author_key = t.author_key
+          GROUP BY t.author_scheme, t.author_key
+          ORDER BY things DESC, last_seen DESC`
+      )
+      .all() as {
+      author_scheme: string
+      author_key: string
+      things: number
+      last_seen: number
+      name: string | null
+      note: string | null
+    }[]
+    return rows.map((r) => ({
+      authorScheme: r.author_scheme,
+      authorKey: r.author_key,
+      name: r.name,
+      note: r.note ?? '',
+      things: r.things,
+      lastSeen: r.last_seen
+    }))
+  }
+
   get(envelopeHash: string): ThingRow | null {
-    const r = this.db.prepare('SELECT * FROM things WHERE envelope_hash = ?').get(envelopeHash) as Row | undefined
+    const r = this.db
+      .prepare(
+        `SELECT t.*, p.name AS petname FROM things t
+           LEFT JOIN petnames p ON p.author_scheme = t.author_scheme AND p.author_key = t.author_key
+          WHERE t.envelope_hash = ?`
+      )
+      .get(envelopeHash) as Row | undefined
     return r ? toThingRow(r) : null
   }
 

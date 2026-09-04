@@ -98,6 +98,18 @@ can re-declare it as `{carry: true}` instead of re-shipping the bytes. The
 garbage collector counts draft references as holders: bytes are released only
 when the last draft *and* thing that referenced them is gone.
 
+**Petnames** are the one name nobody else can influence. A thing may claim any
+name for its author, and an ENS name may even be *proven* to map to the key —
+but what **you** call a key is yours: stored locally, never in a thing, never
+shared. That is exactly what makes it worth something, and why the chrome keeps
+it visually distinct from a verified name (`data-name="petname"`, never
+`"verified"`, and never the ✓ treatment). The address stays in the title, so a
+name labels the fact rather than replacing it. `File → People…` lists every key
+whose things you hold, with your name for it.
+
+There is no reputation here and no score. Naming someone records that YOU
+recognise a key, and nothing more.
+
 **Attestations** are the other indexed relation. An `attestation` thing carries
 `args.attests` — the envelope hash of what it speaks about — and the shell
 indexes it exactly as it indexes `replyTo`, under `rel='attests'`, so a thing

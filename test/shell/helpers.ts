@@ -212,7 +212,7 @@ export interface ShellHandle {
   /** Whether the seed store holds this bundle tar-hash. */
   seedHas(hashHex: string): Promise<boolean>
   /** The feed rows (newest received first). */
-  feed(): Promise<Record<string, unknown>[]>
+  feed(query?: Record<string, unknown>): Promise<Record<string, unknown>[]>
   /** Mount a thing via the shell's own hook (returns the header facts). */
   openThing(envelopeHash: string): Promise<Record<string, unknown>>
   /** Types the user can create something of (starters + library programs). */
@@ -222,6 +222,9 @@ export interface ShellHandle {
   newDraft(key: string, args?: unknown): Promise<{ id?: string; error?: string }>
   newComment(targetHash: string): Promise<{ id?: string; error?: string }>
   /** Start an attestation about a thing, and read the ones pointing at it. */
+  /** Local names for keys: who you have seen, and what you call them. */
+  people(): Promise<{ authorScheme: string; authorKey: string; name: string | null; things: number }[]>
+  setPetname(scheme: string, key: string, name: string, note?: string): Promise<void>
   newAttestation(targetHash: string): Promise<{ id?: string; error?: string }>
   attestations(targetHash: string): Promise<{ count: number; rows: { envelopeHash: string; authorKey: string }[] }>
   draftBlobs(draftId: string): Promise<{ name: string; hash: string; mime: string; size: number }[]>
@@ -438,11 +441,13 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
         const s = (electron.app as unknown as { __shell: { seedHas: (x: string) => boolean } }).__shell
         return s.seedHas(h) as never
       }, hashHex),
-    feed: () =>
-      app.evaluate(async (electron) => {
-        const s = (electron.app as unknown as { __shell: { feed: () => Record<string, unknown>[] } }).__shell
-        return s.feed() as never
-      }),
+    feed: (query?: Record<string, unknown>) =>
+      app.evaluate(async (electron, q) => {
+        const s = (
+          electron.app as unknown as { __shell: { feed: (q?: Record<string, unknown>) => Record<string, unknown>[] } }
+        ).__shell
+        return s.feed(q) as never
+      }, query),
     openThing: (envelopeHash: string) =>
       app.evaluate(async (electron, h) => {
         const s = (electron.app as unknown as { __shell: { open: (x: string) => Promise<Record<string, unknown>> } }).__shell
@@ -466,6 +471,20 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
         },
         { key, args }
       ),
+    people: () =>
+      app.evaluate(async (electron) => {
+        const s = (electron.app as unknown as { __shell: { people: () => unknown[] } }).__shell
+        return s.people() as never
+      }),
+    setPetname: (scheme: string, key: string, name: string, note?: string) =>
+      app.evaluate(async (electron, a) => {
+        const s = (
+          electron.app as unknown as {
+            __shell: { setPetname: (sc: string, k: string, n: string, note?: string) => void }
+          }
+        ).__shell
+        s.setPetname(a.scheme, a.key, a.name, a.note)
+      }, { scheme, key, name, note }),
     newAttestation: (targetHash: string) =>
       app.evaluate(async (electron, h) => {
         const s = (
