@@ -304,6 +304,8 @@ interface ShellSurface {
   newDraft?: (key: string, args?: unknown) => Record<string, unknown>
   /** Start a comment draft seeded with the target's hash. */
   newComment?: (targetHash: string) => Record<string, unknown>
+  newAttestation?: (targetHash: string) => Record<string, unknown>
+  attestations?: (targetHash: string) => { count: number; rows: unknown[] }
   /** TEST: the attachment set a draft is holding. */
   draftBlobs?: (draftId: string) => { name: string; hash: string; mime: string; size: number }[]
   /** Things claiming to reply to a hash. */
@@ -770,11 +772,15 @@ app.whenReady().then(async () => {
       // target may have been deleted and comments may have arrived since the
       // header was built. Recompute them rather than serve a stale claim.
       const claimedNow = refTarget(current.stored.manifest.args)
+      const attestedNow = refTarget(current.stored.manifest.args, 'attests')
       current.header = {
         ...current.header,
         replyTo: claimedNow,
         replyToKnown: claimedNow ? library.get(claimedNow) !== null : false,
-        replyCount: draft ? 0 : library.countRefsTo(envelopeHash)
+        replyCount: draft ? 0 : library.countRefsTo(envelopeHash),
+        attests: attestedNow,
+        attestsKnown: attestedNow ? library.get(attestedNow) !== null : false,
+        attestCount: draft ? 0 : library.countRefsTo(envelopeHash, 'attests')
       }
       return { ...current.header, mode: current.activeMode }
     }
@@ -850,6 +856,7 @@ app.whenReady().then(async () => {
     // The claim is unauthenticated (anyone may claim to reply to anything);
     // the chrome says so and never dresses it as verification.
     const claimed = refTarget(stored.manifest.args)
+    const attested = refTarget(stored.manifest.args, 'attests')
     o.header = {
       ...m.header,
       name: nv?.status === 'verified' ? nv.name : null,
@@ -857,7 +864,12 @@ app.whenReady().then(async () => {
       draft: draft !== null,
       replyTo: claimed,
       replyToKnown: claimed ? library.get(claimed) !== null : false,
-      replyCount: draft ? 0 : library.countRefsTo(envelopeHash)
+      replyCount: draft ? 0 : library.countRefsTo(envelopeHash),
+      // What this thing attests to, and how many things attest to IT. Both are
+      // claims, exactly like replyTo, and are labelled as such in the chrome.
+      attests: attested,
+      attestsKnown: attested ? library.get(attested) !== null : false,
+      attestCount: draft ? 0 : library.countRefsTo(envelopeHash, 'attests')
     }
     if (draft) await setMode('edit') // unfinished work opens ready to edit
     notifyModeChanged(o.activeMode)
@@ -1107,6 +1119,14 @@ app.whenReady().then(async () => {
     if (typeof targetHash !== 'string' || !HEX64.test(targetHash)) return { error: 'bad hash' }
     if (!library.get(targetHash)) return { error: 'that thing is not in your library' }
     return newDraft('starter:comment', { replyTo: targetHash })
+  }
+
+  /** Start an attestation about `targetHash`. Same shape as newComment: a
+   *  program can never learn a hash by itself, so the SHELL seeds it. */
+  function newAttestation(targetHash: unknown): Record<string, unknown> {
+    if (typeof targetHash !== 'string' || !HEX64.test(targetHash)) return { error: 'bad hash' }
+    if (!library.get(targetHash)) return { error: 'that thing is not in your library' }
+    return newDraft('starter:attestation', { attests: targetHash })
   }
 
   function deleteDraft(id: string): Record<string, unknown> {
@@ -1653,6 +1673,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('shell:drafts', () => library.listDrafts())
   ipcMain.handle('shell:new-draft', (_e, key: unknown, args: unknown) => newDraft(key, args))
   ipcMain.handle('shell:new-comment', (_e, h: unknown) => newComment(h))
+  ipcMain.handle('shell:new-attestation', (_e, h: unknown) => newAttestation(h))
+  ipcMain.handle('shell:attestations', (_e, h: unknown) =>
+    typeof h === 'string' && HEX64.test(h)
+      ? { count: library.countRefsTo(h, 'attests'), rows: library.feed({ attests: h, limit: 200 }) }
+      : { count: 0, rows: [] }
+  )
   ipcMain.handle('shell:replies', (_e, h: unknown) =>
     typeof h === 'string' && HEX64.test(h)
       ? { count: library.countRefsTo(h), rows: library.feed({ replyTo: h, limit: 200 }) }
@@ -1752,6 +1778,11 @@ app.whenReady().then(async () => {
   shell.drafts = () => library.listDrafts()
   shell.newDraft = (key, args) => newDraft(key, args)
   shell.newComment = (h) => newComment(h)
+  shell.newAttestation = (h) => newAttestation(h)
+  shell.attestations = (h) => ({
+    count: library.countRefsTo(h, 'attests'),
+    rows: library.feed({ attests: h, limit: 200 })
+  })
   shell.draftBlobs = (id) => library.draftBlobs(id)
   shell.replies = (h) => ({ count: library.countRefsTo(h), rows: library.feed({ replyTo: h, limit: 200 }) })
   shell.deleteDraft = (id) => deleteDraft(id)

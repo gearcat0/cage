@@ -1,0 +1,198 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>attestation</title>
+<style>
+  body { margin: 0; font: 15px/1.55 system-ui, sans-serif; background: #1d2320; color: #d8d4c8;
+         display: flex; align-items: flex-start; justify-content: center; min-height: 100vh;
+         padding: 24px; box-sizing: border-box; }
+  .att { background: #262c28; border: 1px solid #39413b; border-left: 3px solid #b08b4f; border-radius: 4px;
+         width: 34em; max-width: 100%; padding: 16px 18px; }
+  .statement { margin: 0; font-size: 17px; line-height: 1.4; }
+  .statement.empty { color: #7d8a80; font-style: italic; }
+  .note { margin: 10px 0 0; white-space: pre-wrap; color: #b9b2a2; }
+  .claim { margin: 14px 0 0; padding-top: 10px; border-top: 1px solid #39413b;
+           font-size: 12px; color: #8a978d; }
+  .claim code { font-family: ui-monospace, Menlo, monospace; color: #a9b8ae; }
+  .weight { margin: 10px 0 0; font-size: 12px; color: #8a978d; font-style: italic; }
+  label { display: block; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: #8a978d;
+          margin: 12px 0 6px; }
+  select, textarea, input { font: inherit; width: 100%; box-sizing: border-box; background: #1f2521; color: #e6e2d6;
+                            border: 1px solid #3f4a43; border-radius: 4px; padding: 8px 10px; }
+  textarea { min-height: 5em; resize: vertical; }
+  .hint { margin-top: 12px; font-size: 12px; color: #7d8a80; }
+</style>
+</head>
+<body>
+  <div class="att">
+    <div id="app"></div>
+  </div>
+  <script>
+    'use strict';
+    // An attestation: a signed statement ABOUT another thing.
+    //
+    // State: args {attests, statement, note} where `attests` is the envelope
+    // hash of the thing being attested to. A program can never learn a hash by
+    // itself -- getArgs withholds the envelope -- so the SHELL seeds it when
+    // the human presses Attest on something.
+    //
+    // What this is and is not:
+    //
+    //   • The SIGNATURE is real. It proves which key made this statement, the
+    //     same way it does for any thing.
+    //   • The STATEMENT is a claim, and so is the target. Anyone may attest to
+    //     anything, the target's author never agreed, and five attestations do
+    //     not make a thing true. This program says who said what and stops
+    //     there; the ✓ vocabulary belongs to signatures, not to claims.
+    //   • An attestation from a key you know nothing about tells you nothing.
+    //     Whether that key means anything to you is a question this program
+    //     cannot answer and does not pretend to.
+    //
+    // Contract rule, easy to get wrong: args are WHOLE-SET replacement on every
+    // emit, so `attests` has to be echoed back every time. Dropping it silently
+    // detaches the attestation from the thing it is about.
+    var STATEMENTS = [
+      'I have read this',
+      'Accurately reproduced from the original source',
+      'I witnessed this',
+      'I agree to this',
+      'I received this'
+    ];
+
+    var a = window.bridge.getArgs() || {};
+    var args = (a && typeof a.args === 'object' && a.args !== null) ? a.args : {};
+    var app = document.getElementById('app');
+
+    function str(v) { return typeof v === 'string' ? v : ''; }
+
+    function el(tag, text) {
+      var e = document.createElement(tag);
+      if (text !== undefined) e.textContent = text;
+      return e;
+    }
+
+    function shortHash(h) {
+      return h.length > 16 ? h.slice(0, 8) + '…' + h.slice(-6) : h;
+    }
+
+    function claimLine(target) {
+      var p = el('p'); p.className = 'claim'; p.id = 'view-claim';
+      if (!target) {
+        p.textContent = 'This attestation names nothing — it is about no particular thing.';
+        return p;
+      }
+      p.append(document.createTextNode('about '));
+      var code = el('code', shortHash(target)); code.id = 'view-attests';
+      code.title = target;
+      p.append(code);
+      p.append(document.createTextNode(' — the shell’s header says whether that thing is in your library.'));
+      return p;
+    }
+
+    function viewMode() {
+      app.replaceChildren();
+      var statement = str(args.statement);
+      var s = el('p', statement || 'No statement made.');
+      s.className = statement ? 'statement' : 'statement empty';
+      s.id = 'view-statement';
+      app.append(s);
+
+      if (str(args.note)) {
+        var note = el('p', str(args.note)); note.className = 'note'; note.id = 'view-note';
+        app.append(note);
+      }
+      app.append(claimLine(str(args.attests)));
+
+      // Said once, plainly, because it is the whole point: a signature proves
+      // authorship, not truth.
+      var weight = el('p', 'Signed by whoever made it. That proves who said this — not that it is so.');
+      weight.className = 'weight'; weight.id = 'view-weight';
+      app.append(weight);
+    }
+
+    function editMode() {
+      app.replaceChildren();
+      var target = str(args.attests);
+
+      app.append(el('label', 'Statement'));
+      var pick = el('select'); pick.id = 'edit-statement';
+      var current = str(args.statement);
+      var known = false;
+      STATEMENTS.forEach(function (text) {
+        var o = el('option', text); o.value = text;
+        if (current === text) { o.selected = true; known = true; }
+        pick.append(o);
+      });
+      var other = el('option', 'Something else…'); other.value = '';
+      if (current && !known) other.selected = true;
+      pick.append(other);
+      app.append(pick);
+
+      // Free text, shown only when the standard list does not fit.
+      var customWrap = el('div');
+      var custom = el('input'); custom.id = 'edit-custom'; custom.value = known ? '' : current;
+      custom.placeholder = 'Your own wording';
+      customWrap.append(custom);
+      customWrap.style.marginTop = '8px';
+      customWrap.style.display = pick.value === '' ? '' : 'none';
+      app.append(customWrap);
+
+      app.append(el('label', 'Note (optional)'));
+      var note = el('textarea'); note.id = 'edit-note'; note.value = str(args.note);
+      note.placeholder = 'Anything worth adding — what you checked, and how';
+      app.append(note);
+
+      if (target) {
+        var fixed = el('p'); fixed.className = 'claim'; fixed.id = 'attests-fixed';
+        fixed.append(document.createTextNode('about '));
+        var code = el('code', shortHash(target)); code.title = target;
+        fixed.append(code);
+        app.append(fixed);
+      } else {
+        // Reached via New rather than the Attest button: let the human paste a
+        // target, or leave it and attest to nothing in particular.
+        app.append(el('label', 'About (optional)'));
+        var t = el('input'); t.id = 'edit-attests'; t.value = '';
+        t.placeholder = 'a 64-character thing hash';
+        app.append(t);
+      }
+
+      var hint = el('div', 'Your signature proves you said this. It does not make it true, and nobody has to agree.');
+      hint.className = 'hint';
+      app.append(hint);
+
+      function statementNow() {
+        return pick.value === '' ? custom.value.trim() : pick.value;
+      }
+
+      function streamDraft() {
+        // `attests` is echoed on EVERY emit: args are whole-set replacement, so
+        // omitting it here would quietly detach this from what it is about.
+        var to = target || (document.getElementById('edit-attests')
+          ? document.getElementById('edit-attests').value.trim()
+          : '');
+        window.bridge.emit('draft', {
+          type: 'attestation',
+          args: { attests: to, statement: statementNow(), note: note.value }
+        });
+      }
+
+      pick.addEventListener('change', function () {
+        customWrap.style.display = pick.value === '' ? '' : 'none';
+        if (pick.value === '') custom.focus();
+        streamDraft();
+      });
+      custom.addEventListener('input', streamDraft);
+      note.addEventListener('input', streamDraft);
+      var tIn = document.getElementById('edit-attests');
+      if (tIn) tIn.addEventListener('input', streamDraft);
+
+      streamDraft(); // initial state, so the shell's Publish enables immediately
+      (pick.value === '' ? custom : note).focus();
+    }
+
+    if (a.mode === 'edit') editMode(); else viewMode();
+  </script>
+</body>
+</html>

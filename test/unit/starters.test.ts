@@ -12,10 +12,11 @@ const sampleBytes = (type: string): Uint8Array =>
   new Uint8Array(readFileSync(join(__dirname, '..', '..', 'samples', `${type}.html`)))
 
 describe('starters', () => {
-  it('ships all six samples', () => {
-    expect(STARTERS.length).toBe(8)
+  it('ships every sample', () => {
+    expect(STARTERS.length).toBe(9)
     expect([...STARTERS].map((s) => s.type).sort()).toEqual([
       'article',
+      'attestation',
       'card',
       'comment',
       'invite',
@@ -33,9 +34,9 @@ describe('starters', () => {
   })
 
   it('has distinct keys, types, and programs', () => {
-    expect(new Set(STARTERS.map((s) => s.key)).size).toBe(8)
-    expect(new Set(STARTERS.map((s) => s.type)).size).toBe(8)
-    expect(new Set(STARTERS.map((s) => s.html)).size).toBe(8)
+    expect(new Set(STARTERS.map((s) => s.key)).size).toBe(9)
+    expect(new Set(STARTERS.map((s) => s.type)).size).toBe(9)
+    expect(new Set(STARTERS.map((s) => s.html)).size).toBe(9)
   })
 
   it('resolves by key and rejects unknown keys', () => {

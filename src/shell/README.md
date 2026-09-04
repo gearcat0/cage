@@ -98,6 +98,14 @@ can re-declare it as `{carry: true}` instead of re-shipping the bytes. The
 garbage collector counts draft references as holders: bytes are released only
 when the last draft *and* thing that referenced them is gone.
 
+**Attestations** are the other indexed relation. An `attestation` thing carries
+`args.attests` — the envelope hash of what it speaks about — and the shell
+indexes it exactly as it indexes `replyTo`, under `rel='attests'`, so a thing
+can show who has put a signature behind a statement about it. The counting is
+deliberately not scoring: a signature proves who said something, never that it
+is so, and the chrome shows authors rather than a total. Whether a given key
+means anything to you is a trust question the shell does not answer yet.
+
 **One thing can reference another.** A program can never learn a hash by
 itself (`getArgs` withholds the envelope), so the shell seeds `args.replyTo`
 when you press **Comment** on an open thing, and indexes the reference so the

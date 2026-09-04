@@ -117,6 +117,28 @@ re-declared on every emit — fresh bytes when just picked, `{carry: true}`
 otherwise, so megabytes do not move per keystroke — and image names are never
 renamed, because renaming orphans the carried blob and drops the picture.
 
+## attestation.html
+
+A signed statement **about** another thing: `args {attests, statement, note}`,
+where `attests` is the target's envelope hash. A program can never learn a hash
+by itself (`getArgs` withholds the envelope), so the shell seeds it when you
+press **Attest** on something. Standard statements ("Accurately reproduced from
+the original source", "I witnessed this", "I agree to this") or your own
+wording.
+
+The distinction it exists to make: **the signature is real, the statement is
+not**. A signature proves *who* said something, exactly as it does for any
+thing. It does not make the statement true, the target's author never agreed,
+and five attestations are not a score. The view says so in as many words, the
+list shows who signed rather than a total, and the ✓ vocabulary stays reserved
+for signatures and verified names.
+
+An attestation from a key you know nothing about tells you nothing — which is a
+question about trust that this program deliberately does not pretend to answer.
+
+Like a comment, `attests` must be echoed on **every** emit: args are whole-set
+replacement, so dropping it silently detaches the attestation from its subject.
+
 ## comment.html
 
 A comment on another thing: `args {replyTo, body}`. A program can never learn a
