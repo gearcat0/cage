@@ -362,6 +362,56 @@ export async function buildBundle(signer: Signer, opts: BuildBundleOptions): Pro
   return packBundle({ envelope, manifest: manifestBytes, program: opts.program, blobs })
 }
 
+export interface CosignOptions {
+  /** The manifest's canonical bytes, VERBATIM as they were received. */
+  manifestBytes: Uint8Array
+  /** The program blob the manifest commits to. */
+  program: Uint8Array
+  /** hex sha256 -> bytes, for every attachment the manifest names. */
+  blobs?: Map<string, Uint8Array>
+  /** unix seconds; defaults to now. An author CLAIM (§1 rule 4). */
+  created?: number
+}
+
+/** Sign a manifest somebody else already signed: a second envelope over the
+ *  SAME manifest bytes.
+ *
+ *  The document is the MANIFEST; an envelope is one signature over it. So a
+ *  contract with four signatories is four envelopes sharing one `man` hash,
+ *  each independently verifiable and each its own thing. The rejected
+ *  alternative was a `sigs[]` array inside the envelope: every added signature
+ *  would change the envelope hash, so the document's identity would shift as
+ *  it was signed.
+ *
+ *  `manifestBytes` is re-signed BYTE FOR BYTE and never re-encoded. Rebuilding
+ *  it from decoded parts would be a different document the moment any encoding
+ *  detail differed -- and it is precisely those bytes the first signer signed.
+ *  This is also why you cannot "add your signature to" an altered document:
+ *  change one byte and you have signed something else, with its own hash.
+ *
+ *  Consistency is checked here rather than left to admission, so a bundle that
+ *  could never be admitted is not built in the first place. */
+export async function cosignBundle(signer: Signer, opts: CosignOptions): Promise<Uint8Array> {
+  const manifest = decodeManifest(opts.manifestBytes)
+  if (!bytesEqual(manifest.prog, hash(opts.program))) {
+    throw new Error('cosign: the program does not match the manifest')
+  }
+  const blobs = new Map<string, Uint8Array>()
+  for (const [name, att] of manifest.att) {
+    const hex = toHex(att.h)
+    const bytes = opts.blobs?.get(hex)
+    if (!bytes) throw new Error(`cosign: missing attachment ${name}`)
+    if (!bytesEqual(hash(bytes), att.h)) throw new Error(`cosign: attachment ${name} does not match its hash`)
+    blobs.set(hex, bytes)
+  }
+  const unsigned: UnsignedEnvelope = {
+    man: hash(opts.manifestBytes),
+    created: opts.created ?? Math.floor(Date.now() / 1000)
+  }
+  const envelope = await encodeEnvelope(unsigned, signer)
+  return packBundle({ envelope, manifest: opts.manifestBytes, program: opts.program, blobs })
+}
+
 /** Decode a top-level envelope's chain fields for the shell's fork check. */
 export function chainInfo(envelope: Envelope): { path?: string; seq?: number; prev?: Hash } {
   const info: { path?: string; seq?: number; prev?: Hash } = {}

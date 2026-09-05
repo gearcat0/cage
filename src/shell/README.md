@@ -110,6 +110,48 @@ whose things you hold, with your name for it.
 There is no reputation here and no score. Naming someone records that YOU
 recognise a key, and nothing more.
 
+**Co-signing** is how one document gets many signatures — a contract with two
+parties and two witnesses, or an article five people attest to having
+reproduced faithfully. It needed **no format change**: the *document* is the
+**manifest**, and an envelope is one *signature* over it, so N signatories are
+N envelopes sharing one `man` hash, each independently verified and none
+privileged over the others. (The rejected alternative was a `sigs[]` array
+inside the envelope: each added signature would change the envelope hash, so
+the document's identity would shift as it was signed.) Grouping is a
+`manifest_hash` lookup, which is why that column gained an index — `CREATE
+INDEX` is allowed where `ALTER` is not.
+
+`cosignBundle` re-signs the stored manifest **byte for byte** and never
+re-encodes it: those are the bytes the earlier signers signed, and rebuilding
+them from decoded parts would be a different document the moment any encoding
+detail differed. This is also why a document cannot be *amended* — change one
+byte and you have signed something else, with its own hash and its own
+signatures.
+
+A document declares its expected signatories in `args.signers`, indexed into
+`doc_signers` keyed by manifest. Because that list lives in the manifest, it is
+covered by every signature over it: nobody can quietly add themselves to the
+named parties. But **being named is a claim, not consent and not a signature** —
+anyone may list anyone — so the chrome keeps the two apart: `2 of 4 signed` is
+never a percentage, a bar, or a ✓, and the badge says outright that it is *not
+a measure of how valid the document is*. A half-signed contract is not
+half-valid; it is a document two people have not signed. A signature from
+someone the document never named is still a real signature and is shown as
+`plus 1 not named` rather than dropped.
+
+The program renders the *claim* (who the document expects) and physically
+cannot see the *proof*: signatures live in envelopes, and `getArgs` withholds
+the envelope, so a contract program that lied about being fully signed would be
+contradicted by chrome it cannot reach.
+
+Two consequences worth stating. The feed shows a co-signed document **once**,
+not once per signature — the library still stores every envelope, but four rows
+for one contract would be the worse lie. And **Copy is refused** on a document
+that names signatories: Copy rebuilds the same program/type/args, and since a
+manifest carries no author and no nonce, that *is* a co-signature — it would
+put your key on a contract you meant only to duplicate. The refusal points at
+Co-sign, which shows you what you are signing first.
+
 **Vouches** are the trust graph, and the only one there is. A `vouch` thing
 carries `args {about, aboutScheme, name, relation, note}` where `about` is an
 author **key** — not a thing hash, which is why it cannot ride on `refs` (that

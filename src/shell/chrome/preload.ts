@@ -52,6 +52,11 @@ const shell = {
     ipcRenderer.invoke('shell:new-attestation', targetHash),
   attestations: (targetHash: string): Promise<{ count: number; rows: unknown[]; fromTribe: number }> =>
     ipcRenderer.invoke('shell:attestations', targetHash),
+  /** Add your signature to a document somebody else signed, and read who has
+   *  signed one. The document is the MANIFEST, so it is keyed by manifest hash. */
+  cosign: (envelopeHash: string): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:cosign', envelopeHash),
+  document: (manifestHash: string): Promise<Record<string, unknown>> =>
+    ipcRenderer.invoke('shell:document', manifestHash),
   /** Start a vouch for a KEY (the shell seeds the subject, as with comments),
    *  and read who vouches for one. */
   newVouch: (scheme: string, key: string): Promise<{ id?: string; error?: string }> =>

@@ -1,0 +1,214 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>contract</title>
+<style>
+  body { margin: 0; font: 15px/1.6 system-ui, sans-serif; background: #1e1d21; color: #dcd7cd;
+         display: flex; justify-content: center; min-height: 100vh; padding: 24px; box-sizing: border-box; }
+  .doc { background: #26252a; border: 1px solid #3b3941; border-radius: 4px;
+         width: 44em; max-width: 100%; padding: 22px 26px; }
+  h1 { margin: 0 0 4px; font-size: 22px; line-height: 1.25; }
+  h1.empty { color: #7f7a86; font-style: italic; font-weight: 400; }
+  .body { margin: 14px 0 0; white-space: pre-wrap; }
+  .body.empty { color: #7f7a86; font-style: italic; }
+  .parties { margin: 20px 0 0; padding-top: 14px; border-top: 1px solid #3b3941; }
+  .parties h2 { margin: 0 0 8px; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: #8d8797; }
+  .party { display: flex; gap: 10px; align-items: baseline; padding: 5px 0; }
+  .party .role { min-width: 7em; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #8d8797; }
+  .party .who { font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: #b6b0c0; }
+  .party .nm { color: #dcd7cd; font-family: inherit; font-size: 15px; }
+  .weight { margin: 14px 0 0; font-size: 12px; color: #8d8797; font-style: italic; }
+  label { display: block; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: #8d8797;
+          margin: 14px 0 6px; }
+  input, textarea { font: inherit; width: 100%; box-sizing: border-box; background: #201f24; color: #e7e2da;
+                    border: 1px solid #46434e; border-radius: 4px; padding: 8px 10px; }
+  textarea { min-height: 8em; resize: vertical; }
+  .row { display: flex; gap: 8px; margin-bottom: 8px; }
+  .row input.k { flex: 2; font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+  .row input.r { flex: 1; }
+  .row input.n { flex: 1; }
+  button { font: inherit; background: #2f2d35; color: #dcd7cd; border: 1px solid #46434e;
+           border-radius: 4px; padding: 6px 12px; cursor: pointer; }
+  button:hover { background: #383540; }
+  .drop { padding: 4px 10px; }
+  .hint { margin-top: 14px; font-size: 12px; color: #7f7a86; }
+</style>
+</head>
+<body>
+  <div class="doc"><div id="app"></div></div>
+  <script>
+    'use strict';
+    // A contract: one document, several signatures.
+    //
+    // State: args {title, body, signers:[{key, scheme, role, name}]}.
+    //
+    // The split this program has to respect, and the reason it looks thinner
+    // than you might expect:
+    //
+    //   • This program declares who the document EXPECTS to sign it. That is a
+    //     claim written by whoever drafted it. Naming someone does not ask
+    //     them, bind them, or mean they agreed -- anyone can list anyone.
+    //   • Who ACTUALLY signed is not knowable here at all. Signatures live in
+    //     envelopes, and getArgs deliberately withholds the envelope, so this
+    //     program cannot see them and cannot be tricked into misreporting
+    //     them. The shell's chrome shows the real count, outside this cage.
+    //
+    // That is the whole design: the claim renders in here, the proof renders
+    // out there, and a program that lied about "fully signed" would be
+    // contradicted by chrome the human can actually trust.
+    //
+    // Because the signatories live in the MANIFEST, they are covered by every
+    // signature over it -- so nobody can add themselves to the named parties
+    // without producing a different document, with a different hash.
+    var a = window.bridge.getArgs() || {};
+    var args = (a && typeof a.args === 'object' && a.args !== null) ? a.args : {};
+    var app = document.getElementById('app');
+
+    function str(v) { return typeof v === 'string' ? v : ''; }
+
+    function el(tag, cls, text) {
+      var e = document.createElement(tag);
+      if (cls) e.className = cls;
+      if (text !== undefined) e.textContent = text;
+      return e;
+    }
+
+    function shortKey(k) {
+      return k.length > 14 ? k.slice(0, 8) + '…' + k.slice(-6) : k;
+    }
+
+    /** The declared signatories, defensively read: args are untrusted. */
+    function signers() {
+      var raw = Array.isArray(args.signers) ? args.signers : [];
+      var out = [];
+      for (var i = 0; i < raw.length && out.length < 64; i++) {
+        var s = raw[i];
+        if (!s || typeof s !== 'object') continue;
+        out.push({
+          key: str(s.key),
+          scheme: str(s.scheme) || 'eth-eip191',
+          role: str(s.role),
+          name: str(s.name)
+        });
+      }
+      return out;
+    }
+
+    function partyRow(s) {
+      var row = el('div', 'party');
+      row.append(el('span', 'role', s.role || 'party'));
+      if (s.name) row.append(el('span', 'nm', s.name));
+      var who = el('span', 'who', shortKey(s.key));
+      who.title = s.scheme + ':' + s.key;
+      row.append(who);
+      return row;
+    }
+
+    function viewMode() {
+      app.replaceChildren();
+      var title = str(args.title);
+      var h = el('h1', title ? '' : 'empty', title || 'Untitled document');
+      h.id = 'view-title';
+      app.append(h);
+
+      var body = str(args.body);
+      var b = el('div', body ? 'body' : 'body empty', body || 'This document has no text.');
+      b.id = 'view-body';
+      app.append(b);
+
+      var list = signers();
+      if (list.length > 0) {
+        var wrap = el('div', 'parties');
+        wrap.id = 'view-parties';
+        wrap.setAttribute('data-count', String(list.length));
+        wrap.append(el('h2', '', 'Signatories named by this document'));
+        list.forEach(function (s) { wrap.append(partyRow(s)); });
+        app.append(wrap);
+      }
+
+      // Said plainly, because the gap between these two is where a forged
+      // document would live.
+      var weight = el('p', 'weight',
+        'These are the people this document names. Being named is not agreeing, and this page cannot tell you who has actually signed — the shell shows that above, where no document can reach.');
+      weight.id = 'view-weight';
+      app.append(weight);
+    }
+
+    function editMode() {
+      app.replaceChildren();
+      var list = signers();
+
+      app.append(el('label', '', 'Title'));
+      var title = el('input'); title.id = 'edit-title'; title.value = str(args.title);
+      title.placeholder = 'e.g. Lease agreement';
+      app.append(title);
+
+      app.append(el('label', '', 'Text'));
+      var body = el('textarea'); body.id = 'edit-body'; body.value = str(args.body);
+      body.placeholder = 'The terms being agreed to.';
+      app.append(body);
+
+      app.append(el('label', '', 'Signatories — who this document expects to sign'));
+      var rows = el('div'); rows.id = 'edit-signers';
+      app.append(rows);
+
+      function addRow(s) {
+        var row = el('div', 'row');
+        var k = el('input', 'k'); k.value = s ? s.key : ''; k.placeholder = 'their key (40-hex address)';
+        k.setAttribute('data-field', 'key');
+        var r = el('input', 'r'); r.value = s ? s.role : ''; r.placeholder = 'role — party, witness…';
+        r.setAttribute('data-field', 'role');
+        var n = el('input', 'n'); n.value = s ? s.name : ''; n.placeholder = 'name (optional)';
+        n.setAttribute('data-field', 'name');
+        var drop = el('button', 'drop', '×');
+        drop.title = 'Remove this signatory';
+        drop.addEventListener('click', function () { row.remove(); stream(); });
+        [k, r, n].forEach(function (i) { i.addEventListener('input', stream); });
+        row.append(k, r, n, drop);
+        rows.append(row);
+        return row;
+      }
+
+      var add = el('button', '', 'Add a signatory');
+      add.id = 'edit-add-signer';
+      add.addEventListener('click', function () { addRow(null); stream(); });
+      app.append(add);
+
+      app.append(el('div', 'hint',
+        'Listing someone does not ask them and does not bind them — it records who this document is meant for. Each of them signs it themselves, and the shell counts the signatures.'));
+
+      function collect() {
+        var out = [];
+        rows.querySelectorAll('.row').forEach(function (row) {
+          var key = row.querySelector('[data-field=key]').value.trim().toLowerCase();
+          if (!key) return;
+          out.push({
+            key: key,
+            scheme: 'eth-eip191',
+            role: row.querySelector('[data-field=role]').value.trim(),
+            name: row.querySelector('[data-field=name]').value.trim()
+          });
+        });
+        return out;
+      }
+
+      function stream() {
+        // Whole-set replacement on every emit, signatories included.
+        window.bridge.emit('draft', {
+          type: 'contract',
+          args: { title: title.value.trim(), body: body.value, signers: collect() }
+        });
+      }
+
+      title.addEventListener('input', stream);
+      body.addEventListener('input', stream);
+      list.forEach(function (s) { addRow(s); });
+      stream(); // initial state, so Publish enables immediately
+      title.focus();
+    }
+
+    if (a.mode === 'edit') editMode(); else viewMode();
+  </script>
+</body>
+</html>

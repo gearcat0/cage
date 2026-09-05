@@ -30,6 +30,8 @@ import type { Draft } from '../main/draft.js'
 import {
   admitBundle,
   buildBundle,
+  cborToJs,
+  cosignBundle,
   fromHex,
   encodeEnvelope,
   encodeManifest,
@@ -309,6 +311,8 @@ interface ShellSurface {
   people?: () => unknown[]
   setPetname?: (scheme: string, key: string, name: string, note?: string) => void
   attestations?: (targetHash: string) => { count: number; rows: unknown[] }
+  cosign?: (envelopeHash: string) => Promise<Record<string, unknown>>
+  document?: (manifestHash: string) => Record<string, unknown>
   newVouch?: (scheme: string, key: string) => Record<string, unknown>
   vouchesFor?: (scheme: string, key: string) => Record<string, unknown>
   tribe?: () => { id: string; hops: number; via: string[] }[]
@@ -788,7 +792,8 @@ app.whenReady().then(async () => {
         attests: attestedNow,
         attestsKnown: attestedNow ? library.get(attestedNow) !== null : false,
         attestCount: draft ? 0 : library.countRefsTo(envelopeHash, 'attests'),
-        ...trustFacts(current.stored, draft !== null)
+        ...trustFacts(current.stored, draft !== null),
+        ...(draft ? {} : documentFacts(current.stored.row.manifestHash))
       }
       return { ...current.header, mode: current.activeMode }
     }
@@ -881,7 +886,9 @@ app.whenReady().then(async () => {
       attests: attested,
       attestsKnown: attested ? library.get(attested) !== null : false,
       attestCount: draft ? 0 : library.countRefsTo(envelopeHash, 'attests'),
-      ...trustFacts(stored, draft !== null)
+      ...trustFacts(stored, draft !== null),
+      // A draft is signed by nobody, so it is not a document with signatures.
+      ...(draft ? {} : documentFacts(stored.row.manifestHash))
     }
     if (draft) await setMode('edit') // unfinished work opens ready to edit
     notifyModeChanged(o.activeMode)
@@ -1479,6 +1486,16 @@ app.whenReady().then(async () => {
     const stored = library.load(envelopeHash)
     if (!stored) return { status: 'invalid', reason: 'not found or not mountable (sealed, undecrypted)' }
     if (stored.row.sealed) return { status: 'invalid', reason: 'refusing to copy a sealed thing into a public one' }
+    // Copy rebuilds the same program/type/args, and a manifest has no author
+    // and no nonce -- so on a document that names signatories, Copy IS a
+    // co-signature, and would silently put your key on a contract. Refuse and
+    // send the human to the path that shows them what they are signing.
+    if (library.namedSigners(stored.row.manifestHash).length > 0) {
+      return {
+        status: 'invalid',
+        reason: 'this document names signatories — copying it would add your signature to it. Use Co-sign, which shows you what you are signing.'
+      }
+    }
     const attachments = new Map<string, { bytes: Uint8Array; mime?: string }>()
     for (const [name, att] of stored.manifest.att) {
       const bytes = stored.store.readAll(toHex(att.h))
@@ -1490,6 +1507,106 @@ app.whenReady().then(async () => {
       type: stored.manifest.type,
       args: stored.manifest.args,
       attachments
+    })
+    return ingestBytes(tar)
+  }
+
+  /** Everything about a document's signatures: who has signed, who is merely
+   *  NAMED, and whether you are among either.
+   *
+   *  "2 of 4 signed" is not a validity score and the chrome must never render
+   *  it as one -- a half-signed contract is not half-valid, it is unsigned by
+   *  two people. And a signature from someone the document never named is
+   *  still a real signature: it is reported separately rather than dropped,
+   *  because hiding it would be the dishonest half of the count. */
+  function documentFacts(manifestHash: string): Record<string, unknown> {
+    const named = library.namedSigners(manifestHash)
+    const signatures = library.signaturesOf(manifestHash).map((sig) => ({
+      ...sig,
+      petname: library.petname(sig.authorScheme, sig.authorKey)?.name ?? null,
+      // Was this signer one of the parties the document names?
+      named: named.some((n) => n.scheme === sig.authorScheme && n.key === sig.authorKey)
+    }))
+    const signedKeys = new Set(signatures.map((sg) => `${sg.authorScheme}:${sg.authorKey}`))
+    const me = `${keyring.signer.scheme}:${hex(keyring.identity.address).toLowerCase()}`
+    return {
+      // The DOCUMENT's identity: what signatures are grouped by, as distinct
+      // from the envelope hash, which identifies one signature.
+      manifestHash,
+      cosignable: named.length > 0,
+      namedSigners: named.map((n) => ({ ...n, signed: signedKeys.has(`${n.scheme}:${n.key}`) })),
+      signatures,
+      signedCount: signatures.length,
+      namedCount: named.length,
+      namedSignedCount: named.filter((n) => signedKeys.has(`${n.scheme}:${n.key}`)).length,
+      unnamedSignedCount: signatures.filter((sg) => !sg.named).length,
+      signedByMe: signedKeys.has(me),
+      // Being named is not consent: it only tells you the document expects you.
+      iAmNamed: named.some((n) => `${n.scheme}:${n.key}` === me)
+    }
+  }
+
+  /** Add YOUR signature to a document somebody else already signed.
+   *
+   *  Never rebuilds the manifest: the stored bytes are re-signed verbatim, so
+   *  what you sign is exactly what the earlier signers signed. Goes through
+   *  the same human confirm as publishing, because it is the same act -- your
+   *  key going onto something. */
+  async function cosignThing(envelopeHash: unknown): Promise<Record<string, unknown>> {
+    if (typeof envelopeHash !== 'string' || isDraftId(envelopeHash)) {
+      return { status: 'invalid', reason: 'a draft has nothing signed to co-sign' }
+    }
+    const stored = library.load(envelopeHash)
+    if (!stored) return { status: 'invalid', reason: 'not found or not mountable (sealed, undecrypted)' }
+    if (stored.row.sealed) {
+      // The plaintext manifest lives only in the ephemeral store; re-signing it
+      // would write decrypted bytes into a public bundle.
+      return { status: 'invalid', reason: 'refusing to co-sign a sealed thing into a public one' }
+    }
+    const manifestHash = stored.row.manifestHash
+    const facts = documentFacts(manifestHash)
+    if (facts.signedByMe) return { status: 'invalid', reason: 'you have already signed this document' }
+    const manifestBytes = stored.store.readAll(manifestHash)
+    if (!manifestBytes) return { status: 'invalid', reason: 'the manifest bytes are missing from the store' }
+    const blobs = new Map<string, Uint8Array>()
+    for (const [name, att] of stored.manifest.att) {
+      const bytes = stored.store.readAll(toHex(att.h))
+      if (!bytes) return { status: 'invalid', reason: `attachment missing from store: ${name}` }
+      blobs.set(toHex(att.h), bytes)
+    }
+    while (pendingConfirms.size >= MAX_PENDING_PUBLISH) {
+      const oldest = pendingConfirms.keys().next().value as number
+      clearTimeout(pendingConfirms.get(oldest)!.timer)
+      pendingConfirms.delete(oldest)
+    }
+    const id = nextConfirmId++
+    const timer = setTimeout(() => {
+      pendingConfirms.delete(id)
+      applyVisibility()
+    }, PUBLISH_CONFIRM_TTL_MS)
+    timer.unref?.()
+    pendingConfirms.set(id, { kind: 'cosign', manifestBytes, manifestHash, program: stored.program, blobs, timer })
+    applyVisibility()
+    const confirmReq = {
+      id,
+      kind: 'cosign',
+      summary: {
+        type: stored.manifest.type,
+        args: cborToJs(stored.manifest.args),
+        manifestHash,
+        ...facts
+      }
+    }
+    shell.lastConfirm = confirmReq
+    chrome.webContents.send('shell:confirm-request', confirmReq)
+    return { status: 'pending', id }
+  }
+
+  async function persistApprovedCosign(p: PendingCosign): Promise<Record<string, unknown>> {
+    const tar = await cosignBundle(keyring.signer, {
+      manifestBytes: p.manifestBytes,
+      program: p.program,
+      blobs: p.blobs
     })
     return ingestBytes(tar)
   }
@@ -1610,8 +1727,20 @@ app.whenReady().then(async () => {
     program: Uint8Array
     timer: ReturnType<typeof setTimeout>
   }
+  /** A co-signature awaiting approval: the manifest bytes VERBATIM (never a
+   *  re-encode -- see cosignBundle) plus the program and blobs they commit to,
+   *  captured when the dialog was raised so approval signs exactly what the
+   *  human was shown, even if the open thing changes meanwhile. */
+  interface PendingCosign {
+    manifestBytes: Uint8Array
+    manifestHash: string
+    program: Uint8Array
+    blobs: Map<string, Uint8Array>
+    timer: ReturnType<typeof setTimeout>
+  }
+  type PendingAction = ({ kind: 'publish' } & PendingPublish) | ({ kind: 'cosign' } & PendingCosign)
   let nextConfirmId = 1
-  const pendingConfirms = new Map<number, PendingPublish>()
+  const pendingConfirms = new Map<number, PendingAction>()
   const MAX_PENDING_PUBLISH = 4
   const PUBLISH_CONFIRM_TTL_MS = 5 * 60_000
 
@@ -1680,7 +1809,14 @@ app.whenReady().then(async () => {
       applyVisibility()
     }, PUBLISH_CONFIRM_TTL_MS)
     timer.unref?.()
-    pendingConfirms.set(id, { draft: o.latestDraft, draftId: o.draftId, attachments, program: o.stored.program, timer })
+    pendingConfirms.set(id, {
+      kind: 'publish',
+      draft: o.latestDraft,
+      draftId: o.draftId,
+      attachments,
+      program: o.stored.program,
+      timer
+    })
     applyVisibility() // cages hide while the human decides in chrome
     const confirmReq = { id, kind: 'publish', summary }
     shell.lastConfirm = confirmReq
@@ -1696,6 +1832,17 @@ app.whenReady().then(async () => {
     clearTimeout(p.timer)
     if (!approved) {
       shell.lastPublish = { status: 'denied' }
+      return
+    }
+    if (p.kind === 'cosign') {
+      void persistApprovedCosign(p)
+        // Same reason publish has one: a throw here would leave the human who
+        // approved a signature with no outcome at all.
+        .catch((e: unknown) => ({ status: 'invalid', reason: `co-sign: ${(e as Error).message}` }))
+        .then((outcome) => {
+          shell.lastPublish = outcome
+          chrome.webContents.send('shell:publish-result', outcome)
+        })
       return
     }
     clearPreview()
@@ -1811,6 +1958,10 @@ app.whenReady().then(async () => {
     notifyFeedChanged() // every row showing this author is now stale
     return { ok: true }
   })
+  ipcMain.handle('shell:cosign', (_e, h: unknown) => cosignThing(h))
+  ipcMain.handle('shell:document', (_e, h: unknown) =>
+    typeof h === 'string' && HEX64.test(h) ? documentFacts(h) : { cosignable: false, signatures: [], namedSigners: [] }
+  )
   ipcMain.handle('shell:new-vouch', (_e, s: unknown, k: unknown) => newVouch(s, k))
   ipcMain.handle('shell:vouches-for', (_e, s: unknown, k: unknown) => vouchesFor(s, k))
   ipcMain.handle('shell:attestations', (_e, h: unknown) => attestationsFor(h))
@@ -1919,6 +2070,8 @@ app.whenReady().then(async () => {
     library.setPetname(scheme, key, name, note ?? '', Date.now())
     notifyFeedChanged()
   }
+  shell.cosign = (h) => cosignThing(h)
+  shell.document = (h) => documentFacts(h)
   shell.newVouch = (s, k) => newVouch(s, k)
   shell.vouchesFor = (s, k) => vouchesFor(s, k)
   shell.tribe = () => [...myTribe()].map(([id, v]) => ({ id, hops: v.hops, via: v.via }))

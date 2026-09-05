@@ -13,6 +13,7 @@ import {
   sealEnvelope,
   sealMember,
   parseBundle,
+  cosignBundle,
   type BundleSource,
   type Manifest,
   type Signer
@@ -180,7 +181,7 @@ export function bundleTarHash(tar: Uint8Array): string {
   return [...hash(tar)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-export { seal, secp256k1, schnorr, hash, parseBundle }
+export { seal, secp256k1, schnorr, hash, parseBundle, cosignBundle }
 
 // ── Shell launcher ───────────────────────────────────────────────────────────
 
@@ -229,6 +230,20 @@ export interface ShellHandle {
   attestations(
     targetHash: string
   ): Promise<{ count: number; rows: { envelopeHash: string; authorKey: string; hops: number | null }[]; fromTribe: number }>
+  /** Co-signing: add your signature to a document, and read a document's
+   *  signatures. Keyed by MANIFEST hash — the document, not one signature. */
+  cosign(envelopeHash: string): Promise<{ status?: string; reason?: string; id?: number }>
+  document(manifestHash: string): Promise<{
+    cosignable: boolean
+    signedCount: number
+    namedCount: number
+    namedSignedCount: number
+    unnamedSignedCount: number
+    signedByMe: boolean
+    iAmNamed: boolean
+    signatures: { envelopeHash: string; authorKey: string; named: boolean }[]
+    namedSigners: { key: string; role: string; name: string; signed: boolean }[]
+  }>
   /** Vouches: start one for a KEY, read who vouches for a key, walk your tribe. */
   newVouch(scheme: string, key: string): Promise<{ id?: string; error?: string }>
   vouchesFor(
@@ -513,6 +528,18 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
         ).__shell
         return s.attestations(h) as never
       }, targetHash),
+    cosign: (envelopeHash: string) =>
+      app.evaluate(async (electron, h) => {
+        const s = (
+          electron.app as unknown as { __shell: { cosign: (x: string) => Promise<Record<string, unknown>> } }
+        ).__shell
+        return (await s.cosign(h)) as never
+      }, envelopeHash),
+    document: (manifestHash: string) =>
+      app.evaluate(async (electron, h) => {
+        const s = (electron.app as unknown as { __shell: { document: (x: string) => unknown } }).__shell
+        return s.document(h) as never
+      }, manifestHash),
     newVouch: (scheme: string, key: string) =>
       app.evaluate(
         async (electron, a) => {
