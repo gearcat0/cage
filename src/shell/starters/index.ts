@@ -7,6 +7,7 @@ import memoHtml from '../../../samples/memo.html?raw'
 import nametagHtml from '../../../samples/nametag.html?raw'
 import posterHtml from '../../../samples/poster.html?raw'
 import todoHtml from '../../../samples/todo.html?raw'
+import vouchHtml from '../../../samples/vouch.html?raw'
 
 // ── Built-in starter programs ────────────────────────────────────────────────
 // The sample programs, shipped INSIDE the app so "New → Nametag" works on a
@@ -85,6 +86,13 @@ export const STARTERS: readonly Starter[] = [
     label: 'Attestation',
     description: 'Put your signature behind a statement about another thing.',
     html: attestationHtml
+  },
+  {
+    key: 'starter:vouch',
+    type: 'vouch',
+    label: 'Vouch',
+    description: 'Say that you know someone’s key, and what you call them.',
+    html: vouchHtml
   },
   {
     key: 'starter:poster',

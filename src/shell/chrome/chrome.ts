@@ -52,7 +52,24 @@ interface ShellApi {
   >
   setPetname(p: { scheme: string; key: string; name: string; note?: string }): Promise<{ ok: boolean }>
   onOpenPeople(cb: () => void): void
-  attestations(targetHash: string): Promise<{ count: number; rows: ThingRow[] }>
+  attestations(targetHash: string): Promise<{ count: number; rows: (ThingRow & { hops: number | null })[]; fromTribe: number }>
+  newVouch(scheme: string, key: string): Promise<{ id?: string; error?: string }>
+  vouchesFor(
+    scheme: string,
+    key: string
+  ): Promise<{
+    rows: {
+      voucherScheme: string
+      voucherKey: string
+      name: string
+      relation: string
+      petname: string | null
+      hops: number | null
+    }[]
+    count: number
+    fromTribe: number
+    hops: number | null
+  }>
   replies(targetHash: string): Promise<{ count: number; rows: ThingRow[] }>
   deleteDraft(id: string): Promise<{ deleted: boolean }>
   onFeedChanged(cb: () => void): void
@@ -115,6 +132,14 @@ interface HeaderFacts {
   attests?: string | null
   attestsKnown?: boolean
   attestCount?: number
+  /** How far the author sits from you through your own vouches, or null for
+   *  outside your tribe (and for a draft, which nobody has signed). */
+  authorHops?: number | null
+  /** When this thing IS a vouch: the key it speaks about. */
+  vouchAbout?: string | null
+  vouchAboutScheme?: string | null
+  vouchAboutKnown?: boolean
+  vouchAboutName?: string | null
 }
 type Outcome =
   | { status: 'valid'; type: string; author?: { k: string } }
@@ -829,6 +854,15 @@ function authorLabel(row: { authorScheme: string; authorKey: string; petname?: s
   return { text: addr, title: full, named: false }
 }
 
+/** Where a key sits relative to you, in words rather than a number.
+ *
+ *  Deliberately not a score: distance is a fact about YOUR vouches, and it
+ *  stops meaning anything past a hop or two, so it is never summed, averaged,
+ *  or compared between keys. */
+function tribeSeat(hops: number): string {
+  return hops === 1 ? 'you vouched' : hops === 2 ? 'vouched by someone you vouched for' : `${hops} hops`
+}
+
 function isMine(row: { authorScheme: string; authorKey: string }): boolean {
   return myAuthorKey !== null && row.authorScheme === 'eth-eip191' && row.authorKey === myAuthorKey
 }
@@ -1274,18 +1308,28 @@ function openPeopleModal(): void {
   list.setAttribute('data-testid', 'people-list')
   body.append(
     el('p', 'sh-hint', 'Every key whose things you hold. A name here is yours alone — it stays on this machine, and says you recognise the key, not that you trust it.'),
+    el(
+      'p',
+      'sh-hint',
+      'A vouch is the opposite: it is signed, it travels, and it tells whoever receives it that you know this key. Naming is private; vouching is public.'
+    ),
     list
   )
 
   const paint = async (): Promise<void> => {
     const rows = await shell.people().catch(() => [])
+    // Standing is per key, so it is fetched alongside rather than joined into
+    // people() -- the People list is small and this keeps the query honest.
+    const standing = await Promise.all(
+      rows.map((r) => shell.vouchesFor(r.authorScheme, r.authorKey).catch(() => null))
+    )
     list.replaceChildren()
     list.setAttribute('data-count', String(rows.length))
     if (rows.length === 0) {
       list.append(el('p', 'sh-hint', 'Nobody yet — admit something and its author appears here.'))
       return
     }
-    for (const r of rows) {
+    for (const [i, r] of rows.entries()) {
       const row = el('div', 'sh-people-row')
       row.setAttribute('data-author-key', r.authorKey)
       const lab = authorLabel({ authorScheme: r.authorScheme, authorKey: r.authorKey, petname: r.name })
@@ -1300,7 +1344,37 @@ function openPeopleModal(): void {
       btn.addEventListener('click', () => {
         openPetnameModal(r.authorScheme, r.authorKey, r.name)
       })
-      row.append(nameEl, count, mine ? el('span', 'sh-feed-you', 'you') : btn)
+      const actions = el('span', 'sh-people-actions')
+      if (mine) {
+        actions.append(el('span', 'sh-feed-you', 'you'))
+      } else {
+        const vouch = el('button', 'evm-btn evm-btn--ghost evm-btn--sm', 'Vouch…') as HTMLButtonElement
+        vouch.setAttribute('data-testid', 'people-vouch')
+        vouch.title = 'Sign a statement that you know this key. This one travels.'
+        vouch.addEventListener('click', () => {
+          void shell.newVouch(r.authorScheme, r.authorKey).then((res) => {
+            if (res.error) return showText(`Could not start a vouch: ${res.error}`, 'danger')
+            overlay.remove() // the draft is now open; get out of its way
+          })
+        })
+        actions.append(btn, vouch)
+      }
+      row.append(nameEl, count, actions)
+
+      // Who already vouches for this key, and how much of that reaches YOU.
+      const st = standing[i]
+      if (st && st.count > 0) {
+        const line = el('div', 'sh-people-note sh-tribe-line')
+        line.setAttribute('data-testid', 'people-vouches')
+        line.setAttribute('data-count', String(st.count))
+        line.setAttribute('data-from-tribe', String(st.fromTribe))
+        const n = st.count === 1 ? '1 vouch' : `${st.count} vouches`
+        line.textContent =
+          st.fromTribe === 0
+            ? `${n}, none from your tribe — nobody you have vouched for reaches this key.`
+            : `${n}, ${st.fromTribe} from your tribe.`
+        row.append(line)
+      }
       if (r.note) row.append(el('div', 'sh-people-note', r.note))
       list.append(row)
     }
@@ -1331,7 +1405,7 @@ const attestLabel = (n: number): string =>
  *  nothing about tells you nothing — so this lists them with their authors and
  *  leaves the judgement where it belongs. */
 async function openAttestationsModal(target: string): Promise<void> {
-  const { rows } = await shell.attestations(target)
+  const { rows, fromTribe } = await shell.attestations(target)
   const overlay = el('div', 'evm-modal-overlay')
   const modal = el('div', 'evm-modal')
   modal.setAttribute('data-testid', 'attestations-modal')
@@ -1345,6 +1419,18 @@ async function openAttestationsModal(target: string): Promise<void> {
       'Things in your library that put a signature behind a statement about this. Each signature proves who said it — not that it is true, and not that this thing’s author agreed.'
     )
   )
+  // "5 attestations, 3 from your tribe" -- the second half is the part that
+  // carries, because the first is free to manufacture.
+  if (rows.length > 0) {
+    const standing = el('p', 'sh-hint sh-tribe-line')
+    standing.setAttribute('data-testid', 'attestations-tribe')
+    standing.setAttribute('data-from-tribe', String(fromTribe))
+    standing.textContent =
+      fromTribe === 0
+        ? `${attestLabel(rows.length)}, none from anyone you have vouched for.`
+        : `${attestLabel(rows.length)}, ${fromTribe} from your tribe — signers you reached through your own vouches.`
+    body.append(standing)
+  }
   if (rows.length === 0) body.append(el('div', 'evm-empty', 'Nothing in your library attests to this.'))
   for (const row of rows) {
     const item = el('button', 'sh-feed-item')
@@ -1360,6 +1446,12 @@ async function openAttestationsModal(target: string): Promise<void> {
       ),
       el('span', 'sh-feed-flags')
     )
+    if (row.hops !== null) {
+      const seat = el('span', 'evm-badge evm-badge--neutral sh-tribe-badge', tribeSeat(row.hops))
+      seat.setAttribute('data-testid', 'attestation-tribe')
+      seat.setAttribute('data-hops', String(row.hops))
+      line.append(seat)
+    }
     item.append(line)
     item.addEventListener('click', () => {
       overlay.remove()
@@ -1582,6 +1674,20 @@ function renderHeader(h: HeaderFacts | null): void {
     }
     replyBits.push(rt)
   }
+  // Whose key this vouch speaks about, when it is a vouch. A vouch names a
+  // KEY rather than a thing, so there is nothing to open -- what is useful is
+  // whether you have ever seen that key, and what you call it.
+  if (h.vouchAbout) {
+    const known = h.vouchAboutKnown === true
+    const label = h.vouchAboutName ?? short(h.vouchAbout, 6)
+    const vb = el('span', `sh-replyto${known ? ' sh-replyto--known' : ''}`, `vouches for ${label}`)
+    vb.setAttribute('data-testid', 'header-vouch-about')
+    vb.setAttribute('data-known', known ? '1' : '0')
+    vb.title = known
+      ? `${h.vouchAboutScheme}:${h.vouchAbout} — you hold things by this key`
+      : `${h.vouchAboutScheme}:${h.vouchAbout} — you hold nothing by this key, so this vouch is about a stranger to you`
+    replyBits.push(vb)
+  }
   // What THIS thing attests to, when it is an attestation. Same honesty as
   // replyTo: it is a claim, the target's author never agreed, and we say when
   // the target is not held rather than hiding the mismatch.
@@ -1600,10 +1706,26 @@ function renderHeader(h: HeaderFacts | null): void {
     replyBits.push(at)
   }
 
+  // Where the author sits relative to you. Shown only when they are actually
+  // reachable from your own vouches -- absence is the normal case and needs no
+  // badge, and a "0" would read as a score, which this is not.
+  const seatBits: HTMLElement[] = []
+  if (typeof h.authorHops === 'number') {
+    const seat = el('span', 'evm-badge evm-badge--neutral sh-tribe-badge', tribeSeat(h.authorHops))
+    seat.setAttribute('data-testid', 'header-tribe')
+    seat.setAttribute('data-hops', String(h.authorHops))
+    seat.title =
+      h.authorHops === 1
+        ? 'You have vouched for this key. That records that you know them — nothing about this thing.'
+        : 'Reached through someone you vouched for. It says how you know of them, not that they are honest.'
+    seatBits.push(seat)
+  }
+
   thingHeader.append(
     statusSlot,
     el('span', 'sh-by', 'by'),
     authorEl,
+    ...seatBits,
     typeBadge,
     renderModeToggle(),
     pub,
@@ -1698,7 +1820,7 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 // Test hook: let the N6 pixel test drive a real open (renders the trust header)
 // without simulating a click. Harmless in the trusted chrome.
-;(window as unknown as { __shellChrome: unknown }).__shellChrome = { openThing }
+;(window as unknown as { __shellChrome: unknown }).__shellChrome = { openThing, openPeople: openPeopleModal }
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 shell.onFeedChanged(() => {

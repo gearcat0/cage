@@ -50,8 +50,21 @@ const shell = {
   },
   newAttestation: (targetHash: string): Promise<{ id?: string; error?: string }> =>
     ipcRenderer.invoke('shell:new-attestation', targetHash),
-  attestations: (targetHash: string): Promise<{ count: number; rows: unknown[] }> =>
+  attestations: (targetHash: string): Promise<{ count: number; rows: unknown[]; fromTribe: number }> =>
     ipcRenderer.invoke('shell:attestations', targetHash),
+  /** Start a vouch for a KEY (the shell seeds the subject, as with comments),
+   *  and read who vouches for one. */
+  newVouch: (scheme: string, key: string): Promise<{ id?: string; error?: string }> =>
+    ipcRenderer.invoke('shell:new-vouch', scheme, key),
+  vouchesFor: (
+    scheme: string,
+    key: string
+  ): Promise<{
+    rows: { voucherScheme: string; voucherKey: string; name: string; relation: string; petname: string | null; hops: number | null }[]
+    count: number
+    fromTribe: number
+    hops: number | null
+  }> => ipcRenderer.invoke('shell:vouches-for', scheme, key),
   /** Save a thing to a .thing file the human picks — the ORIGINAL admitted
    *  bytes, so it stays signed by its author and keeps its envelope hash. */
   exportThing: (envelopeHash: string): Promise<{ path: string | null; error?: string }> =>

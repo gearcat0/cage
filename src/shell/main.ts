@@ -10,6 +10,7 @@ import {
   Library,
   isDraftId,
   refTarget,
+  vouchSubject,
   type DraftBlobInput,
   type DraftRow,
   type StoredThing,
@@ -308,6 +309,9 @@ interface ShellSurface {
   people?: () => unknown[]
   setPetname?: (scheme: string, key: string, name: string, note?: string) => void
   attestations?: (targetHash: string) => { count: number; rows: unknown[] }
+  newVouch?: (scheme: string, key: string) => Record<string, unknown>
+  vouchesFor?: (scheme: string, key: string) => Record<string, unknown>
+  tribe?: () => { id: string; hops: number; via: string[] }[]
   /** TEST: the attachment set a draft is holding. */
   draftBlobs?: (draftId: string) => { name: string; hash: string; mime: string; size: number }[]
   /** Things claiming to reply to a hash. */
@@ -783,7 +787,8 @@ app.whenReady().then(async () => {
         replyCount: draft ? 0 : library.countRefsTo(envelopeHash),
         attests: attestedNow,
         attestsKnown: attestedNow ? library.get(attestedNow) !== null : false,
-        attestCount: draft ? 0 : library.countRefsTo(envelopeHash, 'attests')
+        attestCount: draft ? 0 : library.countRefsTo(envelopeHash, 'attests'),
+        ...trustFacts(current.stored, draft !== null)
       }
       return { ...current.header, mode: current.activeMode }
     }
@@ -875,7 +880,8 @@ app.whenReady().then(async () => {
       // claims, exactly like replyTo, and are labelled as such in the chrome.
       attests: attested,
       attestsKnown: attested ? library.get(attested) !== null : false,
-      attestCount: draft ? 0 : library.countRefsTo(envelopeHash, 'attests')
+      attestCount: draft ? 0 : library.countRefsTo(envelopeHash, 'attests'),
+      ...trustFacts(stored, draft !== null)
     }
     if (draft) await setMode('edit') // unfinished work opens ready to edit
     notifyModeChanged(o.activeMode)
@@ -1124,6 +1130,8 @@ app.whenReady().then(async () => {
   }
 
   const HEX64 = /^[0-9a-f]{64}$/
+  /** An author key: an eth address today, wider once other schemes land. */
+  const HEXKEY = /^[0-9a-f]{40,64}$/
 
   /** Start a comment on an existing thing. The program cannot learn a hash on
    *  its own (getArgs withholds the envelope, deliberately), so the SHELL puts
@@ -1141,6 +1149,89 @@ app.whenReady().then(async () => {
     if (typeof targetHash !== 'string' || !HEX64.test(targetHash)) return { error: 'bad hash' }
     if (!library.get(targetHash)) return { error: 'that thing is not in your library' }
     return newDraft('starter:attestation', { attests: targetHash })
+  }
+
+  /** Start a vouch for an author KEY. Unlike newComment/newAttestation the
+   *  seed is a key rather than a hash -- but for the same reason: a program
+   *  cannot learn who authored anything, so the shell puts the subject in.
+   *
+   *  Vouching for yourself is refused. It would be the one vouch that is
+   *  always available and never worth anything, and it would put your own key
+   *  in the graph twice. */
+  function newVouch(scheme: unknown, key: unknown): Record<string, unknown> {
+    const k = typeof key === 'string' ? key.toLowerCase() : ''
+    if (!HEXKEY.test(k)) return { error: 'bad key' }
+    const s = typeof scheme === 'string' && scheme ? scheme : keyring.signer.scheme
+    if (s === keyring.signer.scheme && k === hex(keyring.identity.address).toLowerCase()) {
+      return { error: 'that is your own key' }
+    }
+    return newDraft('starter:vouch', { about: k, aboutScheme: s })
+  }
+
+  /** Keys reachable from YOUR key by vouches. Recomputed per call: the graph
+   *  is small, and a stale tribe is worse than a cheap walk. */
+  function myTribe(): Map<string, { hops: number; via: string[] }> {
+    return library.tribe(keyring.signer.scheme, hex(keyring.identity.address).toLowerCase())
+  }
+
+  /** Who vouches for a key, with your name for each voucher and how far from
+   *  you they sit. `hops` is null for a voucher outside your tribe -- which is
+   *  most of them, and is the honest answer rather than a hidden zero. */
+  function vouchesFor(scheme: unknown, key: unknown): Record<string, unknown> {
+    const k = typeof key === 'string' ? key.toLowerCase() : ''
+    if (!HEXKEY.test(k)) return { rows: [], count: 0, fromTribe: 0, hops: null }
+    const s = typeof scheme === 'string' && scheme ? scheme : keyring.signer.scheme
+    const tribe = myTribe()
+    const rows = library.vouchesAbout(s, k).map((v) => {
+      const seat = tribe.get(`${v.voucherScheme}:${v.voucherKey}`)
+      return {
+        ...v,
+        petname: library.petname(v.voucherScheme, v.voucherKey)?.name ?? null,
+        hops: seat ? seat.hops : null
+      }
+    })
+    return {
+      rows,
+      count: rows.length,
+      fromTribe: rows.filter((r) => r.hops !== null).length,
+      // Where the SUBJECT sits, which is the question actually being asked.
+      hops: tribe.get(`${s}:${k}`)?.hops ?? null
+    }
+  }
+
+  /** Who attests to a thing, and how much of that reaches YOU.
+   *
+   *  "5 attestations, 3 from your tribe": the count alone says nothing, since
+   *  anyone may attest to anything and keys are free to mint. The second half
+   *  is the part that carries. */
+  function attestationsFor(h: unknown): Record<string, unknown> {
+    if (typeof h !== 'string' || !HEX64.test(h)) return { count: 0, rows: [], fromTribe: 0 }
+    const tribe = myTribe()
+    const rows = library.feed({ attests: h, limit: 200 }).map((r) => ({
+      ...r,
+      hops: tribe.get(`${r.authorScheme}:${r.authorKey}`)?.hops ?? null
+    }))
+    return { count: library.countRefsTo(h, 'attests'), rows, fromTribe: rows.filter((r) => r.hops !== null).length }
+  }
+
+  /** The vouch-shaped header facts for one thing: where its author sits in
+   *  your tribe, and -- when it IS a vouch -- whose key it speaks about.
+   *
+   *  Recomputed on every open rather than cached with the mount, for the same
+   *  reason the reply counts are: a vouch published since is real news. */
+  function trustFacts(stored: StoredThing, draft: boolean): Record<string, unknown> {
+    const subject = draft ? null : vouchSubject(stored.manifest.args)
+    const tribe = myTribe()
+    return {
+      // Never for a draft: nothing is signed, so there is no author yet.
+      authorHops: draft ? null : tribe.get(`${stored.row.authorScheme}:${stored.row.authorKey}`)?.hops ?? null,
+      vouchAbout: subject?.key ?? null,
+      vouchAboutScheme: subject?.scheme ?? null,
+      // Whether you hold anything by the key this vouch names. Not knowing
+      // them is the common case and is stated rather than hidden.
+      vouchAboutKnown: subject ? library.people().some((pp) => pp.authorScheme === subject.scheme && pp.authorKey === subject.key) : false,
+      vouchAboutName: subject ? library.petname(subject.scheme, subject.key)?.name ?? null : null
+    }
   }
 
   function deleteDraft(id: string): Record<string, unknown> {
@@ -1720,11 +1811,9 @@ app.whenReady().then(async () => {
     notifyFeedChanged() // every row showing this author is now stale
     return { ok: true }
   })
-  ipcMain.handle('shell:attestations', (_e, h: unknown) =>
-    typeof h === 'string' && HEX64.test(h)
-      ? { count: library.countRefsTo(h, 'attests'), rows: library.feed({ attests: h, limit: 200 }) }
-      : { count: 0, rows: [] }
-  )
+  ipcMain.handle('shell:new-vouch', (_e, s: unknown, k: unknown) => newVouch(s, k))
+  ipcMain.handle('shell:vouches-for', (_e, s: unknown, k: unknown) => vouchesFor(s, k))
+  ipcMain.handle('shell:attestations', (_e, h: unknown) => attestationsFor(h))
   ipcMain.handle('shell:replies', (_e, h: unknown) =>
     typeof h === 'string' && HEX64.test(h)
       ? { count: library.countRefsTo(h), rows: library.feed({ replyTo: h, limit: 200 }) }
@@ -1830,10 +1919,10 @@ app.whenReady().then(async () => {
     library.setPetname(scheme, key, name, note ?? '', Date.now())
     notifyFeedChanged()
   }
-  shell.attestations = (h) => ({
-    count: library.countRefsTo(h, 'attests'),
-    rows: library.feed({ attests: h, limit: 200 })
-  })
+  shell.newVouch = (s, k) => newVouch(s, k)
+  shell.vouchesFor = (s, k) => vouchesFor(s, k)
+  shell.tribe = () => [...myTribe()].map(([id, v]) => ({ id, hops: v.hops, via: v.via }))
+  shell.attestations = (h) => attestationsFor(h) as { count: number; rows: unknown[] }
   shell.draftBlobs = (id) => library.draftBlobs(id)
   shell.replies = (h) => ({ count: library.countRefsTo(h), rows: library.feed({ replyTo: h, limit: 200 }) })
   shell.deleteDraft = (id) => deleteDraft(id)
