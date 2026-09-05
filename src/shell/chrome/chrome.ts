@@ -53,6 +53,8 @@ interface ShellApi {
   setPetname(p: { scheme: string; key: string; name: string; note?: string }): Promise<{ ok: boolean }>
   onOpenPeople(cb: () => void): void
   attestations(targetHash: string): Promise<{ count: number; rows: (ThingRow & { hops: number | null })[]; fromTribe: number }>
+  cosign(envelopeHash: string): Promise<{ status?: string; reason?: string; id?: number }>
+  document(manifestHash: string): Promise<DocumentFacts>
   newVouch(scheme: string, key: string): Promise<{ id?: string; error?: string }>
   vouchesFor(
     scheme: string,
@@ -135,6 +137,17 @@ interface HeaderFacts {
   /** How far the author sits from you through your own vouches, or null for
    *  outside your tribe (and for a draft, which nobody has signed). */
   authorHops?: number | null
+  /** Co-signing: several envelopes over ONE manifest. Present only when the
+   *  document names signatories -- an ordinary thing is not a contract. */
+  cosignable?: boolean
+  /** The DOCUMENT's identity — what signatures are grouped by. */
+  manifestHash?: string
+  signedCount?: number
+  namedCount?: number
+  namedSignedCount?: number
+  unnamedSignedCount?: number
+  signedByMe?: boolean
+  iAmNamed?: boolean
   /** When this thing IS a vouch: the key it speaks about. */
   vouchAbout?: string | null
   vouchAboutScheme?: string | null
@@ -854,6 +867,45 @@ function authorLabel(row: { authorScheme: string; authorKey: string; petname?: s
   return { text: addr, title: full, named: false }
 }
 
+export interface DocumentFacts {
+  cosignable: boolean
+  signedCount: number
+  namedCount: number
+  namedSignedCount: number
+  unnamedSignedCount: number
+  signedByMe: boolean
+  iAmNamed: boolean
+  signatures: {
+    envelopeHash: string
+    authorScheme: string
+    authorKey: string
+    created: number
+    receivedAt: number
+    petname: string | null
+    named: boolean
+  }[]
+  namedSigners: { scheme: string; key: string; role: string; name: string; signed: boolean }[]
+}
+
+/** "2 of 4 signed" -- and never a percentage, a bar, or a tick.
+ *
+ *  A half-signed contract is not half-valid: it is a document two people have
+ *  not signed. The wording says who is missing, not how complete it is. */
+function signedLabel(f: {
+  namedSignedCount?: number
+  namedCount?: number
+  signedCount?: number
+  unnamedSignedCount?: number
+}): string {
+  const named = f.namedCount ?? 0
+  const signedNamed = f.namedSignedCount ?? 0
+  const extra = f.unnamedSignedCount ?? 0
+  const base = `${signedNamed} of ${named} signed`
+  if (extra === 0) return base
+  // A signature the document never asked for is still a real signature.
+  return `${base}, plus ${extra} not named`
+}
+
 /** Where a key sits relative to you, in words rather than a number.
  *
  *  Deliberately not a score: distance is a fact about YOUR vouches, and it
@@ -1469,6 +1521,84 @@ async function openAttestationsModal(target: string): Promise<void> {
   document.body.append(trackOverlay(overlay))
 }
 
+/** Who has signed this document, and who it named but has not.
+ *
+ *  The two are kept apart on purpose. A signature is a fact about a key; being
+ *  named is a claim by whoever drafted the document, and carries no weight of
+ *  its own. Neither is a verdict on the document. */
+async function openSignaturesModal(manifestHash: string): Promise<void> {
+  const facts = await shell.document(manifestHash)
+  const overlay = el('div', 'evm-modal-overlay')
+  const modal = el('div', 'evm-modal')
+  modal.setAttribute('data-testid', 'signatures-modal')
+  const header = el('div', 'evm-modal-header')
+  header.append(el('span', 'evm-modal-title', 'Signatures'))
+  const body = el('div', 'evm-modal-body')
+  body.append(
+    el(
+      'p',
+      'sh-hint',
+      'Each signature is a separate envelope over these exact document bytes — independently verified, and none of them privileged over the others. A signature proves the key signed this text; it does not prove they read it, and it is not a verdict on what the document says.'
+    )
+  )
+
+  const signed = el('div')
+  signed.setAttribute('data-testid', 'signatures-signed')
+  signed.setAttribute('data-count', String(facts.signatures.length))
+  for (const sig of facts.signatures) {
+    const item = el('button', 'sh-feed-item')
+    item.setAttribute('data-testid', 'signature-item')
+    item.setAttribute('data-author-key', sig.authorKey)
+    const line = el('div', 'sh-feed-line')
+    const lab = authorLabel({ authorScheme: sig.authorScheme, authorKey: sig.authorKey, petname: sig.petname })
+    line.append(
+      el('span', 'evm-badge evm-badge--neutral', 'signed'),
+      el('span', 'sh-feed-author evm-address evm-address--muted', lab.text),
+      // Said plainly rather than hidden: the document did not name them, and
+      // their signature is real all the same.
+      el('span', 'sh-feed-flags', sig.named ? '' : 'not named by the document')
+    )
+    item.append(line)
+    item.addEventListener('click', () => {
+      overlay.remove()
+      void openThing(sig.envelopeHash)
+    })
+    body.append(item)
+  }
+  body.append(signed)
+
+  const missing = facts.namedSigners.filter((n) => !n.signed)
+  if (missing.length > 0) {
+    body.append(
+      el(
+        'p',
+        'sh-hint',
+        'Named by the document, but no signature from them is in your library. That may mean they have not signed, or only that their signature has not reached you.'
+      )
+    )
+    for (const n of missing) {
+      const row = el('div', 'sh-people-row')
+      row.setAttribute('data-testid', 'signature-missing')
+      row.setAttribute('data-author-key', n.key)
+      const lab = authorLabel({ authorScheme: n.scheme, authorKey: n.key, petname: null })
+      row.append(
+        el('span', 'evm-badge evm-badge--neutral', n.role || 'party'),
+        el('span', 'evm-address evm-address--muted', n.name || lab.text)
+      )
+      body.append(row)
+    }
+  }
+
+  const footer = el('div', 'evm-modal-footer')
+  const close = el('button', 'evm-btn evm-btn--ghost', 'Close')
+  close.setAttribute('data-testid', 'signatures-close')
+  close.addEventListener('click', () => overlay.remove())
+  footer.append(close)
+  modal.append(header, body, footer)
+  overlay.append(modal)
+  document.body.append(trackOverlay(overlay))
+}
+
 /** Things in THIS library that claim to reply to `target`. */
 async function openRepliesModal(target: string): Promise<void> {
   const { rows } = await shell.replies(target)
@@ -1585,8 +1715,17 @@ function renderHeader(h: HeaderFacts | null): void {
   copyBtn.setAttribute('data-testid', 'header-copy')
   copyBtn.addEventListener('click', async () => {
     const outcome = await shell.copyThing(h.envelopeHash)
-    if (outcome.status === 'valid') showText('Copied — your new instance is in the feed', 'success')
-    else showText(`Copy failed: ${String(outcome.reason ?? outcome.status)}`, 'danger')
+    if (outcome.status === 'valid' && outcome.duplicate !== true) {
+      showText('Copied — your new instance is in the feed', 'success')
+    } else if (outcome.status === 'valid') {
+      // An envelope hash covers author + content + the claimed second. Copying
+      // your OWN thing inside that second reproduces it exactly, so there is
+      // nothing to add -- and saying "your new instance is in the feed" when
+      // no row appeared would be a plain falsehood.
+      showText('That would be identical to the original, so nothing was added', 'neutral')
+    } else {
+      showText(`Copy failed: ${String(outcome.reason ?? outcome.status)}`, 'danger')
+    }
     await refreshFeed()
   })
   // Share: every way this thing can leave the machine, behind one control.
@@ -1673,6 +1812,36 @@ function renderHeader(h: HeaderFacts | null): void {
       rt.addEventListener('click', () => void openThing(h.replyTo!))
     }
     replyBits.push(rt)
+  }
+  // A document several people sign. Only for declared documents: an ordinary
+  // thing shares no manifest with anyone and is not awaiting signatures.
+  if (h.cosignable && !h.draft) {
+    const sigBadge = el('button', 'evm-btn evm-btn--ghost evm-btn--sm', signedLabel(h))
+    sigBadge.setAttribute('data-testid', 'header-signatures')
+    sigBadge.setAttribute('data-signed', String(h.namedSignedCount ?? 0))
+    sigBadge.setAttribute('data-named', String(h.namedCount ?? 0))
+    sigBadge.setAttribute('data-unnamed', String(h.unnamedSignedCount ?? 0))
+    sigBadge.title = 'Who has signed this document, and who it names. Not a measure of how valid it is.'
+    sigBadge.addEventListener('click', () => void openSignaturesModal(h.manifestHash ?? ''))
+    replyBits.push(sigBadge)
+
+    if (!isMine(h) || h.signedByMe !== true) {
+      const cosignBtn = el('button', 'evm-btn evm-btn--ghost evm-btn--sm', 'Co-sign…') as HTMLButtonElement
+      cosignBtn.setAttribute('data-testid', 'header-cosign')
+      cosignBtn.disabled = h.signedByMe === true
+      cosignBtn.title = h.signedByMe
+        ? 'You have already signed this document'
+        : 'Sign these exact document bytes with your key'
+      cosignBtn.addEventListener('click', () => {
+        void shell.cosign(h.envelopeHash).then((r) => {
+          // 'pending' is the confirm being raised — the outcome arrives there.
+          if (r.status && r.status !== 'pending') {
+            showText(`Could not co-sign: ${String(r.reason ?? r.status)}`, 'danger')
+          }
+        })
+      })
+      replyBits.push(cosignBtn)
+    }
   }
   // Whose key this vouch speaks about, when it is a vouch. A vouch names a
   // KEY rather than a thing, so there is nothing to open -- what is useful is
@@ -1779,7 +1948,12 @@ shell.onConfirmRequest((req) => {
   const header = el('div', 'evm-modal-header')
   // 'publish' is user-initiated (the chrome Publish button signing the
   // previewed draft); anything else would be a thing's own request.
-  const title = req.kind === 'publish' ? 'Publish a new instance?' : `A thing wants to ${req.kind}`
+  const title =
+    req.kind === 'publish'
+      ? 'Publish a new instance?'
+      : req.kind === 'cosign'
+        ? 'Add your signature to this document?'
+        : `A thing wants to ${req.kind}`
   header.append(el('span', 'evm-modal-title', title))
   const body = el('div', 'evm-modal-body')
   body.append(
@@ -1788,9 +1962,23 @@ shell.onConfirmRequest((req) => {
       'sh-hint',
       req.kind === 'publish'
         ? 'This signs the previewed draft with your identity as a new thing in your feed. Nothing happens until you approve it here.'
-        : 'This request grants nothing until you approve it here.'
+        : req.kind === 'cosign'
+          ? 'This signs the exact document below with your identity — the same bytes the earlier signers signed, unchanged. Your signature is public, permanent, and cannot be withdrawn.'
+          : 'This request grants nothing until you approve it here.'
     )
   )
+  // Co-signing is the one confirm where being NAMED matters, and where the
+  // difference between the two must be spelled out rather than implied.
+  if (req.kind === 'cosign') {
+    const named = req.summary.iAmNamed === true
+    const note = el('p', 'sh-hint sh-cosign-note')
+    note.setAttribute('data-testid', 'cosign-named')
+    note.setAttribute('data-named', named ? '1' : '0')
+    note.textContent = named
+      ? 'This document names you as a signatory. That is the drafter’s claim about who should sign — it has never bound you, and signing now is what makes it your commitment.'
+      : 'This document does not name you as a signatory. You may still sign it, and your signature will be just as real; it will simply be recorded as one the document did not ask for.'
+    body.append(note)
+  }
   const pre = el('pre', 'sh-draft') as HTMLPreElement
   pre.textContent = JSON.stringify(req.summary, null, 2)
   body.append(pre)

@@ -1,6 +1,7 @@
 import articleHtml from '../../../samples/article.html?raw'
 import cardHtml from '../../../samples/card.html?raw'
 import commentHtml from '../../../samples/comment.html?raw'
+import contractHtml from '../../../samples/contract.html?raw'
 import attestationHtml from '../../../samples/attestation.html?raw'
 import inviteHtml from '../../../samples/invite.html?raw'
 import memoHtml from '../../../samples/memo.html?raw'
@@ -86,6 +87,13 @@ export const STARTERS: readonly Starter[] = [
     label: 'Attestation',
     description: 'Put your signature behind a statement about another thing.',
     html: attestationHtml
+  },
+  {
+    key: 'starter:contract',
+    type: 'contract',
+    label: 'Contract',
+    description: 'A document several people sign — parties, witnesses, and their signatures.',
+    html: contractHtml
   },
   {
     key: 'starter:vouch',

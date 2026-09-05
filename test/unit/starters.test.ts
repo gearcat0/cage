@@ -13,12 +13,13 @@ const sampleBytes = (type: string): Uint8Array =>
 
 describe('starters', () => {
   it('ships every sample', () => {
-    expect(STARTERS.length).toBe(10)
+    expect(STARTERS.length).toBe(11)
     expect([...STARTERS].map((s) => s.type).sort()).toEqual([
       'article',
       'attestation',
       'card',
       'comment',
+      'contract',
       'invite',
       'memo',
       'nametag',
@@ -35,9 +36,9 @@ describe('starters', () => {
   })
 
   it('has distinct keys, types, and programs', () => {
-    expect(new Set(STARTERS.map((s) => s.key)).size).toBe(10)
-    expect(new Set(STARTERS.map((s) => s.type)).size).toBe(10)
-    expect(new Set(STARTERS.map((s) => s.html)).size).toBe(10)
+    expect(new Set(STARTERS.map((s) => s.key)).size).toBe(11)
+    expect(new Set(STARTERS.map((s) => s.type)).size).toBe(11)
+    expect(new Set(STARTERS.map((s) => s.html)).size).toBe(11)
   })
 
   it('resolves by key and rejects unknown keys', () => {

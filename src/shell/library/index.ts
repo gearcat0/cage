@@ -38,6 +38,11 @@ export interface ThingRow {
   sealed: boolean
   read: boolean
   isFork: boolean
+  /** How many envelopes sign this row's manifest, and whether the document
+   *  names signatories at all. Only meaningful together: a plain thing copied
+   *  twice also has two signatures over one manifest, and is not a contract. */
+  signatures?: number
+  cosignable?: boolean
 }
 
 export interface FeedQuery {
@@ -97,6 +102,44 @@ export function vouchSubject(args: unknown): { scheme: string; key: string } | n
   if (!/^[0-9a-f]{40,64}$/.test(key)) return null
   const scheme = argString(args, 'aboutScheme') || 'eth-eip191'
   return { scheme, key }
+}
+
+/** One signatory a document NAMES. A claim by whoever wrote the manifest --
+ *  being named is not consent and is emphatically not a signature. */
+export interface DeclaredSigner {
+  scheme: string
+  key: string
+  role: string
+  name: string
+}
+
+/** The signatories a manifest declares, if it declares any.
+ *
+ *  Presence of this list is what makes a document co-signable: an ordinary
+ *  thing has no signatories, and must never be dressed up as a contract
+ *  awaiting signatures. The list lives in the MANIFEST, so it is covered by
+ *  every signature over that manifest -- nobody can quietly add themselves to
+ *  the named parties without producing a different document. */
+export function declaredSigners(args: unknown): DeclaredSigner[] {
+  const raw =
+    args instanceof Map
+      ? args.get('signers')
+      : args && typeof args === 'object' && !Array.isArray(args)
+        ? (args as Record<string, unknown>).signers
+        : undefined
+  if (!Array.isArray(raw)) return []
+  const out: DeclaredSigner[] = []
+  for (const entry of raw.slice(0, 64)) {
+    const key = argString(entry, 'key').toLowerCase()
+    if (!/^[0-9a-f]{40,64}$/.test(key)) continue // junk is program data, not a party
+    out.push({
+      scheme: argString(entry, 'scheme') || 'eth-eip191',
+      key,
+      role: argString(entry, 'role').slice(0, 64),
+      name: argString(entry, 'name').slice(0, 128)
+    })
+  }
+  return out
 }
 
 export function refTarget(args: unknown, rel = 'replyTo'): string | null {
@@ -178,7 +221,9 @@ function toThingRow(r: Row): ThingRow {
     isFork: r.is_fork === 1,
     // Your name for the author, when the query joined it. Local only; a row
     // read without the join simply has none.
-    petname: (r as Row & { petname?: string | null }).petname ?? null
+    petname: (r as Row & { petname?: string | null }).petname ?? null,
+    signatures: (r as Row & { signatures?: number }).signatures ?? 1,
+    cosignable: ((r as Row & { cosignable?: number }).cosignable ?? 0) === 1
   }
 }
 
@@ -331,6 +376,26 @@ export class Library {
         note          TEXT NOT NULL DEFAULT '',
         set_at        INTEGER NOT NULL,
         PRIMARY KEY (author_scheme, author_key)
+      );
+
+      -- Co-signing: several envelopes over ONE manifest. The document is the
+      -- manifest; an envelope is a single signature over it. Finding a
+      -- document's other signatures is therefore a manifest_hash lookup, which
+      -- needs an index -- CREATE INDEX is allowed where ALTER is not.
+      CREATE INDEX IF NOT EXISTS idx_things_manifest ON things(manifest_hash);
+
+      -- The signatories a document NAMES, keyed by the manifest they are named
+      -- in. A claim by whoever wrote it: being named is not consent, and not a
+      -- signature. Its presence is also what marks a manifest as a document
+      -- meant to be co-signed at all.
+      CREATE TABLE IF NOT EXISTS doc_signers (
+        manifest_hash TEXT NOT NULL,
+        idx           INTEGER NOT NULL,
+        scheme        TEXT NOT NULL,
+        key           TEXT NOT NULL,
+        role          TEXT NOT NULL DEFAULT '',
+        name          TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (manifest_hash, idx)
       );
 
       CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -496,6 +561,19 @@ export class Library {
         const target = refTarget(result.manifest.args, rel)
         if (target) insertRef.run(envelopeHash, rel, target)
       }
+      // The signatories this document names. Keyed by MANIFEST, not envelope:
+      // every signature over the same manifest names the same parties, so a
+      // second co-signature rewrites identical rows rather than adding any.
+      const named = declaredSigners(result.manifest.args)
+      if (named.length > 0) {
+        const insertSigner = this.db.prepare(
+          `INSERT OR REPLACE INTO doc_signers (manifest_hash, idx, scheme, key, role, name)
+           VALUES (?,?,?,?,?,?)`
+        )
+        const manifestHash = toHex(env.man)
+        named.forEach((sg, i) => insertSigner.run(manifestHash, i, sg.scheme, sg.key, sg.role, sg.name))
+      }
+
       // A vouch: the SIGNER is the voucher (from the envelope, so it cannot be
       // faked), the subject comes from the args (so it is their claim).
       if (result.manifest.type === 'vouch') {
@@ -550,12 +628,25 @@ export class Library {
       where.push('r.rel = ?', 'r.target_hash = ?')
       params.push(refFilter.rel, refFilter.target)
     }
+    // Collapse a co-signed DOCUMENT to one row. Four signatures over one
+    // contract are four things -- and the library still stores four rows --
+    // but they are one document, and listing it four times would be a worse
+    // lie than showing it once. Scoped to declared documents only, so an
+    // ordinary Copy (which also shares a manifest hash, since a manifest has
+    // no author and no nonce) keeps its own row exactly as before.
+    where.push(
+      `(NOT EXISTS (SELECT 1 FROM doc_signers d WHERE d.manifest_hash = t.manifest_hash)
+        OR t.rowid = (SELECT MIN(t2.rowid) FROM things t2 WHERE t2.manifest_hash = t.manifest_hash))`
+    )
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : ''
     const limit = query.limit ?? 200
     const offset = query.offset ?? 0
     const rows = this.db
       .prepare(
-        `SELECT t.*, p.name AS petname FROM things t${join}
+        `SELECT t.*, p.name AS petname,
+                (SELECT COUNT(*) FROM things t3 WHERE t3.manifest_hash = t.manifest_hash) AS signatures,
+                EXISTS (SELECT 1 FROM doc_signers d2 WHERE d2.manifest_hash = t.manifest_hash) AS cosignable
+           FROM things t${join}
            LEFT JOIN petnames p ON p.author_scheme = t.author_scheme AND p.author_key = t.author_key
          ${clause} ORDER BY t.received_at DESC, t.rowid DESC LIMIT ? OFFSET ?`
       )
@@ -579,6 +670,49 @@ export class Library {
 
   forgetSeeding(envelopeHash: string): void {
     this.db.prepare('DELETE FROM seeding WHERE envelope_hash = ?').run(envelopeHash)
+  }
+
+  /** Every signature over one manifest -- that is, every envelope naming it.
+   *
+   *  RECEIVED order, like the feed. `created` is an author claim and must not
+   *  be used to decide who signed "first": nothing in the format records the
+   *  order signatures were made in, and the shell does not invent one. */
+  signaturesOf(manifestHash: string): {
+    envelopeHash: string
+    authorScheme: string
+    authorKey: string
+    created: number
+    receivedAt: number
+  }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT envelope_hash, author_scheme, author_key, created, received_at
+           FROM things WHERE manifest_hash = ? AND sealed = 0
+          ORDER BY received_at ASC`
+      )
+      .all(manifestHash) as {
+      envelope_hash: string
+      author_scheme: string
+      author_key: string
+      created: number
+      received_at: number
+    }[]
+    return rows.map((r) => ({
+      envelopeHash: r.envelope_hash,
+      authorScheme: r.author_scheme,
+      authorKey: r.author_key,
+      created: r.created,
+      receivedAt: r.received_at
+    }))
+  }
+
+  /** The signatories a document names. Empty for anything not meant to be
+   *  co-signed, which is almost everything. */
+  namedSigners(manifestHash: string): DeclaredSigner[] {
+    const rows = this.db
+      .prepare('SELECT scheme, key, role, name FROM doc_signers WHERE manifest_hash = ? ORDER BY idx ASC')
+      .all(manifestHash) as { scheme: string; key: string; role: string; name: string }[]
+    return rows.map((r) => ({ scheme: r.scheme, key: r.key, role: r.role, name: r.name }))
   }
 
   /** Every vouch pointing at a key, newest claim per voucher.
