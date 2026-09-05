@@ -648,10 +648,17 @@ app.whenReady().then(async () => {
   async function ingestBytes(raw: Uint8Array): Promise<Record<string, unknown>> {
     const result = await admission.admit(raw, keyring.unsealer)
     if (result.status === 'valid') {
-      library.store(result, Date.now())
+      // Whether the envelope was NEW matters to the caller: a bundle you
+      // already hold is admitted and valid, but nothing was added, and a
+      // caller that reports "done" regardless would be asserting something
+      // untrue. Envelope hashes are content-derived, so re-ingesting the same
+      // bytes -- or authoring something byte-identical to what you already
+      // have -- lands here legitimately.
+      const stored = library.store(result, Date.now())
       // Seed the raw admitted bundle so it can be re-served by bundle:<hash>.
       seedStore.put(raw)
       notifyFeedChanged()
+      return { ...summarize(result), duplicate: !stored.inserted }
     }
     return summarize(result)
   }

@@ -159,13 +159,86 @@ test('an ordinary Copy still gets its own feed row', async () => {
   // Regression guard for the collapse above. A copy also shares a manifest
   // hash (a manifest has no author and no nonce), so the collapse MUST be
   // scoped to documents that name signatories, or Copy would silently vanish.
+  //
+  // Copies something authored by SOMEONE ELSE, deliberately: copying your own
+  // thing within one second reproduces its envelope exactly (author + content
+  // + the claimed second are all identical), so there would be nothing to add
+  // and this would be testing envelope identity rather than the collapse.
+  const bundle = await buildBundle(ethSigner(secp256k1.utils.randomSecretKey()), {
+    type: 'nametag',
+    program: new Uint8Array(NAMETAG),
+    args: new Map([['name', 'Original']])
+  })
+  const orig = await shell.ingest(bundle)
+  expect(orig.status).toBe('valid')
+  const before = ((await shell.feed()) as unknown[]).length
+
+  await chromeEval(`window.__shellChrome.openThing(${JSON.stringify(orig.envelopeHash)})`)
+  await poll(() => chromeEval<boolean>(`!!document.querySelector('[data-testid=header-copy]')`), (v) => v, 'copy')
+  await chromeEval(`document.querySelector('[data-testid=header-copy]').click()`)
+  const after = await poll(
+    () => shell.feed(),
+    (f) => (f as unknown[]).length === before + 1,
+    'the copy to appear as its own row'
+  )
+  // Same manifest as the original, and still two rows: the collapse left it be.
+  const rows = after as { manifestHash: string }[]
+  const orig2 = rows.filter((r) => r.manifestHash === rows[0]!.manifestHash)
+  expect(orig2.length).toBe(2)
+})
+
+test('re-admitting bytes you already hold is valid, but is NOT a new thing', async () => {
+  // The timing-free half of the bug above: an envelope hash is content-derived,
+  // so the same bundle admitted twice is legitimately valid both times — and
+  // the second time nothing was added. A caller told only "valid" would report
+  // success for work that did not happen.
+  const bundle = await buildBundle(ethSigner(secp256k1.utils.randomSecretKey()), {
+    type: 'nametag',
+    program: new Uint8Array(NAMETAG),
+    args: new Map([['name', 'Twice']])
+  })
+  const first = await shell.ingest(bundle)
+  expect(first.status).toBe('valid')
+  expect(first.duplicate, 'the first admission really is new').toBe(false)
+  const before = ((await shell.feed()) as unknown[]).length
+
+  const second = await shell.ingest(bundle)
+  expect(second.status, 'still a perfectly valid bundle').toBe('valid')
+  expect(second.duplicate, 'but nothing was added').toBe(true)
+  expect(second.envelopeHash).toBe(first.envelopeHash)
+  expect(((await shell.feed()) as unknown[]).length).toBe(before)
+})
+
+test('copying your own thing twice in a second adds nothing, and says so', async () => {
+  // Found by CI, not by review. An envelope hash covers author + content + the
+  // claimed second, so a same-second copy of your OWN thing reproduces it
+  // exactly and is correctly refused as a duplicate. What was wrong was the
+  // report: library.store's `inserted` was discarded, so the chrome said
+  // "your new instance is in the feed" when no row had appeared.
   await shell.compose(NAMETAG.toString('base64'), 'nametag')
   const rows = (await shell.feed()) as { envelopeHash: string }[]
   const before = rows.length
+
   await chromeEval(`window.__shellChrome.openThing(${JSON.stringify(rows[0]!.envelopeHash)})`)
   await poll(() => chromeEval<boolean>(`!!document.querySelector('[data-testid=header-copy]')`), (v) => v, 'copy')
   await chromeEval(`document.querySelector('[data-testid=header-copy]').click()`)
-  await poll(() => shell.feed(), (f) => (f as unknown[]).length === before + 1, 'the copy to appear')
+
+  const toast = await poll(
+    () => chromeEval<string | null>(`document.querySelector('.sh-toast')?.textContent || null`),
+    (t) => t !== null && t.length > 0,
+    'the copy outcome'
+  )
+  const feedNow = ((await shell.feed()) as unknown[]).length
+  if (feedNow === before) {
+    // The same-second case: nothing was added, and the message must not claim
+    // otherwise. This is the half that was lying before.
+    expect(toast).toMatch(/identical to the original/i)
+    expect(toast).not.toMatch(/is in the feed/i)
+  } else {
+    // The clock crossed a second, so it really is a new instance.
+    expect(feedNow).toBe(before + 1)
+    expect(toast).toMatch(/is in the feed/i)
+  }
 })
 
 test('Copy is refused on a document that names signatories', async () => {

@@ -1715,8 +1715,17 @@ function renderHeader(h: HeaderFacts | null): void {
   copyBtn.setAttribute('data-testid', 'header-copy')
   copyBtn.addEventListener('click', async () => {
     const outcome = await shell.copyThing(h.envelopeHash)
-    if (outcome.status === 'valid') showText('Copied — your new instance is in the feed', 'success')
-    else showText(`Copy failed: ${String(outcome.reason ?? outcome.status)}`, 'danger')
+    if (outcome.status === 'valid' && outcome.duplicate !== true) {
+      showText('Copied — your new instance is in the feed', 'success')
+    } else if (outcome.status === 'valid') {
+      // An envelope hash covers author + content + the claimed second. Copying
+      // your OWN thing inside that second reproduces it exactly, so there is
+      // nothing to add -- and saying "your new instance is in the feed" when
+      // no row appeared would be a plain falsehood.
+      showText('That would be identical to the original, so nothing was added', 'neutral')
+    } else {
+      showText(`Copy failed: ${String(outcome.reason ?? outcome.status)}`, 'danger')
+    }
     await refreshFeed()
   })
   // Share: every way this thing can leave the machine, behind one control.
