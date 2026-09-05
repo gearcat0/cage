@@ -226,7 +226,21 @@ export interface ShellHandle {
   people(): Promise<{ authorScheme: string; authorKey: string; name: string | null; things: number }[]>
   setPetname(scheme: string, key: string, name: string, note?: string): Promise<void>
   newAttestation(targetHash: string): Promise<{ id?: string; error?: string }>
-  attestations(targetHash: string): Promise<{ count: number; rows: { envelopeHash: string; authorKey: string }[] }>
+  attestations(
+    targetHash: string
+  ): Promise<{ count: number; rows: { envelopeHash: string; authorKey: string; hops: number | null }[]; fromTribe: number }>
+  /** Vouches: start one for a KEY, read who vouches for a key, walk your tribe. */
+  newVouch(scheme: string, key: string): Promise<{ id?: string; error?: string }>
+  vouchesFor(
+    scheme: string,
+    key: string
+  ): Promise<{
+    rows: { voucherKey: string; name: string; relation: string; petname: string | null; hops: number | null }[]
+    count: number
+    fromTribe: number
+    hops: number | null
+  }>
+  tribe(): Promise<{ id: string; hops: number; via: string[] }[]>
   draftBlobs(draftId: string): Promise<{ name: string; hash: string; mime: string; size: number }[]>
   replies(targetHash: string): Promise<{ count: number; rows: Record<string, unknown>[] }>
   deleteDraft(id: string): Promise<{ deleted: boolean }>
@@ -499,6 +513,31 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
         ).__shell
         return s.attestations(h) as never
       }, targetHash),
+    newVouch: (scheme: string, key: string) =>
+      app.evaluate(
+        async (electron, a) => {
+          const s = (
+            electron.app as unknown as { __shell: { newVouch: (x: string, y: string) => Record<string, unknown> } }
+          ).__shell
+          return s.newVouch(a.scheme, a.key)
+        },
+        { scheme, key }
+      ),
+    vouchesFor: (scheme: string, key: string) =>
+      app.evaluate(
+        async (electron, a) => {
+          const s = (
+            electron.app as unknown as { __shell: { vouchesFor: (x: string, y: string) => Record<string, unknown> } }
+          ).__shell
+          return s.vouchesFor(a.scheme, a.key) as never
+        },
+        { scheme, key }
+      ),
+    tribe: () =>
+      app.evaluate(async (electron) => {
+        const s = (electron.app as unknown as { __shell: { tribe: () => unknown } }).__shell
+        return s.tribe() as never
+      }),
     newComment: (targetHash: string) =>
       app.evaluate(async (electron, h) => {
         const s = (electron.app as unknown as { __shell: { newComment: (x: string) => unknown } }).__shell

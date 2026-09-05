@@ -78,6 +78,27 @@ export interface DraftRow {
 export const INDEXED_RELS = ['replyTo', 'attests'] as const
 export type IndexedRel = (typeof INDEXED_RELS)[number]
 
+/** Read a string field out of untrusted args (Map or plain object). */
+function argString(args: unknown, key: string): string {
+  const v =
+    args instanceof Map
+      ? args.get(key)
+      : args && typeof args === 'object' && !Array.isArray(args)
+        ? (args as Record<string, unknown>)[key]
+        : undefined
+  return typeof v === 'string' ? v : ''
+}
+
+/** The key a vouch is about, if its args name one. Keys are scheme-specific,
+ *  so this only checks it is plausible hex of a sane length -- the shell never
+ *  invents a key, it only indexes what the author claimed. */
+export function vouchSubject(args: unknown): { scheme: string; key: string } | null {
+  const key = argString(args, 'about').toLowerCase()
+  if (!/^[0-9a-f]{40,64}$/.test(key)) return null
+  const scheme = argString(args, 'aboutScheme') || 'eth-eip191'
+  return { scheme, key }
+}
+
 export function refTarget(args: unknown, rel = 'replyTo'): string | null {
   if (args instanceof Map) {
     const v = args.get(rel)
@@ -281,6 +302,24 @@ export class Library {
         started_at    INTEGER NOT NULL
       );
 
+      -- Signed statements about a KEY, not about a thing -- which is why they
+      -- cannot live in the refs table: that indexes 64-hex envelope hashes, and
+      -- these point at author keys. Indexed from the args at admission, like
+      -- refs, and skipped for sealed things for the same reason.
+      -- (No backticks in here: this is inside a JS template literal.)
+      CREATE TABLE IF NOT EXISTS vouches (
+        envelope_hash  TEXT PRIMARY KEY,
+        voucher_scheme TEXT NOT NULL,
+        voucher_key    TEXT NOT NULL,
+        about_scheme   TEXT NOT NULL,
+        about_key      TEXT NOT NULL,
+        name           TEXT NOT NULL DEFAULT '',
+        relation       TEXT NOT NULL DEFAULT '',
+        created        INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_vouches_about ON vouches(about_scheme, about_key);
+      CREATE INDEX IF NOT EXISTS idx_vouches_voucher ON vouches(voucher_scheme, voucher_key);
+
       -- What YOU call a key. Local, and deliberately so: a petname is the one
       -- kind of name nobody else can influence -- an author may claim any name
       -- they like and may even prove an ENS name, but they cannot make you
@@ -457,6 +496,29 @@ export class Library {
         const target = refTarget(result.manifest.args, rel)
         if (target) insertRef.run(envelopeHash, rel, target)
       }
+      // A vouch: the SIGNER is the voucher (from the envelope, so it cannot be
+      // faked), the subject comes from the args (so it is their claim).
+      if (result.manifest.type === 'vouch') {
+        const subject = vouchSubject(result.manifest.args)
+        if (subject) {
+          this.db
+            .prepare(
+              `INSERT OR REPLACE INTO vouches
+                 (envelope_hash, voucher_scheme, voucher_key, about_scheme, about_key, name, relation, created)
+               VALUES (?,?,?,?,?,?,?,?)`
+            )
+            .run(
+              envelopeHash,
+              env.author.s,
+              authorKey,
+              subject.scheme,
+              subject.key,
+              argString(result.manifest.args, 'name'),
+              argString(result.manifest.args, 'relation'),
+              env.created
+            )
+        }
+      }
     }
 
     return { envelopeHash, fork, inserted: true }
@@ -517,6 +579,76 @@ export class Library {
 
   forgetSeeding(envelopeHash: string): void {
     this.db.prepare('DELETE FROM seeding WHERE envelope_hash = ?').run(envelopeHash)
+  }
+
+  /** Every vouch pointing at a key, newest claim per voucher.
+   *
+   *  A voucher who vouches twice has only their LATEST word counted -- that is
+   *  how a vouch is amended, since a signed thing cannot be unsaid, and without
+   *  it a voucher would gain weight simply by repeating themselves.
+   *
+   *  The bare name/relation columns beside MAX(created) rely on SQLite's
+   *  documented min/max special case: with a single min() or max() aggregate,
+   *  the bare columns come from the row that matched it. */
+  vouchesAbout(scheme: string, key: string): { voucherScheme: string; voucherKey: string; name: string; relation: string }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT voucher_scheme, voucher_key, name, relation, MAX(created) AS created
+           FROM vouches WHERE about_scheme = ? AND about_key = ?
+          GROUP BY voucher_scheme, voucher_key`
+      )
+      .all(scheme, key) as { voucher_scheme: string; voucher_key: string; name: string; relation: string }[]
+    return rows.map((r) => ({
+      voucherScheme: r.voucher_scheme,
+      voucherKey: r.voucher_key,
+      name: r.name,
+      relation: r.relation
+    }))
+  }
+
+  /** Who a key has vouched FOR (latest per subject). */
+  private vouchedBy(scheme: string, key: string): { scheme: string; key: string }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT about_scheme, about_key, MAX(created) AS created
+           FROM vouches WHERE voucher_scheme = ? AND voucher_key = ?
+          GROUP BY about_scheme, about_key`
+      )
+      .all(scheme, key) as { about_scheme: string; about_key: string }[]
+    return rows.map((r) => ({ scheme: r.about_scheme, key: r.about_key }))
+  }
+
+  /** Keys reachable from YOU by vouches, and how many hops away.
+   *
+   *  Only paths that start at your own key count. That is the whole defence:
+   *  vouches are free to manufacture, so a key with a thousand vouches from
+   *  strangers is a thousand strangers -- it means nothing until one of the
+   *  people YOU vouched for is somewhere on the path.
+   *
+   *  Depth is capped low on purpose. Two hops is about the limit at which "a
+   *  friend of someone I trust" still carries meaning. */
+  tribe(myScheme: string, myKey: string, maxDepth = 2): Map<string, { hops: number; via: string[] }> {
+    const out = new Map<string, { hops: number; via: string[] }>()
+    let frontier: { scheme: string; key: string; via: string[] }[] = [{ scheme: myScheme, key: myKey, via: [] }]
+    const seen = new Set([`${myScheme}:${myKey}`])
+    for (let hop = 1; hop <= maxDepth && frontier.length > 0; hop++) {
+      const next: { scheme: string; key: string; via: string[] }[] = []
+      for (const node of frontier) {
+        for (const subject of this.vouchedBy(node.scheme, node.key)) {
+          const id = `${subject.scheme}:${subject.key}`
+          if (seen.has(id)) continue // nearest hop wins; never revisit
+          seen.add(id)
+          // The intermediaries between you and this key, excluding both ends.
+          // At hop 1 the node IS you, so you are not an intermediary -- which
+          // is why the root contributes nothing rather than being prepended.
+          const via = hop === 1 ? [] : [...node.via, node.key]
+          out.set(id, { hops: hop, via })
+          next.push({ ...subject, via })
+        }
+      }
+      frontier = next
+    }
+    return out
   }
 
   /** Your name for a key, or null. */

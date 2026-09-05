@@ -110,13 +110,43 @@ whose things you hold, with your name for it.
 There is no reputation here and no score. Naming someone records that YOU
 recognise a key, and nothing more.
 
+**Vouches** are the trust graph, and the only one there is. A `vouch` thing
+carries `args {about, aboutScheme, name, relation, note}` where `about` is an
+author **key** — not a thing hash, which is why it cannot ride on `refs` (that
+table indexes 64-hex envelope hashes) and gets its own `vouches` table. The
+voucher comes from the **envelope**, so it is signature-proven and cannot be
+written on someone else's behalf; the subject comes from the **args**, so it is
+their claim, like every other arg.
+
+The design rests on one asymmetry: **vouches are free to manufacture.** Anyone
+can mint a thousand keys and have them vouch for each other, so a raw count is
+worth nothing. What cannot be faked is a path starting at *your* key — so only
+paths from you are walked, and only to **depth 2**, past which "vouched for by
+someone vouched for by someone I once met" is a stranger with extra steps. The
+chrome says `you vouched` or `vouched by someone you vouched for`, never a
+number, a percentage, or a ✓. There is no global score and no reputation, and a
+key outside your tribe gets **no badge at all** — a "0 hops" label would read as
+a score and would put a trust-shaped mark on every stranger in the library.
+
+A vouch says the signer *recognises* a key. It does not say they are honest,
+that they are who they claim, or that anything they signed is true. Two further
+facts the UI states rather than hides: publishing a vouch **discloses your
+social graph** — it tells whoever receives it that you know this key — and a
+signed thing cannot be unsaid, so amending means publishing a newer vouch, and
+only a voucher's **latest** word is counted (otherwise repetition would buy
+weight). This is the deliberate opposite of a petname: naming is private,
+vouching is public.
+
 **Attestations** are the other indexed relation. An `attestation` thing carries
 `args.attests` — the envelope hash of what it speaks about — and the shell
 indexes it exactly as it indexes `replyTo`, under `rel='attests'`, so a thing
 can show who has put a signature behind a statement about it. The counting is
 deliberately not scoring: a signature proves who said something, never that it
-is so, and the chrome shows authors rather than a total. Whether a given key
-means anything to you is a trust question the shell does not answer yet.
+is so, and the chrome shows authors rather than a total. Vouches are what
+finally answer "does this signer mean anything to *me*": the list marks which
+attesters are in your tribe, and the modal leads with the sentence the graph
+exists for — *"5 attestations, 3 from your tribe"*. The first half is free to
+manufacture; the second is the part that carries.
 
 **One thing can reference another.** A program can never learn a hash by
 itself (`getArgs` withholds the envelope), so the shell seeds `args.replyTo`

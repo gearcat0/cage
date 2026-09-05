@@ -292,6 +292,13 @@ body {
                  border-top: 1px solid var(--evm-border); padding: var(--evm-space-2) 0; flex-wrap: wrap; }
 .sh-people-row > .sh-hint { flex: 1; }
 .sh-people-note { flex-basis: 100%; font-size: var(--evm-text-sm); color: var(--evm-text-3); }
+.sh-people-actions { display: flex; align-items: center; gap: var(--evm-space-2); }
+
+/* Tribe standing. Deliberately plain: no colour, no tick, nothing that reads
+   as a score or as verification. It is a fact about YOUR vouches, not a
+   judgement about the key. */
+.sh-tribe-badge { font-weight: 400; }
+.sh-tribe-line { font-style: italic; }
 
 /* Sharing view. */
 .sh-sharing { max-width: 40em; }

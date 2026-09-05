@@ -90,6 +90,7 @@ test('the built app ships the starter programs', async () => {
       'article',
       'comment',
       'attestation',
+      'vouch',
       'poster'
     ])
     for (const s of starters) expect(s.progHash).toBe(sampleHash(s.type))

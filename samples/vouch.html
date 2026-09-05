@@ -1,0 +1,170 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>vouch</title>
+<style>
+  body { margin: 0; font: 15px/1.55 system-ui, sans-serif; background: #1d2320; color: #d8d4c8;
+         display: flex; align-items: flex-start; justify-content: center; min-height: 100vh;
+         padding: 24px; box-sizing: border-box; }
+  .vouch { background: #262c28; border: 1px solid #39413b; border-left: 3px solid #5f8fa8; border-radius: 4px;
+           width: 34em; max-width: 100%; padding: 16px 18px; }
+  .who { margin: 0; font-size: 18px; line-height: 1.35; }
+  .who.empty { color: #7d8a80; font-style: italic; }
+  .relation { margin: 6px 0 0; color: #9fb0a4; }
+  .note { margin: 10px 0 0; white-space: pre-wrap; color: #b9b2a2; }
+  .subject { margin: 14px 0 0; padding-top: 10px; border-top: 1px solid #39413b; font-size: 12px; color: #8a978d; }
+  .subject code { font-family: ui-monospace, Menlo, monospace; color: #a9b8ae; }
+  .weight { margin: 10px 0 0; font-size: 12px; color: #8a978d; font-style: italic; }
+  label { display: block; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: #8a978d;
+          margin: 12px 0 6px; }
+  input, textarea { font: inherit; width: 100%; box-sizing: border-box; background: #1f2521; color: #e6e2d6;
+                    border: 1px solid #3f4a43; border-radius: 4px; padding: 8px 10px; }
+  textarea { min-height: 4.5em; resize: vertical; }
+  .warn { margin-top: 12px; padding: 8px 10px; border: 1px solid #6b5a2a; border-radius: 4px;
+          background: #2a2519; font-size: 12px; color: #d8c48a; }
+</style>
+</head>
+<body>
+  <div class="vouch">
+    <div id="app"></div>
+  </div>
+  <script>
+    'use strict';
+    // A vouch: "I know this key, and here is what I call them."
+    //
+    // State: args {about, aboutScheme, name, relation, note} where `about` is
+    // an author KEY -- not a thing hash. A program cannot learn a key by
+    // itself, so the SHELL seeds it when the human vouches for someone.
+    //
+    // What this is:
+    //
+    //   • A signed claim that YOU recognise a key. The signature proves who
+    //     made the claim; it says nothing about whether the person behind that
+    //     key is honest, competent, or who they say they are.
+    //   • Useful to others only through YOU. A vouch from a stranger is a
+    //     stranger's opinion. Vouches are free to manufacture, so a key with a
+    //     thousand of them has a thousand strangers behind it and nothing more
+    //     -- what counts is a path that starts at someone you already trust.
+    //
+    // And the part worth pausing over: publishing this DISCLOSES that you know
+    // this key. A vouch travels like any other thing, and cannot be unsaid --
+    // amending means publishing a newer one, which the shell counts instead.
+    var a = window.bridge.getArgs() || {};
+    var args = (a && typeof a.args === 'object' && a.args !== null) ? a.args : {};
+    var app = document.getElementById('app');
+
+    function str(v) { return typeof v === 'string' ? v : ''; }
+
+    function el(tag, text) {
+      var e = document.createElement(tag);
+      if (text !== undefined) e.textContent = text;
+      return e;
+    }
+
+    function shortKey(k) {
+      return k.length > 14 ? k.slice(0, 8) + '…' + k.slice(-6) : k;
+    }
+
+    function subjectLine(about, scheme) {
+      var p = el('p'); p.className = 'subject'; p.id = 'view-subject';
+      if (!about) {
+        p.textContent = 'This vouch names no key.';
+        return p;
+      }
+      p.append(document.createTextNode('about '));
+      var code = el('code', shortKey(about)); code.id = 'view-about'; code.title = scheme + ':' + about;
+      p.append(code);
+      return p;
+    }
+
+    function viewMode() {
+      app.replaceChildren();
+      var name = str(args.name);
+      var who = el('p', name ? 'I know this key as ' + name : 'I know this key.');
+      who.className = name ? 'who' : 'who empty';
+      who.id = 'view-name';
+      app.append(who);
+
+      if (str(args.relation)) {
+        var rel = el('p', str(args.relation)); rel.className = 'relation'; rel.id = 'view-relation';
+        app.append(rel);
+      }
+      if (str(args.note)) {
+        var note = el('p', str(args.note)); note.className = 'note'; note.id = 'view-note';
+        app.append(note);
+      }
+      app.append(subjectLine(str(args.about), str(args.aboutScheme) || 'eth-eip191'));
+
+      var weight = el('p', 'A vouch says the signer recognises this key. It does not say they are honest, and it is worth something to you only if you already trust the signer.');
+      weight.className = 'weight'; weight.id = 'view-weight';
+      app.append(weight);
+    }
+
+    function editMode() {
+      app.replaceChildren();
+      var about = str(args.about);
+      var aboutScheme = str(args.aboutScheme) || 'eth-eip191';
+
+      app.append(el('label', 'What you call them'));
+      var name = el('input'); name.id = 'edit-name'; name.value = str(args.name);
+      name.placeholder = 'e.g. Ada';
+      app.append(name);
+
+      app.append(el('label', 'How you know them (optional)'));
+      var relation = el('input'); relation.id = 'edit-relation'; relation.value = str(args.relation);
+      relation.placeholder = 'e.g. colleague, met at the works meeting';
+      app.append(relation);
+
+      app.append(el('label', 'Note (optional)'));
+      var note = el('textarea'); note.id = 'edit-note'; note.value = str(args.note);
+      note.placeholder = 'Anything worth adding — how you checked, say';
+      app.append(note);
+
+      if (about) {
+        app.append(subjectLine(about, aboutScheme));
+      } else {
+        app.append(el('label', 'Key (optional)'));
+        var k = el('input'); k.id = 'edit-about'; k.value = '';
+        k.placeholder = 'the key you are vouching for';
+        app.append(k);
+      }
+
+      var warn = el('div');
+      warn.className = 'warn'; warn.id = 'edit-warn';
+      warn.textContent =
+        'Publishing this tells anyone who receives it that you know this key. Like any signed thing it cannot be unsaid — to change your mind, publish a newer vouch, which supersedes this one.';
+      app.append(warn);
+
+      function streamDraft() {
+        // Whole-set replacement: `about` and its scheme are echoed on every
+        // emit, or the vouch quietly stops being about anyone.
+        var target = about || (document.getElementById('edit-about')
+          ? document.getElementById('edit-about').value.trim().toLowerCase()
+          : '');
+        window.bridge.emit('draft', {
+          type: 'vouch',
+          args: {
+            about: target,
+            aboutScheme: aboutScheme,
+            name: name.value.trim(),
+            relation: relation.value.trim(),
+            note: note.value
+          }
+        });
+      }
+
+      name.addEventListener('input', streamDraft);
+      relation.addEventListener('input', streamDraft);
+      note.addEventListener('input', streamDraft);
+      var kIn = document.getElementById('edit-about');
+      if (kIn) kIn.addEventListener('input', streamDraft);
+
+      streamDraft(); // initial state, so the shell's Publish enables immediately
+      name.focus();
+    }
+
+    if (a.mode === 'edit') editMode(); else viewMode();
+  </script>
+</body>
+</html>
