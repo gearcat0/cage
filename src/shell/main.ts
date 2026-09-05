@@ -305,6 +305,8 @@ interface ShellSurface {
   /** Start a comment draft seeded with the target's hash. */
   newComment?: (targetHash: string) => Record<string, unknown>
   newAttestation?: (targetHash: string) => Record<string, unknown>
+  people?: () => unknown[]
+  setPetname?: (scheme: string, key: string, name: string, note?: string) => void
   attestations?: (targetHash: string) => { count: number; rows: unknown[] }
   /** TEST: the attachment set a draft is holding. */
   draftBlobs?: (draftId: string) => { name: string; hash: string; mime: string; size: number }[]
@@ -443,6 +445,7 @@ app.whenReady().then(async () => {
         submenu: [
           { label: 'Account & Keys…', click: () => chrome.webContents.send('shell:open-account') },
           { label: 'Sharing…', click: () => chrome.webContents.send('shell:open-sharing') },
+          { label: 'People…', click: () => chrome.webContents.send('shell:open-people') },
           { type: 'separator' },
           process.platform === 'darwin' ? { role: 'close' as const } : { role: 'quit' as const }
         ]
@@ -861,6 +864,9 @@ app.whenReady().then(async () => {
       ...m.header,
       name: nv?.status === 'verified' ? nv.name : null,
       nameStatus: nv?.status ?? null,
+      // Your own label for this author, kept SEPARATE from the verified name:
+      // one is proof, the other is what you decided to call them.
+      petname: library.petname(m.header.authorScheme as string, m.header.authorKey as string)?.name ?? null,
       draft: draft !== null,
       replyTo: claimed,
       replyToKnown: claimed ? library.get(claimed) !== null : false,
@@ -1706,6 +1712,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('shell:new-draft', (_e, key: unknown, args: unknown) => newDraft(key, args))
   ipcMain.handle('shell:new-comment', (_e, h: unknown) => newComment(h))
   ipcMain.handle('shell:new-attestation', (_e, h: unknown) => newAttestation(h))
+  ipcMain.handle('shell:people', () => library.people())
+  ipcMain.handle('shell:set-petname', (_e, p: unknown) => {
+    const v = p as { scheme?: unknown; key?: unknown; name?: unknown; note?: unknown }
+    if (typeof v?.scheme !== 'string' || typeof v?.key !== 'string') return { ok: false }
+    library.setPetname(v.scheme, v.key, typeof v.name === 'string' ? v.name : '', typeof v.note === 'string' ? v.note : '', Date.now())
+    notifyFeedChanged() // every row showing this author is now stale
+    return { ok: true }
+  })
   ipcMain.handle('shell:attestations', (_e, h: unknown) =>
     typeof h === 'string' && HEX64.test(h)
       ? { count: library.countRefsTo(h, 'attests'), rows: library.feed({ attests: h, limit: 200 }) }
@@ -1811,6 +1825,11 @@ app.whenReady().then(async () => {
   shell.newDraft = (key, args) => newDraft(key, args)
   shell.newComment = (h) => newComment(h)
   shell.newAttestation = (h) => newAttestation(h)
+  shell.people = () => library.people()
+  shell.setPetname = (scheme, key, name, note) => {
+    library.setPetname(scheme, key, name, note ?? '', Date.now())
+    notifyFeedChanged()
+  }
   shell.attestations = (h) => ({
     count: library.countRefsTo(h, 'attests'),
     rows: library.feed({ attests: h, limit: 200 })
