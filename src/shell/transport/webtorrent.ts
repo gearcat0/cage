@@ -9,9 +9,15 @@ import { TransportError, type FetchLimits, type Transport } from './index.js'
 //
 // LATER: seeding admitted bundles to peers; DHT privacy hardening.
 
+// These are OUR declarations for a module imported dynamically, which means
+// they are an assertion, not a check: if webtorrent's API moves, tsc keeps
+// agreeing with whatever is written here. `getBuffer` sat here long after
+// webtorrent 3.x replaced it with `arrayBuffer`, and the only symptom was a
+// magnet fetch that timed out as though no peer had answered. When touching
+// these, read the installed lib/file.js rather than trusting the shape below.
 interface WebTorrentFile {
   length: number
-  getBuffer(cb: (err: Error | null, buf: Uint8Array) => void): void
+  arrayBuffer(): Promise<ArrayBuffer>
 }
 interface WebTorrentInstance {
   length: number
@@ -87,15 +93,27 @@ export class WebtorrentTransport implements Transport {
       const timer = setTimeout(() => fail('magnet fetch timed out'), limits.timeoutMs)
 
       client.on('error', (e) => fail(`webtorrent: ${String(e)}`))
+      // The callback body is wrapped because a THROW in here has nowhere to
+      // go: webtorrent does not catch it, the promise never settles, and the
+      // only symptom is the outer timeout -- which says "timed out" and reads
+      // as "no peers", even when the peers connected and the data arrived.
+      // That is exactly how the getBuffer/arrayBuffer drift below stayed
+      // hidden. A throw must fail the fetch with its own message.
       client.add(locator, (torrent) => {
-        // Bound the download by total size before pulling bytes.
-        if (torrent.length > limits.maxBytes) return fail('torrent exceeds maxBytes')
-        const file = torrent.files[0]
-        if (!file) return fail('empty torrent')
-        file.getBuffer((err, buf) => {
-          if (err) fail(`webtorrent read: ${String(err)}`)
-          else done(new Uint8Array(buf))
-        })
+        try {
+          // Bound the download by total size before pulling bytes.
+          if (torrent.length > limits.maxBytes) return fail('torrent exceeds maxBytes')
+          const file = torrent.files[0]
+          if (!file) return fail('empty torrent')
+          // webtorrent 3.x exposes arrayBuffer(); the callback-style
+          // getBuffer() it replaced no longer exists.
+          file
+            .arrayBuffer()
+            .then((buf) => done(new Uint8Array(buf)))
+            .catch((e: unknown) => fail(`webtorrent read: ${String(e)}`))
+        } catch (e) {
+          fail(`webtorrent: ${(e as Error).message}`)
+        }
       })
     })
   }
