@@ -15,6 +15,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # TEMPORARY — flake hunt for the Windows-only death in poster.spec.ts:201.
+  # Two occurrences, both Windows, both that test, and it cannot be reproduced
+  # on Linux (60 mount/unmount rounds are clean). Repeating the suspect specs
+  # many times in one job is far cheaper than waiting for full-suite runs at
+  # roughly one-in-seven. DELETE THIS JOB once the cause is known.
+  windows-flake-hunt:
+    name: flake hunt (windows, repeated)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Repeat the suspect specs
+        run: pnpm test:cage -- --repeat-each=20 --workers=1 test/shell/poster.spec.ts test/shell/mount-churn.spec.ts
+        env:
+          SHELL_EXIT_LOG: ${{ runner.temp }}/shell-exits.jsonl
+          CHURN_ROUNDS: '40'
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flake-hunt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/shell-exits.jsonl
+            test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+
   unit:
     name: unit + typecheck
     runs-on: ubuntu-latest
@@ -57,4 +92,28 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test:cage
+
+      # DIAGNOSTIC: a shell that dies mid-test surfaces only as "Target page,
+      # context or browser has been closed", which says nothing about whether
+      # it crashed, was signalled, or quit cleanly — and there is a Windows-only
+      # failure (poster.spec.ts:201, twice) that looks exactly like that. Both
+      # the app and the harness already write to SHELL_EXIT_LOG; it was simply
+      # never switched on, so every occurrence has been undiagnosable after the
+      # fact. Costs nothing when nothing dies.
+      - name: Run the escape suite
+        run: pnpm test:cage
+        env:
+          SHELL_EXIT_LOG: ${{ runner.temp }}/shell-exits.jsonl
+
+      # Only on failure: the exit log plus whatever Playwright captured. This
+      # is the difference between "it happened again" and knowing why.
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ matrix.os }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/shell-exits.jsonl
+            test-results/
+          retention-days: 14
+          if-no-files-found: ignore
