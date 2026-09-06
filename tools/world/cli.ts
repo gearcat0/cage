@@ -158,6 +158,8 @@ function usage(): void {
   log('  show <slug>           one account: its tribe and its feed')
   log('  open <slug>           launch the real GUI on that account')
   log('  live <slug>...        launch real instances and hold them open')
+  log('  magnet [--from ada] [--to grace] [--timeout 180000]')
+  log('                        seed a fresh thing on one and fetch it on the other')
   log('  reset                 delete world/ entirely')
 }
 
@@ -177,6 +179,11 @@ async function main(): Promise<void> {
       if (!rest[0]) throw new Error('show needs an account slug, e.g. `pnpm world show ada`')
       show(rest[0])
       break
+    case 'magnet': {
+      const { runMagnet } = await import('./magnet.js')
+      await runMagnet(rest)
+      break
+    }
     case 'open':
     case 'live': {
       const { runLive } = await import('./live.js')

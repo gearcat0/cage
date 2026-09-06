@@ -15,7 +15,7 @@
 // tsx loads the TypeScript in src/ and tools/ directly; there is no build step
 // for the harness, and it always reflects the working tree.
 
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,8 +24,36 @@ const require = createRequire(import.meta.url)
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const electron = require('electron') // the path to the binary, under plain node
 const cli = join(root, 'tools', 'world', 'cli.ts')
+const argv = process.argv.slice(2)
 
-const child = spawn(electron, ['--import', 'tsx', cli, ...process.argv.slice(2)], {
+// Most commands touch only SQLite and need no display at all — that is the
+// whole point of running under ELECTRON_RUN_AS_NODE. These three launch the
+// real app, so on headless Linux they need a virtual X server. Same detection,
+// for the same reason, as scripts/run-cage-tests.mjs.
+const NEEDS_DISPLAY = new Set(['open', 'live', 'magnet'])
+const wantsDisplay = NEEDS_DISPLAY.has(argv[0])
+const hasDisplay = Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY)
+const xvfbAvailable = () =>
+  process.platform === 'linux' && !spawnSync('xvfb-run', ['--help'], { stdio: 'ignore' }).error
+
+let command = electron
+let args = ['--import', 'tsx', cli, ...argv]
+if (wantsDisplay && process.platform === 'linux' && !hasDisplay) {
+  if (!xvfbAvailable()) {
+    console.error(
+      `[world] '${argv[0]}' launches the real app, but this is headless Linux with no ` +
+        'display and `xvfb-run` was not found. Install it (Debian/Ubuntu: ' +
+        '`sudo apt-get install -y xvfb`) or run under a display.'
+    )
+    process.exit(1)
+  }
+  // xvfb-run sets DISPLAY for everything below it, so the app Playwright
+  // launches inherits it too.
+  command = 'xvfb-run'
+  args = ['-a', electron, ...args]
+}
+
+const child = spawn(command, args, {
   stdio: 'inherit',
   env: {
     ...process.env,
