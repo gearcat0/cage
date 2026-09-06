@@ -21,7 +21,11 @@ jobs:
   # many times in one job is far cheaper than waiting for full-suite runs at
   # roughly one-in-seven. DELETE THIS JOB once the cause is known.
   windows-flake-hunt:
-    name: flake hunt (windows, repeated)
+    name: flake hunt (windows, sample ${{ matrix.sample }})
+    strategy:
+      fail-fast: false
+      matrix:
+        sample: [1, 2, 3, 4, 5]
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -34,16 +38,19 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Repeat the suspect specs
-        run: pnpm test:cage -- --repeat-each=20 --workers=1 test/shell/poster.spec.ts test/shell/mount-churn.spec.ts
+      # Repeating the suspect specs alone did NOT reproduce it (20x, clean),
+      # so the trigger involves cumulative state -- it is test ~146 of 172.
+      # These run the FULL suite instead, several times in parallel, to take
+      # independent samples of a roughly one-in-seven event.
+      - name: Full suite
+        run: pnpm test:cage
         env:
           SHELL_EXIT_LOG: ${{ runner.temp }}/shell-exits.jsonl
-          CHURN_ROUNDS: '40'
       - name: Upload failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: flake-hunt-${{ github.run_attempt }}
+          name: flake-hunt-${{ matrix.sample }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/shell-exits.jsonl
             test-results/

@@ -129,17 +129,31 @@ app.on('open-file', (event, path) => {
 // exit code of 0 does not say which one ran -- and "the app went away
 // mid-test" looks identical from outside whichever it was. Record the reason.
 let quitReason = 'unknown'
+let quitRecorded = false
+const recordQuit = (why: string): void => {
+  if (quitRecorded || !process.env.SHELL_EXIT_LOG) return
+  quitRecorded = true
+  try {
+    appendFileSync(process.env.SHELL_EXIT_LOG, JSON.stringify({ quitReason: why, pid: process.pid, at: Date.now() }) + '\n')
+  } catch {
+    /* diagnostics must never break a shutdown */
+  }
+}
+/** Name the exit path, and record it NOW.
+ *
+ *  Writing this from an `app.on('quit')` handler was not enough: `app.exit()`
+ *  terminates the process without emitting before-quit, will-quit OR quit, so
+ *  the two exit() paths below -- including the single-instance lock loss --
+ *  produced no record at all. Which is precisely the case a mysterious
+ *  "the app went away" most needs explained. */
 const noteQuit = (why: string): void => {
   quitReason = why
+  recordQuit(why)
 }
 if (process.env.SHELL_EXIT_LOG) {
-  app.on('quit', () => {
-    try {
-      appendFileSync(process.env.SHELL_EXIT_LOG!, JSON.stringify({ quitReason, pid: process.pid, at: Date.now() }) + '\n')
-    } catch {
-      /* diagnostics must never break a shutdown */
-    }
-  })
+  // Anything that reaches a real quit WITHOUT naming itself is still worth a
+  // line -- it says the exit was orderly and unattributed.
+  app.on('quit', () => recordQuit(quitReason))
 }
 
 const singleInstance = process.env.SHELL_ALLOW_MULTI === '1' || app.requestSingleInstanceLock()
@@ -401,6 +415,7 @@ app.whenReady().then(async () => {
     } else {
       dialog.showErrorBox('Identity unreadable', msg)
     }
+    noteQuit('identity-unreadable')
     app.exit(1)
     return
   }
