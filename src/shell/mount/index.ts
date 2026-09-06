@@ -102,6 +102,7 @@ export async function mountThing(opts: MountOptions): Promise<MountedThing> {
     mode: opts.mode
   }
   const wc = handle.view.webContents
+  let destroyed = false
   bindCage(wc.id, { thingId: id, thingArgs, attachments })
   opts.onBound?.(wc.id)
 
@@ -143,12 +144,42 @@ export async function mountThing(opts: MountOptions): Promise<MountedThing> {
       isFork: env.isFork
     },
     destroy: () => {
+      // Idempotent, and defensive about ORDER. A cage is torn down from
+      // several places at once -- destroyCurrent, preview supersession, a
+      // render-process-gone handler -- so a second call is normal, and on
+      // Windows a second `close()` on an already-closed WebContents was
+      // reaching native code that had freed it (STATUS_ACCESS_VIOLATION,
+      // 0xC0000005, seen in CI).
+      if (destroyed) return
+      destroyed = true
+      const wc = handle.view.webContents
+      // Take it out of the picture BEFORE anything is freed. A cage being torn
+      // down is still a composited native view; hiding it first means the
+      // compositor is not drawing something whose backing is about to go away.
       try {
-        win.contentView.removeChildView(handle.view)
+        if (!wc.isDestroyed()) handle.view.setVisible(false)
       } catch {
-        /* already removed */
+        /* already gone */
       }
-      handle.view.webContents.close()
+      // Stop any in-flight navigation BEFORE detaching: closing a view whose
+      // initial loadURL is still running is the narrow window this churns
+      // through, since previews mount in the background while the next open
+      // is already tearing the old ones down.
+      try {
+        if (!wc.isDestroyed()) wc.stop()
+      } catch {
+        /* nothing was loading */
+      }
+      try {
+        if (!win.isDestroyed()) win.contentView.removeChildView(handle.view)
+      } catch {
+        /* already removed, or the window went first */
+      }
+      try {
+        if (!wc.isDestroyed()) wc.close()
+      } catch {
+        /* already closed */
+      }
     }
   }
 }

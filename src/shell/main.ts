@@ -518,6 +518,10 @@ app.whenReady().then(async () => {
      *  badge that says so, never under "✓ signed". */
     preview: MountedThing | null
     previewMounting: boolean
+    /** The in-flight preview mount, so teardown can WAIT for it rather than
+     *  race it -- destroying cages while a preview is being attached to the
+     *  window is the trigger this crash needs. See the barrier in openThing. */
+    previewMount: Promise<void> | null
     pendingDraft: Draft | null
     draftTimer: ReturnType<typeof setTimeout> | null
     /** The edit cage's wcId, recorded at BIND time — drafts are accepted from
@@ -591,9 +595,17 @@ app.whenReady().then(async () => {
     // dimmed, unclickable shell with no visible prompt.
     const occluded = pendingConfirms.size > 0 || chromeOverlays > 0
     const showPreview = current.activeMode === 'view' && current.preview !== null
-    current.view?.view.setVisible(!occluded && current.activeMode === 'view' && !showPreview)
-    current.preview?.view.setVisible(!occluded && showPreview)
-    current.edit?.view.setVisible(!occluded && current.activeMode === 'edit')
+    // Never touch a cage whose webContents has gone. This runs from events
+    // (overlay counts, confirm resolution, render-process-gone) that can land
+    // after a teardown has started, and setVisible on a freed native view is
+    // not a catchable error -- it is a crash.
+    const show = (m: MountedThing | null | undefined, visible: boolean): void => {
+      if (!m || m.view.webContents.isDestroyed()) return
+      m.view.setVisible(visible)
+    }
+    show(current.view, !occluded && current.activeMode === 'view' && !showPreview)
+    show(current.preview, !occluded && showPreview)
+    show(current.edit, !occluded && current.activeMode === 'edit')
   }
 
   // Chrome-side modal overlays announce themselves so the cages can yield.
@@ -824,6 +836,19 @@ app.whenReady().then(async () => {
       openLog('refused', { hash: envelopeHash.slice(0, 12), why: draft ? 'draft program missing' : 'not loadable' })
       return { error: draft ? 'draft program missing from the store' : 'not found or not mountable (sealed)' }
     }
+    // BARRIER: never tear cages down while a preview is mid-mount.
+    //
+    // A preview mount attaches a native view to the window and then loads it.
+    // Destroying the other cages in that window while that is in flight
+    // crashes the process outright -- SIGSEGV on Linux, 0xC0000005 on Windows
+    // -- which is what the poster.spec.ts:201 flake actually was. Reordering
+    // the teardown does not help; the two operations simply must not overlap.
+    // Waiting costs one debounce at worst, and only when the human switches
+    // things mid-preview.
+    if (current?.previewMount) {
+      openLog('open:awaiting-preview', { hash: envelopeHash.slice(0, 12) })
+      await current.previewMount.catch(() => {})
+    }
     destroyCurrent()
     const o: OpenThing = {
       stored,
@@ -834,6 +859,7 @@ app.whenReady().then(async () => {
       editMounting: null,
       preview: null,
       previewMounting: false,
+      previewMount: null,
       pendingDraft: null,
       draftTimer: null,
       editWcId: null,
@@ -1310,6 +1336,16 @@ app.whenReady().then(async () => {
   }
 
   async function mountPreview(o: OpenThing): Promise<void> {
+    const running = mountPreviewInner(o)
+    o.previewMount = running
+    try {
+      await running
+    } finally {
+      if (o.previewMount === running) o.previewMount = null
+    }
+  }
+
+  async function mountPreviewInner(o: OpenThing): Promise<void> {
     if (o.previewMounting) {
       openLog('preview:busy', { hasPending: o.pendingDraft !== null })
       return // the running mount re-checks pendingDraft when done
