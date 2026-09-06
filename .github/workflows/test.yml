@@ -15,48 +15,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # TEMPORARY — flake hunt for the Windows-only death in poster.spec.ts:201.
-  # Two occurrences, both Windows, both that test, and it cannot be reproduced
-  # on Linux (60 mount/unmount rounds are clean). Repeating the suspect specs
-  # many times in one job is far cheaper than waiting for full-suite runs at
-  # roughly one-in-seven. DELETE THIS JOB once the cause is known.
-  windows-flake-hunt:
-    name: flake hunt (windows, sample ${{ matrix.sample }})
-    strategy:
-      fail-fast: false
-      matrix:
-        sample: [1, 2, 3, 4, 5]
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      # Repeating the suspect specs alone did NOT reproduce it (20x, clean),
-      # so the trigger involves cumulative state -- it is test ~146 of 172.
-      # These run the FULL suite instead, several times in parallel, to take
-      # independent samples of a roughly one-in-seven event.
-      - name: Full suite
-        run: pnpm test:cage
-        env:
-          SHELL_EXIT_LOG: ${{ runner.temp }}/shell-exits.jsonl
-      - name: Upload failure diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: flake-hunt-${{ matrix.sample }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/shell-exits.jsonl
-            test-results/
-          retention-days: 14
-          if-no-files-found: ignore
-
   unit:
     name: unit + typecheck
     runs-on: ubuntu-latest
