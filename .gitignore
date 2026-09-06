@@ -11,6 +11,12 @@ playwright-report/
 .claude/settings.local.json
 test/fixtures/
 
+# The local multi-account world (`pnpm world`). Throwaway keys and libraries,
+# rebuildable from the roster's mnemonic — never content worth keeping.
+# Anchored: an unanchored `world/` would also swallow tools/world, the harness
+# that builds it.
+/world/
+
 # Editor swap/backup files -- artifacts of whoever is editing, never content.
 *.swp
 *.swo

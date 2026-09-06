@@ -22,6 +22,7 @@
     "src/shell/**/*.ts",
     "src/format/**/*.ts",
     "src/conformance/**/*.ts",
+    "tools/**/*.ts",
     "test/**/*.ts",
     "playwright.config.ts",
     "vitest.config.ts",

@@ -23,6 +23,7 @@
     "rebuild:native": "electron-rebuild -f -o better-sqlite3",
     "postinstall": "electron-rebuild -f -o better-sqlite3 || true",
     "gen:vectors": "tsx src/conformance/generate.ts",
+    "world": "node scripts/run-world.mjs",
     "test:unit": "vitest run",
     "test:cage": "pnpm build && node scripts/run-cage-tests.mjs",
     "test:cage:headed": "pnpm build && node scripts/run-cage-tests.mjs --headed"
