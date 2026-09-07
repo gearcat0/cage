@@ -21,6 +21,23 @@
 // recorded), so the fault is native and precedes it, and guards added to the
 // boot continuation did not change the rate.
 //
+// ROOT MECHANISM (found; supersedes the guesses below).
+//
+// The crash needs the close to land while main-process boot is ACTIVELY
+// running. Closing while boot is PARKED at any point is clean -- 0/30 across
+// four configurations, with the close aimed deterministically into a pause.
+// And a bare Electron app whose boot stays busy crashes too (1/40), so the
+// mechanism is Electron's, not ours; our boot is simply long enough to be hit
+// ~30% of the time where the bare app is hit 2.5%.
+//
+// A WARNING for anyone bisecting this. Comparing configurations by "skip a
+// component and see if the rate drops" is CONFOUNDED: skipping work makes boot
+// shorter, which moves where a fixed-time close lands. That route produced
+// confident, wrong answers here -- skipping the ENS client read as 0/80 vs
+// 25/80, and skipping a webRequest hook as 1/60 vs 24/60, and BOTH effects
+// vanished once the close was aimed at a fixed point in boot rather than a
+// fixed wall-clock moment. Use WAIT_READY, or aim the close explicitly.
+//
 // Post-mortem analysis has been done, and hit a wall worth recording:
 //
 //   - Cores are ~845 MB apparent but SPARSE: ~40 MB each on disk. Capture with
@@ -38,12 +55,16 @@
 // cannot go further. Naming the object needs a sanitiser build or rr, neither
 // of which applies to a shipped Electron binary.
 //
-// The one structural mitigation not yet tried: do not create the window until
-// boot has finished. Every crash needs a window to exist while boot is still
-// running (0/25 with the close aimed before the window is created, 4/25 after,
-// 8/25 once the chrome view has loaded). That trades away the early window
-// appearance the backgroundColor was chosen to smooth, so it is a product
-// decision rather than an obvious fix.
+// The window-deferral idea recorded here earlier came from the same confounded
+// comparison and is NOT supported: those numbers measured boot duration, not
+// the window's presence.
+//
+// What did help is in the harness rather than the product: helpers.ts now waits
+// for boot to settle before closing (closeSettled), since the suite only ever
+// met this on the retry path, which by definition closes a still-booting app.
+// That took a full suite run from 4 abnormal exits in 98 to 1, repeatably. The
+// remaining one is an app that never becomes ready inside the grace period, so
+// it is closed mid-boot regardless -- the unavoidable case.
 
 import { _electron } from 'playwright'
 import { mkdtempSync, rmSync } from 'node:fs'

@@ -270,6 +270,38 @@ export interface ShellLaunchOptions {
   extraEnv?: Record<string, string>
 }
 
+/** Close an app WITHOUT closing it mid-boot.
+ *
+ *  Electron's main process can segfault (SIGSEGV / 0xC0000005) when it is torn
+ *  down while startup is still actively running -- a wild indirect call, with
+ *  no stack and no quitReason, reproducible in a bare Electron app too, so the
+ *  mechanism is not ours. Closing after boot has settled is clean: 0 of 60
+ *  where closing mid-boot was ~30%.
+ *
+ *  The suite only ever hit it here, on the retry path, which by definition
+ *  closes an app that did not finish booting. A short grace period is enough:
+ *  either it becomes ready and the close is safe, or it is genuinely wedged and
+ *  we close anyway, which is no worse than before. */
+async function closeSettled(app: ElectronApplication, graceMs = 5_000): Promise<void> {
+  const deadline = Date.now() + graceMs
+  while (Date.now() < deadline) {
+    try {
+      const ready = await app.evaluate(async (electron) => {
+        const s = (electron.app as unknown as { __shell?: { ready?: boolean } }).__shell
+        return Boolean(s?.ready)
+      })
+      if (ready) break
+    } catch {
+      // RETRY, do not give up. The inspector context is torn down and rebuilt
+      // during startup, so an error here usually means "still booting" -- which
+      // is precisely when closing is unsafe. Breaking out on the first hiccup
+      // reintroduced the crash it is here to avoid.
+    }
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  await app.close().catch(() => {})
+}
+
 async function waitReady(app: ElectronApplication, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   let lastErr: unknown = null
@@ -363,7 +395,7 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
       lastErr = e
       // eslint-disable-next-line no-console
       console.warn(`[helpers] shell launch attempt ${attempt} failed (${(e as Error).message}); retrying`)
-      await candidate.close().catch(() => {})
+      await closeSettled(candidate)
     }
   }
   if (!launched) throw lastErr instanceof Error ? lastErr : new Error('shell failed to launch')
@@ -606,7 +638,7 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
       }
     },
     close: async () => {
-      await app.close()
+      await closeSettled(app)
       if (ownsDir) rmSync(userDataDir, { recursive: true, force: true })
     }
   }
