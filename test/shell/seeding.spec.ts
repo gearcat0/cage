@@ -4,24 +4,27 @@ import { join } from 'node:path'
 import { test, expect, launchShell } from './helpers.js'
 
 // ── Seeding ──────────────────────────────────────────────────────────────────
-// Serving admitted bundles to peers. The live network path — a peer actually
-// fetching — is not testable here (CI has no peers), so what is pinned is
-// everything around it: that seeding starts and produces a magnet, that the
-// INTENT survives a restart, that stopping stops, and that deleting a thing
-// stops serving it. Those are the parts that would silently keep announcing
-// something the human thought was private.
+// Serving admitted bundles to peers. What is pinned here is everything AROUND
+// the swarm: that seeding starts and produces a magnet, that the INTENT
+// survives a restart with the same infohash, that stopping stops, and that
+// deleting a thing stops serving it. Those are the parts that would silently
+// keep announcing something the human thought was private.
+//
+// Deliberately HERMETIC: launchShell sets SHELL_TORRENT_OFFLINE=1, so the
+// client never reaches the DHT or a tracker. None of the above needs a peer,
+// and depending on the public swarm is what made this spec fail intermittently
+// on all three platforms. A peer actually fetching is covered by
+// `pnpm world magnet`, which moves real bytes between two real instances.
 
 const NAMETAG = readFileSync(join(__dirname, '..', '..', 'samples', 'nametag.html'))
 
-// Three shell launches plus a webtorrent client that has to come up and build a
-// torrent — comfortably past the 30s default on a loaded runner, where this
-// first failed. The work is real, not a hang; give it room.
-test.beforeEach(() => test.setTimeout(120_000))
+// Three shell launches and a torrent built locally. Offline, that is quick --
+// this was 120s when a client had to bootstrap the DHT first, and the budget
+// still was not always enough.
+test.beforeEach(() => test.setTimeout(60_000))
 
-// Split in two on purpose. Bringing up a webtorrent client is the expensive
-// part, and doing it twice inside ONE budget blew even 120s on a constrained
-// runner. Each half now gets its own, and they share a profile the way the
-// feature does: the second test reads what the first one left on disk.
+// Split in two because they share a profile the way the feature does: the
+// second test reads what the first one left on disk.
 let sharedDir: string | null = null
 let seededHash: string | null = null
 let seededMagnet: string | null = null
@@ -60,7 +63,7 @@ test('the intent survives a restart, and a stop stays stopped', async () => {
       try {
         // Resuming produces the SAME infohash — which is what makes a magnet
         // handed out yesterday still work today.
-        await expect.poll(async () => (await shell.seedStatus()).length, { timeout: 40_000 }).toBe(1)
+        await expect.poll(async () => (await shell.seedStatus()).length, { timeout: 20_000 }).toBe(1)
         const resumed = await shell.seedStatus()
         expect(resumed[0]!.envelopeHash).toBe(seededHash)
         expect(resumed[0]!.magnet).toBe(seededMagnet)

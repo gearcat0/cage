@@ -77,16 +77,14 @@ test('verify-at-the-gate: a transport delivering HOSTILE bytes is rejected by ad
 })
 
 test('magnet: routes to the webtorrent transport and fails cleanly with no peers', async () => {
-  // Its own budget: this launches a second shell AND brings up a real
-  // webtorrent client, which bootstraps the DHT before it can fail. That is
-  // comfortably past the 30s default on Windows, where it first blew. Every
-  // webtorrent-touching test has needed this -- client startup is the cost.
-  test.setTimeout(90_000)
+  // Hermetic: launchShell sets SHELL_TORRENT_OFFLINE=1, so the client has no
+  // DHT to bootstrap and no tracker to announce to. It used to need 90s purely
+  // to sit through that, and blew even then on Windows.
+  test.setTimeout(30_000)
   // webtorrent IS installed now, so this no longer asserts the missing-module
   // message. What is still worth pinning is the same thing it always was: a
   // magnet dispatches to that transport and a failure is a clean `invalid`,
-  // never a crash or a hung shell. A short cap keeps it quick — nobody is
-  // seeding this hash, and CI has no peers to find.
+  // never a crash or a hung shell.
   const quick = await launchShell({ extraEnv: { SHELL_FETCH_TIMEOUT_MS: '4000' } })
   try {
     const r = await quick.fetchLocator('magnet:?xt=urn:btih:0000000000000000000000000000000000000000')

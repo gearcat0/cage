@@ -36,7 +36,38 @@ export interface WebTorrentClient {
   on(event: 'error', cb: (err: unknown) => void): void
   destroy(cb?: () => void): void
 }
-export type WebTorrentCtor = new () => WebTorrentClient
+/** Client options. Only the discovery switches are modelled: they are the ones
+ *  that decide whether a client talks to the outside world at all. */
+export interface WebTorrentOptions {
+  dht?: boolean
+  tracker?: boolean
+  lsd?: boolean
+}
+export type WebTorrentCtor = new (opts?: WebTorrentOptions) => WebTorrentClient
+
+/** How a client is allowed to FIND peers.
+ *
+ *  `SHELL_TORRENT_OFFLINE=1` turns off all three routes -- the DHT, public
+ *  trackers, and local discovery -- leaving a client that can still hash, seed,
+ *  report status and fail a fetch, but can never reach the network.
+ *
+ *  It exists for the tests. What they check about seeding is OURS: that a
+ *  magnet is produced, that the intent survives a restart with the same
+ *  infohash, that stopping stops, and that deleting a thing stops serving it.
+ *  None of that needs a swarm -- but a default client bootstraps the DHT and
+ *  announces to public trackers before it will do anything, which on a CI
+ *  runner is slow when it works and a timeout when it does not. Those tests had
+ *  been given 90 and 120 second budgets to absorb it and still failed
+ *  intermittently on all three platforms, which is a test depending on the
+ *  weather rather than on the code.
+ *
+ *  Deliberately NOT the default: a shell that cannot find peers cannot share,
+ *  and the real path is exercised by `pnpm world magnet`, which runs two real
+ *  instances and moves bytes between them. */
+export function torrentDiscoveryOptions(): WebTorrentOptions {
+  if (process.env.SHELL_TORRENT_OFFLINE !== '1') return {}
+  return { dht: false, tracker: false, lsd: false }
+}
 
 /** Exported so the seeding service shares ONE dynamic import and one error
  *  message with the fetch path -- two copies would drift, and this is the
@@ -68,7 +99,7 @@ export class WebtorrentTransport implements Transport {
   async fetch(locator: string, limits: FetchLimits): Promise<Uint8Array> {
     const WebTorrent = await loadWebTorrent()
     return new Promise<Uint8Array>((resolve, reject) => {
-      const client = new WebTorrent()
+      const client = new WebTorrent(torrentDiscoveryOptions())
       let settled = false
       const cleanup = (): void => {
         clearTimeout(timer)
