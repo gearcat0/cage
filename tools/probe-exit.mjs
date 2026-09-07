@@ -21,9 +21,29 @@
 // recorded), so the fault is native and precedes it, and guards added to the
 // boot continuation did not change the rate.
 //
-// Finding the faulting component needs a stack trace — a core dump (this
-// machine had no disk headroom for one) or Electron's crashReporter. That is
-// where anyone picking this up should start.
+// Post-mortem analysis has been done, and hit a wall worth recording:
+//
+//   - Cores are ~845 MB apparent but SPARSE: ~40 MB each on disk. Capture with
+//     `ulimit -c 6291456` from a scratch cwd (core_pattern is "core").
+//   - Symbolise with `addr2line -f -C -e electron.debug <offset>`, NOT gdb --
+//     gdb dies loading 1.3 GB of Chromium DWARF. Get symbols from the release's
+//     electron-vX-linux-x64-debug.zip (361 MB) and CHECK THE BUILD ID matches
+//     the shipped binary; ours did.
+//   - The faulting PC resolves inside a dav1d DATA table, not a function, and
+//     the stack words point there too. That is a wild indirect call -- a jump
+//     through a freed or corrupted pointer -- which is also why no stack
+//     unwinds. The core cannot name the caller.
+//
+// So it is a use-after-free reached by closing mid-boot, and post-mortem
+// cannot go further. Naming the object needs a sanitiser build or rr, neither
+// of which applies to a shipped Electron binary.
+//
+// The one structural mitigation not yet tried: do not create the window until
+// boot has finished. Every crash needs a window to exist while boot is still
+// running (0/25 with the close aimed before the window is created, 4/25 after,
+// 8/25 once the chrome view has loaded). That trades away the early window
+// appearance the backgroundColor was chosen to smooth, so it is a product
+// decision rather than an obvious fix.
 
 import { _electron } from 'playwright'
 import { mkdtempSync, rmSync } from 'node:fs'
