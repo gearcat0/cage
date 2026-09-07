@@ -57,4 +57,28 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test:cage
+
+      # DIAGNOSTIC: a shell that dies mid-test surfaces only as "Target page,
+      # context or browser has been closed", which says nothing about whether
+      # it crashed, was signalled, or quit cleanly — and there is a Windows-only
+      # failure (poster.spec.ts:201, twice) that looks exactly like that. Both
+      # the app and the harness already write to SHELL_EXIT_LOG; it was simply
+      # never switched on, so every occurrence has been undiagnosable after the
+      # fact. Costs nothing when nothing dies.
+      - name: Run the escape suite
+        run: pnpm test:cage
+        env:
+          SHELL_EXIT_LOG: ${{ runner.temp }}/shell-exits.jsonl
+
+      # Only on failure: the exit log plus whatever Playwright captured. This
+      # is the difference between "it happened again" and knowing why.
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ matrix.os }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/shell-exits.jsonl
+            test-results/
+          retention-days: 14
+          if-no-files-found: ignore
