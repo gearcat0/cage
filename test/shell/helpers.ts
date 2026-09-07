@@ -333,6 +333,16 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
   // safeStorage availability (still never writes the plaintext key).
   env.SHELL_FORCE_SOFTWARE_KEYS = '1'
   env.SHELL_USER_DATA_DIR = userDataDir
+  // No test may depend on the weather. A default webtorrent client bootstraps
+  // the DHT and announces to public trackers before it will do anything, and
+  // on a CI runner that is slow when it works and a timeout when it does not
+  // -- the seeding and magnet specs had 90 and 120 second budgets to absorb it
+  // and still failed intermittently on all three platforms. Offline keeps the
+  // client able to hash, seed, report and fail a fetch, which is everything
+  // those tests actually assert. A spec that genuinely wants peers can set
+  // SHELL_TORRENT_OFFLINE='0' through extraEnv; the live path is covered by
+  // `pnpm world magnet`, which moves real bytes between two real instances.
+  env.SHELL_TORRENT_OFFLINE = '1'
   // Identity changes normally restart the app; under Playwright that would
   // orphan the process, so specs relaunch explicitly instead.
   env.SHELL_NO_RELAUNCH = '1'

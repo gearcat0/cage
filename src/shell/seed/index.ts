@@ -1,4 +1,9 @@
-import { loadWebTorrent, type WebTorrentClient, type WebTorrentSeed } from '../transport/webtorrent.js'
+import {
+  loadWebTorrent,
+  torrentDiscoveryOptions,
+  type WebTorrentClient,
+  type WebTorrentSeed
+} from '../transport/webtorrent.js'
 
 // ── Seeding ──────────────────────────────────────────────────────────────────
 // Serving admitted bundles to peers over BitTorrent, so a magnet link someone
@@ -39,7 +44,7 @@ export class SeedService {
     if (this.client) return this.client
     if (this.clientFailed !== null) throw new Error(this.clientFailed)
     const WebTorrent = await loadWebTorrent()
-    const c = new WebTorrent()
+    const c = new WebTorrent(torrentDiscoveryOptions())
     // A client-level error must not take the shell down with it.
     c.on('error', () => {
       /* per-torrent failures surface through status(); nothing to do here */
