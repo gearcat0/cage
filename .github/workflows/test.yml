@@ -70,10 +70,12 @@ jobs:
         env:
           SHELL_EXIT_LOG: ${{ runner.temp }}/shell-exits.jsonl
 
-      # Only on failure: the exit log plus whatever Playwright captured. This
-      # is the difference between "it happened again" and knowing why.
-      - name: Upload failure diagnostics
-        if: failure()
+      # ALWAYS, not just on failure. A process can crash without failing a
+      # test -- two Windows apps exited 0xC0000005 during teardown while the
+      # suite went green -- and that is invisible unless the log is kept for
+      # passing runs too. It is ~20 KB.
+      - name: Upload diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: diagnostics-${{ matrix.os }}-${{ github.run_attempt }}
