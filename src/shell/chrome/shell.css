@@ -19,17 +19,21 @@ body {
 #app {
   display: grid;
   grid-template-columns: 300px 1fr;
-  grid-template-rows: 48px 1fr;
+  grid-template-rows: 84px 1fr;
   height: 100vh;
 }
 
 .sh-topbar {
   grid-column: 1 / 3;
   grid-row: 1;
+  /* Two rows: the Ingest box on its own, then the controls. Its height is
+     mirrored by TOP_BAR in main.ts, which sets where the cage begins -- change
+     one and you must change the other. */
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  justify-content: center;
   gap: var(--evm-space-2);
-  padding: 0 var(--evm-space-4);
+  padding: var(--evm-space-2) var(--evm-space-4);
   background: var(--evm-surface-1);
   border-bottom: 1px solid var(--evm-border);
 }
@@ -42,12 +46,27 @@ body {
   color: var(--evm-text-3);
   font-size: var(--evm-text-sm);
 }
+.sh-topbar-row {
+  display: flex;
+  align-items: center;
+  gap: var(--evm-space-2);
+  min-width: 0;
+}
 .sh-topbar .evm-input {
-  /* Flexes rather than capping at 320px, where it clipped its own hint text.
-     min-width keeps it usable when the topbar is crowded. */
-  flex: 1;
-  min-width: 22em;
-  max-width: 46em;
+  /* Takes the whole of its own row bar the Ingest button, so the hint is
+     readable rather than truncated. No max-width: on a wide window a longer
+     box costs nothing and is the one control people paste into. */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* The identity and the toast are recognisable when clipped, so on a narrow
+   window they are what gives way. */
+.sh-topbar .evm-address,
+.sh-topbar .sh-toast {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* Sits beside the Ingest input in the 48px topbar row. Shrinks and ellipsises
    rather than pushing the input below its 22em floor. */

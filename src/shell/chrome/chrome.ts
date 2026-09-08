@@ -184,7 +184,7 @@ app.append(topbar, feedPane, main)
 // ── Omnibar ──────────────────────────────────────────────────────────────────
 const identityEl = el('span', 'evm-address evm-address--muted', 'loading…')
 const ingestInput = el('input', 'evm-input evm-input--mono') as HTMLInputElement
-ingestInput.placeholder = 'paste a base64 bundle, or a locator (https:/magnet:/bundle:/file:)…'
+ingestInput.placeholder = 'paste a base64 bundle, or https:/magnet:/bundle:/file:/a name'
 ingestInput.setAttribute('aria-label', 'paste bundle or locator')
 const ingestBtn = el('button', 'evm-btn evm-btn--primary evm-btn--sm', 'Ingest') as HTMLButtonElement
 const fileBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Open file…') as HTMLButtonElement
@@ -253,11 +253,21 @@ function updateFetchDisclosure(): void {
 }
 const keyWarn = el('button', 'evm-badge evm-badge--warning sh-keywarn') as HTMLButtonElement
 keyWarn.style.display = 'none'
-topbar.append(
+// Two rows, so the Ingest box can be long enough to READ its own hint.
+//
+// It is the only control in here whose text has to be read rather than
+// recognised -- it is the answer to "what can I paste?" -- and in one row it
+// could not be. The hint needs ~550px; the row is 640 CSS px on Linux (the
+// chrome runs at SHELL_SCALE=2, so a 1280px window is 640 here) and the other
+// controls take ~390px of it. Widening the input inside one row pushed Ingest,
+// Open file… and the identity clean off the screen, which is a worse answer
+// than a clipped hint. So the input gets a row to itself, with the controls
+// that are recognisable at a glance moved below it.
+const topRow = el('div', 'sh-topbar-row')
+const bottomRow = el('div', 'sh-topbar-row')
+topRow.append(ingestInput, fetchWarn, ingestBtn)
+bottomRow.append(
   newBtn,
-  ingestInput,
-  fetchWarn,
-  ingestBtn,
   fileBtn,
   fileInput,
   toast,
@@ -266,6 +276,7 @@ topbar.append(
   el('span', 'sh-id-label', 'you:'),
   identityEl
 )
+topbar.append(topRow, bottomRow)
 
 function showToast(o: Outcome): void {
   const tone =

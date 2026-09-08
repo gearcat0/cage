@@ -63,7 +63,10 @@ const CAGE_PRELOAD = join(__dirname, '../../preload/index.js')
 const CHROME_PRELOAD = join(__dirname, '../../preload/shell/chrome.js')
 
 // Layout (must match src/shell/chrome/shell.css).
-const TOP_BAR = 48
+/** Mirrors .sh-topbar's height in shell.css -- it is two rows now, so the
+ *  Ingest box can be long enough to read its own hint. This is what decides
+ *  where the cage begins, so the two must move together. */
+const TOP_BAR = 84
 const FEED_WIDTH = 300
 const THING_HEADER = 44
 
