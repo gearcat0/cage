@@ -184,7 +184,7 @@ app.append(topbar, feedPane, main)
 // ── Omnibar ──────────────────────────────────────────────────────────────────
 const identityEl = el('span', 'evm-address evm-address--muted', 'loading…')
 const ingestInput = el('input', 'evm-input evm-input--mono') as HTMLInputElement
-ingestInput.placeholder = 'paste a base64 bundle, or a locator (magnet:/bundle:/file:)…'
+ingestInput.placeholder = 'paste a base64 bundle, or a locator (https:/magnet:/bundle:/file:)…'
 ingestInput.setAttribute('aria-label', 'paste bundle or locator')
 const ingestBtn = el('button', 'evm-btn evm-btn--primary evm-btn--sm', 'Ingest') as HTMLButtonElement
 const fileBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Open file…') as HTMLButtonElement
@@ -228,7 +228,7 @@ function showToast(o: Outcome): void {
   }, 6000)
 }
 
-// A locator (magnet:/bundle:/file:/thing:) or a name (alice.eth, user@host) is
+// A locator (https:/magnet:/bundle:/file:/thing:) or a name (alice.eth, user@host) is
 // fetched (naming/transport → admission); anything else is a pasted base64
 // bundle ingested directly.
 const FETCHABLE_RE = /^(magnet|bundle|file|thing):|^[a-z0-9-]+(\.[a-z0-9-]+)+$|^[^@\s]+@[^@\s]+$/i

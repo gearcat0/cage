@@ -29,8 +29,8 @@ src/shell/
 ├── mount/       admitted thing → CageResources → createCage → bridge args →
 │                view placed beneath the chrome. Reuses the cage library.
 ├── transport/   fetch bundle bytes by locator (file: / content-addressed
-│                bundle: / magnet:), resource-bounded + content-untrusted —
-│                admission is the gate. webtorrent wired behind the interface
+│                bundle: / magnet: / https:), resource-bounded + content-untrusted
+│                — admission is the gate. webtorrent wired behind the interface
 │                (lazy import); admitted bundles are retained in a seed store.
 ├── naming/      name → author key (identity) + name → locator (discovery). A
 │                name is shown as VERIFIED only when it provably maps to the
@@ -62,6 +62,22 @@ auto-granted. Programs cannot initiate a publish (`emit("publish")` is
 retired); all controls live in trusted chrome.
 
 ## Ingestion & authoring
+
+**HTTP(S) ingest** closes the last transport gap: a `.thing` at a URL is the
+most ordinary way to hand one to somebody. Bounded on every axis a server
+controls — size (enforced *while streaming*, not on the strength of a
+`Content-Length`), time (the request is **aborted**, not merely abandoned), and
+redirects (followed manually, counted, and re-checked so a `Location` cannot
+bounce the fetch out of http(s) into `file:`). No cookies or credentials travel
+with it. The `Content-Type` is deliberately ignored: servers label `.thing`
+files every way imaginable, and the bytes are validated by admission regardless.
+
+The honest limit, and the reason the chrome shows an author: a URL is **not
+content-addressed**. `bundle:<sha256>` names the bytes it wants and the service
+checks them; a URL names a *place*, and you get whatever is there. Admission
+proves what arrived is a validly signed thing — not that it is the thing you
+meant to fetch. Fetching also tells the host your IP, which is a disclosure the
+other local transports do not make.
 
 **Receive:** file / paste / drag / double-click a `.thing` / locator / name →
 admission → library — the "flyer" property, transport-agnostic and
