@@ -49,6 +49,16 @@ body {
   min-width: 22em;
   max-width: 46em;
 }
+/* Sits beside the Ingest input in the 48px topbar row. Shrinks and ellipsises
+   rather than pushing the input below its 22em floor. */
+.sh-fetchwarn {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 32ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .sh-toast {
   max-width: 40ch;
   overflow: hidden;

@@ -210,3 +210,83 @@ test('a server that never answers is abandoned, not waited on forever', async ()
     await impatient.close()
   }
 })
+
+// ── Reaching it from the UI, and saying what it costs ────────────────────────
+
+async function chromeEval<T>(js: string): Promise<T> {
+  return shell.app.evaluate(async (electron, code) => {
+    const wc = electron.webContents
+      .getAllWebContents()
+      .find((w) => !w.isDestroyed() && w.getURL().includes('shell/chrome'))
+    if (!wc) throw new Error('no chrome webContents')
+    return (await wc.executeJavaScript(code)) as never
+  }, js)
+}
+
+/** Type into the Ingest box the way a human would, so the input listener runs. */
+async function typeIntoIngest(text: string): Promise<void> {
+  await chromeEval(`(() => {
+    const i = document.querySelector('.sh-topbar input.evm-input')
+    i.value = ${JSON.stringify(text)}
+    i.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+}
+
+const disclosure = (): Promise<{ shown: boolean; text: string; title: string }> =>
+  chromeEval(`(() => {
+    const b = document.querySelector('[data-testid=ingest-disclosure]')
+    return { shown: !!b && b.style.display !== 'none', text: b ? b.textContent : '', title: b ? (b.title || '') : '' }
+  })()`)
+
+test('a URL pasted into the Ingest box is FETCHED, not treated as base64', async () => {
+  // The regression this file could not see: every other test here calls
+  // fetchLocator, which bypasses the chrome's fetch-vs-ingest routing. That
+  // routing did not match http(s), so the transport shipped unreachable from
+  // the UI while its own tests passed.
+  const bundle = await aBundle('via-the-box')
+  routes.set('/ui.thing', () => ({ body: bundle }))
+
+  await typeIntoIngest(`${base}/ui.thing`)
+  await chromeEval(`document.querySelectorAll('.sh-topbar button').forEach(b => { if (b.textContent === 'Ingest') b.click() })`)
+
+  const rows = await expect
+    .poll(async () => ((await shell.feed()) as { type: string }[]).filter((r) => r.type === 'via-the-box').length, {
+      timeout: 20_000
+    })
+    .toBe(1)
+  void rows
+})
+
+test('the disclosure names the host, and says a URL is not content-addressed', async () => {
+  await typeIntoIngest('https://files.example.com/lease.thing')
+  const d = await disclosure()
+  expect(d.shown).toBe(true)
+  expect(d.text).toContain('files.example.com')
+  expect(d.text).toMatch(/your IP/i)
+  // The rest is on hover, because the topbar is one 48px row and the cage is
+  // composited above anything drawn below it.
+  expect(d.title).toMatch(/not content-addressed/i)
+  expect(d.title).toMatch(/not that it is the thing you asked for/i)
+})
+
+test('a magnet discloses the swarm; local locators disclose nothing', async () => {
+  await typeIntoIngest('magnet:?xt=urn:btih:0000000000000000000000000000000000000000')
+  const m = await disclosure()
+  expect(m.shown).toBe(true)
+  expect(m.text).toMatch(/BitTorrent/i)
+  expect(m.title).toMatch(/learn your IP/i)
+
+  // A file: read and a bundle: hash never leave the machine, so there is
+  // nothing to disclose and claiming otherwise would be noise.
+  for (const quiet of ['file:/tmp/x.thing', 'bundle:' + 'a'.repeat(64), 'alice.eth', 'bm90IGEgYnVuZGxl']) {
+    await typeIntoIngest(quiet)
+    expect((await disclosure()).shown, `${quiet} should disclose nothing`).toBe(false)
+  }
+})
+
+test('the disclosure goes away once the box is empty', async () => {
+  await typeIntoIngest('https://files.example.com/x.thing')
+  expect((await disclosure()).shown).toBe(true)
+  await typeIntoIngest('')
+  expect((await disclosure()).shown).toBe(false)
+})
