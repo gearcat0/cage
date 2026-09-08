@@ -18,7 +18,13 @@ import {
 } from './library/index.js'
 import { STARTERS, starterByKey, starterBytes } from './starters/index.js'
 import { mountThing, type MountedThing } from './mount/index.js'
-import { TransportService, FileTransport, SeedTransport, WebtorrentTransport } from './transport/index.js'
+import {
+  TransportService,
+  FileTransport,
+  HttpTransport,
+  SeedTransport,
+  WebtorrentTransport
+} from './transport/index.js'
 import { SeedService } from './seed/index.js'
 import { NamingService, DirectResolver, EnsResolver, NostrResolver, type EnsClient } from './naming/index.js'
 import { createMockEnsClient } from './naming/mock-ens.js'
@@ -435,6 +441,7 @@ app.whenReady().then(async () => {
   }
   const transport = new TransportService(fetchLimits)
     .register(new FileTransport())
+    .register(new HttpTransport())
     .register(new SeedTransport(seedStore))
     .register(new WebtorrentTransport())
 
