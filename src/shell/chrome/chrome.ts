@@ -184,7 +184,7 @@ app.append(topbar, feedPane, main)
 // ── Omnibar ──────────────────────────────────────────────────────────────────
 const identityEl = el('span', 'evm-address evm-address--muted', 'loading…')
 const ingestInput = el('input', 'evm-input evm-input--mono') as HTMLInputElement
-ingestInput.placeholder = 'paste a base64 bundle, or a locator (https:/magnet:/bundle:/file:)…'
+ingestInput.placeholder = 'paste a base64 bundle, or https:/magnet:/bundle:/file:/a name'
 ingestInput.setAttribute('aria-label', 'paste bundle or locator')
 const ingestBtn = el('button', 'evm-btn evm-btn--primary evm-btn--sm', 'Ingest') as HTMLButtonElement
 const fileBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', 'Open file…') as HTMLButtonElement
@@ -194,12 +194,80 @@ const fileInput = el('input') as HTMLInputElement
 fileInput.type = 'file'
 fileInput.style.display = 'none'
 const toast = el('span', 'sh-toast')
+
+// ── What a fetch discloses ───────────────────────────────────────────────────
+// Most locators stay on this machine: a file: is a local read, a bundle: hash
+// comes out of the seed store. Two do not. Fetching a URL tells that host your
+// IP address, and a magnet contacts the swarm, where peers learn it. Seeding
+// says this plainly before its toggle; this is the same statement on the
+// receiving side, at the moment the human can still change their mind.
+//
+// It lives IN the topbar row rather than under the input on purpose. The cage
+// is a native view composited ABOVE the chrome, so anything drawn into the
+// content area is hidden behind it, and making the topbar taller would mean
+// moving TOP_BAR (main.ts) — which sets the cage's own offset — on every
+// keystroke.
+const fetchWarn = el('span', 'evm-badge evm-badge--warning sh-fetchwarn')
+fetchWarn.setAttribute('data-testid', 'ingest-disclosure')
+fetchWarn.style.display = 'none'
+
+/** What this locator would reveal, or null when it never leaves the machine. */
+function fetchDisclosure(input: string): { short: string; full: string } | null {
+  const text = input.trim()
+  if (/^magnet:/i.test(text)) {
+    return {
+      short: '⚠ contacts the BitTorrent network',
+      full:
+        'Fetching this contacts the BitTorrent network: the peers serving it learn your IP address. ' +
+        'What arrives is still verified by admission — but who you asked is not private.'
+    }
+  }
+  if (!/^https?:/i.test(text)) return null
+  let host: string
+  try {
+    host = new URL(text).host
+  } catch {
+    return null // not a URL yet — say nothing until it is
+  }
+  if (!host) return null
+  return {
+    short: `⚠ tells ${host} your IP`,
+    full:
+      `Fetching this tells ${host} your IP address. ` +
+      'And a URL is not content-addressed: it names a place, so you get whatever is served there. ' +
+      'Admission proves what arrives is a validly signed thing — not that it is the thing you asked for.'
+  }
+}
+
+function updateFetchDisclosure(): void {
+  const d = fetchDisclosure(ingestInput.value)
+  if (!d) {
+    fetchWarn.style.display = 'none'
+    fetchWarn.textContent = ''
+    fetchWarn.removeAttribute('title')
+    return
+  }
+  fetchWarn.style.display = ''
+  fetchWarn.textContent = d.short
+  fetchWarn.title = d.full
+}
 const keyWarn = el('button', 'evm-badge evm-badge--warning sh-keywarn') as HTMLButtonElement
 keyWarn.style.display = 'none'
-topbar.append(
+// Two rows, so the Ingest box can be long enough to READ its own hint.
+//
+// It is the only control in here whose text has to be read rather than
+// recognised -- it is the answer to "what can I paste?" -- and in one row it
+// could not be. The hint needs ~550px; the row is 640 CSS px on Linux (the
+// chrome runs at SHELL_SCALE=2, so a 1280px window is 640 here) and the other
+// controls take ~390px of it. Widening the input inside one row pushed Ingest,
+// Open file… and the identity clean off the screen, which is a worse answer
+// than a clipped hint. So the input gets a row to itself, with the controls
+// that are recognisable at a glance moved below it.
+const topRow = el('div', 'sh-topbar-row')
+const bottomRow = el('div', 'sh-topbar-row')
+topRow.append(ingestInput, fetchWarn, ingestBtn)
+bottomRow.append(
   newBtn,
-  ingestInput,
-  ingestBtn,
   fileBtn,
   fileInput,
   toast,
@@ -208,6 +276,7 @@ topbar.append(
   el('span', 'sh-id-label', 'you:'),
   identityEl
 )
+topbar.append(topRow, bottomRow)
 
 function showToast(o: Outcome): void {
   const tone =
@@ -231,7 +300,12 @@ function showToast(o: Outcome): void {
 // A locator (https:/magnet:/bundle:/file:/thing:) or a name (alice.eth, user@host) is
 // fetched (naming/transport → admission); anything else is a pasted base64
 // bundle ingested directly.
-const FETCHABLE_RE = /^(magnet|bundle|file|thing):|^[a-z0-9-]+(\.[a-z0-9-]+)+$|^[^@\s]+@[^@\s]+$/i
+//
+// This regex is the ONLY thing choosing fetch over ingest, which is how http(s)
+// shipped unreachable from here: the transport existed and its tests passed,
+// but they all called fetchLocator directly, so nothing exercised this line and
+// a pasted URL was quietly treated as base64.
+const FETCHABLE_RE = /^(https?|magnet|bundle|file|thing):|^[a-z0-9-]+(\.[a-z0-9-]+)+$|^[^@\s]+@[^@\s]+$/i
 
 async function doIngest(input: string): Promise<void> {
   const text = input.trim()
@@ -239,9 +313,11 @@ async function doIngest(input: string): Promise<void> {
   const outcome = FETCHABLE_RE.test(text) ? await shell.fetch(text) : await shell.ingest(text)
   showToast(outcome)
   ingestInput.value = ''
+  updateFetchDisclosure() // the box is empty now; the warning must go with it
   await refreshFeed()
 }
 ingestBtn.addEventListener('click', () => void doIngest(ingestInput.value))
+ingestInput.addEventListener('input', updateFetchDisclosure)
 ingestInput.addEventListener('keydown', (e) => {
   if ((e as KeyboardEvent).key === 'Enter') void doIngest(ingestInput.value)
 })

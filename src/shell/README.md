@@ -76,8 +76,23 @@ The honest limit, and the reason the chrome shows an author: a URL is **not
 content-addressed**. `bundle:<sha256>` names the bytes it wants and the service
 checks them; a URL names a *place*, and you get whatever is there. Admission
 proves what arrived is a validly signed thing — not that it is the thing you
-meant to fetch. Fetching also tells the host your IP, which is a disclosure the
-other local transports do not make.
+meant to fetch.
+
+The chrome **says so before the fetch happens**. Most locators never leave this
+machine — a `file:` is a local read, a `bundle:` hash comes out of the seed
+store — but two do, so the Ingest box shows what they cost while the human can
+still change their mind: `⚠ tells files.example.com your IP` for a URL, and
+`⚠ contacts the BitTorrent network` for a magnet, whose peers learn the same
+thing. The rest is on hover, because the topbar is one 48px row: the cage is a
+native view composited *above* the chrome, so a note drawn under the box would
+sit behind it, and a taller topbar would mean moving `TOP_BAR` — which sets the
+cage's own offset — on every keystroke.
+
+> **HTTP(S) ingest is provisional.** It is here for convenience while building
+> and is expected to go before the first release. It is deliberately a clean
+> delete: `transport/http.ts`, its `register(new HttpTransport())` line in
+> `main.ts`, `https?` in the chrome's `FETCHABLE_RE`, `test/shell/http-ingest.spec.ts`,
+> and this section. The magnet half of the disclosure should stay.
 
 **Receive:** file / paste / drag / double-click a `.thing` / locator / name →
 admission → library — the "flyer" property, transport-agnostic and
