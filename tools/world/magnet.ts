@@ -156,10 +156,41 @@ export async function runMagnet(argv: string[]): Promise<void> {
     log(`fetching on ${to.slug} (up to ${Math.round(timeoutMs / 1000)}s for peer discovery)…`)
 
     const started_at = Date.now()
-    const outcome = await hook<Record<string, unknown>>(
+    // A magnet is a TRANSFER now: this returns an id, not bytes. Poll until the
+    // download leaves the list, which it does once it has admitted -- and
+    // report what it is waiting on meanwhile, since that is the whole point of
+    // the transfer work.
+    const kickoff = await hook<Record<string, unknown>>(
       fetcher,
       `return shell.fetch(${JSON.stringify(seeded.magnet)})`
     )
+    let outcome: Record<string, unknown> = kickoff
+    if (kickoff.status === 'started') {
+      const deadline = Date.now() + timeoutMs
+      let lastState = ''
+      for (;;) {
+        const rows = await hook<{ id: string; state: string; progress: number; peersConnected: number }[]>(
+          fetcher,
+          `return shell.transfers().downloads`
+        )
+        const row = rows.find((r) => r.id === kickoff.transferId)
+        if (!row) break // gone from the list: it admitted
+        if (row.state !== lastState) {
+          lastState = row.state
+          log(`  ${row.state}${row.peersConnected > 0 ? ` (${row.peersConnected} peer(s))` : ''}`)
+        }
+        if (row.state === 'failed') break
+        if (Date.now() > deadline) break
+        await new Promise((r) => setTimeout(r, 300))
+      }
+      const held = await hook<boolean>(
+        fetcher,
+        `return shell.feed({ limit: 10000 }).some(r => r.envelopeHash === ${JSON.stringify(hash)})`
+      )
+      outcome = held
+        ? { status: 'valid' }
+        : { status: 'invalid', reason: `transfer did not complete (last state: ${lastState || 'unknown'})` }
+    }
     const took = ((Date.now() - started_at) / 1000).toFixed(1)
 
     if (outcome.status !== 'valid') {

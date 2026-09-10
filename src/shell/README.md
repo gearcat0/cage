@@ -29,9 +29,13 @@ src/shell/
 ├── mount/       admitted thing → CageResources → createCage → bridge args →
 │                view placed beneath the chrome. Reuses the cage library.
 ├── transport/   fetch bundle bytes by locator (file: / content-addressed
-│                bundle: / magnet: / https:), resource-bounded + content-untrusted
-│                — admission is the gate. webtorrent wired behind the interface
-│                (lazy import); admitted bundles are retained in a seed store.
+│                bundle: / https:), resource-bounded + content-untrusted —
+│                admission is the gate. Magnets do NOT live here: they are
+│                transfers, not fetches (see torrent/).
+├── torrent/     ONE long-lived webtorrent client for both directions —
+│                downloads in flight and things being served. Downloads report
+│                progress, can be cancelled, survive a restart, and say what
+│                they are waiting for.
 ├── naming/      name → author key (identity) + name → locator (discovery). A
 │                name is shown as VERIFIED only when it provably maps to the
 │                thing's signature-proven author key. ENS via an injected
@@ -128,6 +132,29 @@ image survives both opening something else and quitting the app — and a progra
 can re-declare it as `{carry: true}` instead of re-shipping the bytes. The
 garbage collector counts draft references as holders: bytes are released only
 when the last draft *and* thing that referenced them is gone.
+
+**Transfers.** A magnet cannot be a `Transport`: `fetch()` is `Promise<bytes>`,
+which cannot express progress, cancellation, or work that outlives the request.
+So a magnet starts a **transfer** — it runs in the background, several at a
+time, and Ingest returns an id rather than blocking. `file:`, `bundle:` and
+`https:` stay ordinary fetches, and keep their timeout; a magnet has **no
+overall timeout**, because a hard cap is simply wrong for something large. A
+stalled transfer is *reported*, not killed.
+
+The `transfers` table records the **intent** to download, exactly as `seeding`
+records the intent to share — so quitting costs the verify pass, not the
+transfer. Partial data lives in `<userData>/downloads/<infohash>/` rather than
+webtorrent's default `/tmp/webtorrent`, which is cleared on reboot and shared
+between profiles (that sharing once made one instance "resume" another's data
+mid-debugging).
+
+`File → Transfers…` shows both directions, live. It exists because *"fetch timed
+out"* was the app's answer to two different problems: a swarm with nobody in it,
+and a swarm whose only peer will not answer. It now says which — comparing peers
+**discovered** against peers **connected**, and naming the likely cause
+(*"found 2 peers, none have accepted a connection — they may be behind NAT
+without port forwarding, or no longer running"*). An oversize torrent is refused
+when its metadata names a size, not after downloading it.
 
 **Petnames** are the one name nobody else can influence. A thing may claim any
 name for its author, and an ENS name may even be *proven* to map to the key —

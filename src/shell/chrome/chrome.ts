@@ -53,6 +53,9 @@ interface ShellApi {
   setPetname(p: { scheme: string; key: string; name: string; note?: string }): Promise<{ ok: boolean }>
   onOpenPeople(cb: () => void): void
   attestations(targetHash: string): Promise<{ count: number; rows: (ThingRow & { hops: number | null })[]; fromTribe: number }>
+  transfers(): Promise<TransferState>
+  cancelTransfer(id: string): Promise<{ cancelled: boolean }>
+  onTransfers(cb: (s: TransferState) => void): void
   cosign(envelopeHash: string): Promise<{ status?: string; reason?: string; id?: number }>
   document(manifestHash: string): Promise<DocumentFacts>
   newVouch(scheme: string, key: string): Promise<{ id?: string; error?: string }>
@@ -159,6 +162,8 @@ type Outcome =
   | { status: 'invalid'; reason: string }
   | { status: 'unverifiable'; scheme: string }
   | { status: 'not-for-me' }
+  // A magnet does not resolve here: it STARTS something that may run for hours.
+  | { status: 'started'; transferId: string; infoHash: string }
 
 const shell = (window as unknown as { shell: ShellApi }).shell
 
@@ -311,6 +316,15 @@ async function doIngest(input: string): Promise<void> {
   const text = input.trim()
   if (!text) return
   const outcome = FETCHABLE_RE.test(text) ? await shell.fetch(text) : await shell.ingest(text)
+  // A magnet does not finish here — it starts a transfer that may run for
+  // hours. Open the window on it rather than leaving a toast to imply the work
+  // is done, or that nothing happened.
+  if (outcome.status === 'started' && typeof outcome.transferId === 'string') {
+    openTransfersModal(outcome.transferId)
+    ingestInput.value = ''
+    updateFetchDisclosure()
+    return
+  }
   showToast(outcome)
   ingestInput.value = ''
   updateFetchDisclosure() // the box is empty now; the warning must go with it
@@ -943,6 +957,27 @@ function authorLabel(row: { authorScheme: string; authorKey: string; petname?: s
   return { text: addr, title: full, named: false }
 }
 
+export interface DownloadRow {
+  id: string
+  magnet: string
+  infoHash: string
+  name: string
+  state: string
+  bytes: number
+  downloaded: number
+  progress: number
+  downloadSpeed: number
+  peersConnected: number
+  peersDiscovered: number
+  silentSources: string[]
+  error: string | null
+  startedAt: number
+}
+export interface TransferState {
+  downloads: DownloadRow[]
+  sharing: { envelopeHash: string; magnet: string; peers: number; bytes: number; type?: string }[]
+}
+
 export interface DocumentFacts {
   cosignable: boolean
   signedCount: number
@@ -1298,66 +1333,203 @@ function openShareModal(envelopeHash: string, type: string): void {
   document.body.append(trackOverlay(overlay))
 }
 
-/** Everything this shell is currently announcing to the network, in one place.
+
+// ── Transfers ────────────────────────────────────────────────────────────────
+// Downloads in flight and things being served, in one window, because they are
+// one question: what is this shell doing on the network right now.
+
+const bytesLabel = (n: number): string => {
+  if (!Number.isFinite(n) || n <= 0) return '0 B'
+  const u = ['B', 'KB', 'MB', 'GB']
+  let i = 0
+  let v = n
+  while (v >= 1024 && i < u.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${u[i]}`
+}
+
+const etaLabel = (row: DownloadRow): string => {
+  if (row.downloadSpeed <= 0 || row.bytes <= 0) return ''
+  const left = row.bytes - row.downloaded
+  if (left <= 0) return ''
+  const secs = Math.round(left / row.downloadSpeed)
+  if (secs < 60) return `${secs}s left`
+  if (secs < 3600) return `${Math.round(secs / 60)}m left`
+  return `${(secs / 3600).toFixed(1)}h left`
+}
+
+/** What is happening, and when it is going badly, WHY.
  *
- *  The convenience — stop one, copy its link — matters less than the question
- *  it answers: what am I exposing right now? That should be answerable without
- *  opening each thing in turn. */
-function openSharingModal(): void {
+ *  The distinction this whole window exists for: a swarm with nobody in it and
+ *  a swarm whose only peer will not answer are different problems, and the app
+ *  used to report both as "timed out". */
+function downloadDiagnosis(row: DownloadRow): string {
+  switch (row.state) {
+    case 'starting':
+      return 'Starting…'
+    case 'finding-peers': {
+      const silent = row.silentSources.length > 0 ? ` Nothing found yet via ${row.silentSources.join(', ')}.` : ''
+      return `Looking for peers.${silent}`
+    }
+    case 'peers-unreachable':
+      return (
+        `Found ${row.peersDiscovered} ${row.peersDiscovered === 1 ? 'peer' : 'peers'}, but ` +
+        `${row.peersDiscovered === 1 ? 'it has not' : 'none have'} accepted a connection. ` +
+        'They may be behind NAT without port forwarding, or no longer running.'
+      )
+    case 'stalled':
+      return `Connected to ${row.peersConnected} ${row.peersConnected === 1 ? 'peer' : 'peers'}, but nothing is arriving.`
+    case 'downloading':
+      return `${bytesLabel(row.downloadSpeed)}/s from ${row.peersConnected} of ${row.peersDiscovered} known ${row.peersDiscovered === 1 ? 'peer' : 'peers'}.`
+    case 'verifying':
+      return 'Downloaded. Reading it back…'
+    case 'admitting':
+      return 'Checking the signature and hashes…'
+    case 'failed':
+      return row.error ?? 'Failed.'
+    default:
+      return row.state
+  }
+}
+
+function downloadRow(row: DownloadRow, expanded: boolean): HTMLElement {
+  const wrap = el('div', expanded ? 'sh-transfer sh-transfer--open' : 'sh-transfer')
+  wrap.setAttribute('data-testid', 'download-row')
+  wrap.setAttribute('data-id', row.id)
+  wrap.setAttribute('data-state', row.state)
+
+  const head = el('div', 'sh-transfer-head')
+  head.append(
+    el('span', 'sh-transfer-name', row.name || row.infoHash.slice(0, 12)),
+    el('span', 'evm-badge evm-badge--neutral sh-transfer-state', row.state)
+  )
+  const cancel = el('button', 'evm-btn evm-btn--ghost evm-btn--sm', 'Cancel')
+  cancel.setAttribute('data-testid', 'download-cancel')
+  cancel.addEventListener('click', () => void shell.cancelTransfer(row.id))
+  head.append(el('span', 'sh-spacer'), cancel)
+  wrap.append(head)
+
+  // A bar only where there is something to measure: before metadata arrives the
+  // size is unknown, and a bar at 0% would imply progress that is not happening.
+  if (row.bytes > 0) {
+    const bar = el('div', 'sh-progress')
+    const fill = el('div', 'sh-progress-fill')
+    fill.style.width = `${Math.round(row.progress * 100)}%`
+    bar.setAttribute('data-percent', String(Math.round(row.progress * 100)))
+    bar.append(fill)
+    wrap.append(bar)
+    wrap.append(
+      el(
+        'div',
+        'sh-transfer-meta',
+        `${bytesLabel(row.downloaded)} of ${bytesLabel(row.bytes)}` +
+          (etaLabel(row) ? ` · ${etaLabel(row)}` : '')
+      )
+    )
+  }
+
+  const why = el('div', 'sh-transfer-why', downloadDiagnosis(row))
+  why.setAttribute('data-testid', 'download-diagnosis')
+  wrap.append(why)
+  if (expanded) wrap.append(copyField('magnet link', row.magnet, `download-magnet-${row.id.slice(0, 8)}`))
+  return wrap
+}
+
+/** Everything this shell is doing on the network: what it is fetching, and
+ *  what it is serving. One window, because it is one question -- and because
+ *  the honest answer to "what am I exposing right now" should not be in two
+ *  places.
+ *
+ *  Live: main pushes while anything is in flight, so a long transfer is watched
+ *  rather than sampled. Closing this does NOT cancel anything. */
+function openTransfersModal(focusId?: string): void {
   const overlay = el('div', 'evm-modal-overlay')
-  const modal = el('div', 'evm-modal sh-sharing')
-  modal.setAttribute('data-testid', 'sharing-modal')
+  const modal = el('div', 'evm-modal sh-transfers')
+  modal.setAttribute('data-testid', 'transfers-modal')
   const header = el('div', 'evm-modal-header')
-  header.append(el('span', 'evm-modal-title', 'Sharing'))
+  header.append(el('span', 'evm-modal-title', 'Transfers'))
   const body = el('div', 'evm-modal-body')
-  const list = el('div', 'sh-sharing-list')
-  list.setAttribute('data-testid', 'sharing-list')
+
+  const downloads = el('div')
+  downloads.setAttribute('data-testid', 'downloads-list')
+  const sharing = el('div', 'sh-sharing-list')
+  sharing.setAttribute('data-testid', 'sharing-list')
+
   body.append(
-    el('p', 'sh-hint', 'Things this shell is serving to peers. Each one announces to the BitTorrent DHT while it runs — anyone with the link learns the address serving it.'),
-    list
+    el('h3', 'sh-transfers-h', 'Downloads'),
+    el(
+      'p',
+      'sh-hint',
+      'Fetching runs in the background — closing this window does not stop it, and a transfer resumes if you quit and come back.'
+    ),
+    downloads,
+    el('h3', 'sh-transfers-h', 'Sharing'),
+    el(
+      'p',
+      'sh-hint',
+      'Things this shell is serving to peers. Each one announces to the BitTorrent DHT while it runs — anyone with the link learns the address serving it.'
+    ),
+    sharing
   )
 
-  const paint = async (): Promise<void> => {
-    const rows = await shell.seedStatus().catch(() => [])
-    list.replaceChildren()
-    list.setAttribute('data-count', String(rows.length))
-    if (rows.length === 0) {
+  const paint = (state: TransferState): void => {
+    downloads.replaceChildren()
+    downloads.setAttribute('data-count', String(state.downloads.length))
+    if (state.downloads.length === 0) {
+      const none = el('p', 'sh-hint', 'Nothing is being fetched.')
+      none.setAttribute('data-testid', 'downloads-empty')
+      downloads.append(none)
+    } else {
+      // The one just started is shown open, with its magnet and full detail.
+      for (const row of state.downloads) downloads.append(downloadRow(row, row.id === focusId))
+    }
+
+    sharing.replaceChildren()
+    sharing.setAttribute('data-count', String(state.sharing.length))
+    if (state.sharing.length === 0) {
       const none = el('p', 'sh-hint', 'Nothing is being shared.')
       none.setAttribute('data-testid', 'sharing-empty')
-      list.append(none)
+      sharing.append(none)
       return
     }
-    for (const r of rows) {
+    for (const r of state.sharing) {
       const row = el('div', 'sh-sharing-row')
       row.setAttribute('data-envelope-hash', r.envelopeHash)
       const head = el('div', 'sh-sharing-head')
-      head.append(el('span', 'evm-badge evm-badge--neutral', r.type))
+      head.append(el('span', 'evm-badge evm-badge--neutral', r.type ?? 'thing'))
       head.append(el('span', 'sh-hash evm-address evm-address--muted', short(r.envelopeHash, 8)))
       // Peers is the honest measure of whether sharing is doing anything.
       head.append(el('span', 'sh-hint', r.peers === 1 ? '1 peer' : `${r.peers} peers`))
       const stop = el('button', 'evm-btn evm-btn--ghost evm-btn--sm', 'Stop')
       stop.setAttribute('data-testid', 'sharing-stop')
-      stop.addEventListener('click', async () => {
-        await shell.seedStop(r.envelopeHash)
-        await paint()
-      })
+      stop.addEventListener('click', () => void shell.seedStop(r.envelopeHash))
       head.append(stop)
       row.append(head, copyField('magnet link', r.magnet, `sharing-magnet-${r.envelopeHash.slice(0, 8)}`))
-      list.append(row)
+      sharing.append(row)
     }
   }
 
+  transfersPainter = paint
   const footer = el('div', 'evm-modal-footer')
   const close = el('button', 'evm-btn evm-btn--ghost', 'Close')
-  close.setAttribute('data-testid', 'sharing-close')
+  close.setAttribute('data-testid', 'transfers-close')
   close.addEventListener('click', () => overlay.remove())
   footer.append(close)
 
   modal.append(header, body, footer)
   overlay.append(modal)
-  document.body.append(trackOverlay(overlay))
-  void paint()
+  document.body.append(
+    trackOverlay(overlay, () => {
+      transfersPainter = null
+    })
+  )
+  void shell.transfers().then(paint).catch(() => undefined)
 }
+
+/** Set while the Transfers window is open, so pushes land somewhere. */
+let transfersPainter: ((s: TransferState) => void) | null = null
 
 /** Name a key, or change/clear the name you gave it.
  *
@@ -2084,7 +2256,16 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 // Test hook: let the N6 pixel test drive a real open (renders the trust header)
 // without simulating a click. Harmless in the trusted chrome.
-;(window as unknown as { __shellChrome: unknown }).__shellChrome = { openThing, openPeople: openPeopleModal }
+;(window as unknown as { __shellChrome: unknown }).__shellChrome = {
+  openThing,
+  openPeople: openPeopleModal,
+  openTransfers: openTransfersModal,
+  /** TEST: push a state into the open Transfers window. The states worth
+   *  reading are the ones a hermetic test cannot produce -- a peer that is
+   *  discovered but will not answer needs a real unreachable peer -- and the
+   *  wording for exactly that case is the point of the window. */
+  paintTransfers: (state: TransferState) => transfersPainter?.(state)
+}
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 shell.onFeedChanged(() => {
@@ -2133,7 +2314,9 @@ shell.onPublishResult((o) => {
     if (o.draftConsumed === true && typeof o.envelopeHash === 'string') void openThing(o.envelopeHash)
   } else showText(`Publish failed: ${String(o.reason ?? o.status)}`, 'danger')
 })
-shell.onOpenSharing(() => openSharingModal())
+shell.onOpenSharing(() => openTransfersModal())
+// Pushed while anything is in flight; ignored when the window is closed.
+shell.onTransfers((state) => transfersPainter?.(state))
 shell.onOpenPeople(() => openPeopleModal())
 shell.onOpenAccount(() => void openAccountModal()) // File → Account & Keys…
 // A .thing double-clicked in the file manager: say what became of it, using

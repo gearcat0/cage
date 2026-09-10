@@ -112,4 +112,3 @@ function withTimeout<T>(p: Promise<T>, ms: number, locator: string): Promise<T> 
 export { FileTransport } from './file.js'
 export { HttpTransport } from './http.js'
 export { SeedTransport } from './local.js'
-export { WebtorrentTransport } from './webtorrent.js'

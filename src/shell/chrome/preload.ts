@@ -7,6 +7,27 @@ import { contextBridge, ipcRenderer } from 'electron'
 // dialogs; every trust signal and every human-confirmation decision lives here,
 // in pixels the thing cannot reach.
 
+export interface DownloadRow {
+  id: string
+  magnet: string
+  infoHash: string
+  name: string
+  state: string
+  bytes: number
+  downloaded: number
+  progress: number
+  downloadSpeed: number
+  peersConnected: number
+  peersDiscovered: number
+  silentSources: string[]
+  error: string | null
+  startedAt: number
+}
+export interface TransferState {
+  downloads: DownloadRow[]
+  sharing: { envelopeHash: string; magnet: string; peers: number; bytes: number; type?: string }[]
+}
+
 const shell = {
   identity: (): Promise<{ address: string; nostrPubkey: string; keyStorage: 'os' | 'software' }> =>
     ipcRenderer.invoke('shell:identity'),
@@ -82,6 +103,14 @@ const shell = {
    *  served right now (live peer counts). */
   onOpenSharing: (cb: () => void): void => {
     ipcRenderer.on('shell:open-sharing', () => cb())
+  },
+  /** Everything this shell is doing on the network: what it is fetching, and
+   *  what it is serving. Pushed while anything is in flight, so a long transfer
+   *  is watched rather than sampled. */
+  transfers: (): Promise<TransferState> => ipcRenderer.invoke('shell:transfers'),
+  cancelTransfer: (id: string): Promise<{ cancelled: boolean }> => ipcRenderer.invoke('shell:transfer-cancel', id),
+  onTransfers: (cb: (s: TransferState) => void): void => {
+    ipcRenderer.on('shell:transfers', (_e, s: TransferState) => cb(s))
   },
   seedStart: (envelopeHash: string): Promise<{ magnet?: string; error?: string }> =>
     ipcRenderer.invoke('shell:seed-start', envelopeHash),

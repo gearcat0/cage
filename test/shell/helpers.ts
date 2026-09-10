@@ -230,6 +230,9 @@ export interface ShellHandle {
   attestations(
     targetHash: string
   ): Promise<{ count: number; rows: { envelopeHash: string; authorKey: string; hops: number | null }[]; fromTribe: number }>
+  /** Transfers: downloads in flight and things being served. */
+  transfers(): Promise<{ downloads: Record<string, unknown>[]; sharing: Record<string, unknown>[] }>
+  cancelTransfer(id: string): Promise<{ cancelled: boolean }>
   /** Co-signing: add your signature to a document, and read a document's
    *  signatures. Keyed by MANIFEST hash — the document, not one signature. */
   cosign(envelopeHash: string): Promise<{ status?: string; reason?: string; id?: number }>
@@ -570,6 +573,16 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
         ).__shell
         return s.attestations(h) as never
       }, targetHash),
+    transfers: () =>
+      app.evaluate(async (electron) => {
+        const s = (electron.app as unknown as { __shell: { transfers: () => unknown } }).__shell
+        return s.transfers() as never
+      }),
+    cancelTransfer: (id: string) =>
+      app.evaluate(async (electron, x) => {
+        const s = (electron.app as unknown as { __shell: { cancelTransfer: (i: string) => unknown } }).__shell
+        return s.cancelTransfer(x) as never
+      }, id),
     cosign: (envelopeHash: string) =>
       app.evaluate(async (electron, h) => {
         const s = (

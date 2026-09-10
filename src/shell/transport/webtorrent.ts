@@ -1,13 +1,14 @@
-import { TransportError, type FetchLimits, type Transport } from './index.js'
 
-// `magnet:?xt=urn:btih:…` — BitTorrent via webtorrent, WIRED behind the
-// interface. webtorrent is a heavy WebRTC/DHT dependency and this environment
-// has no peers, so it is loaded LAZILY: a magnet locator dispatches here, and if
-// webtorrent is not installed (the default) the fetch fails with a clear,
-// actionable error rather than crashing. Enable with `pnpm add webtorrent`.
-// The live-network download/seed path is exercised manually, not in CI.
+import { TransportError } from './index.js'
+
+// webtorrent, loaded LAZILY and declared here.
 //
-// LATER: seeding admitted bundles to peers; DHT privacy hardening.
+// This file no longer implements a Transport. `Transport.fetch()` is
+// Promise<bytes>, which cannot express progress, cancellation, or a download
+// that outlives the request -- so magnets are handled by TorrentService
+// (src/shell/torrent) as long-lived TRANSFERS, and never reach the transport
+// dispatch. What remains here is the lazy loader, the shape of the library, and
+// the discovery switch.
 
 // These are OUR declarations for a module imported dynamically, which means
 // they are an assertion, not a check: if webtorrent's API moves, tsc keeps
@@ -19,10 +20,6 @@ interface WebTorrentFile {
   length: number
   arrayBuffer(): Promise<ArrayBuffer>
 }
-interface WebTorrentInstance {
-  length: number
-  files: WebTorrentFile[]
-}
 /** A seeded torrent: what the DHT is announcing, and who is connected. */
 export interface WebTorrentSeed {
   magnetURI: string
@@ -30,8 +27,38 @@ export interface WebTorrentSeed {
   length: number
   destroy(cb?: () => void): void
 }
+/** A torrent being DOWNLOADED. The getters and events below were read out of
+ *  the installed webtorrent (lib/torrent.js) rather than assumed -- see the
+ *  warning above about what these declarations are worth.
+ *
+ *  `numPeers` counts connected wires. `_peersLength` counts peers DISCOVERED,
+ *  connected or not, and is the difference between "nobody is sharing this" and
+ *  "found peers, none would talk" -- the distinction the app could not make when
+ *  a stale NAT-bound announcement produced a bare "timed out". It is internal
+ *  API (underscore), so it is read defensively and may go away. */
+export interface WebTorrentDownload {
+  infoHash: string
+  name?: string
+  length: number
+  downloaded: number
+  progress: number
+  downloadSpeed: number
+  uploadSpeed: number
+  timeRemaining: number
+  numPeers: number
+  /** Internal; may be absent on a future webtorrent. */
+  _peersLength?: number
+  files: WebTorrentFile[]
+  destroy(cb?: () => void): void
+  on(event: 'metadata' | 'ready' | 'done', cb: () => void): void
+  on(event: 'error' | 'warning', cb: (err: unknown) => void): void
+  /** Fires per DISCOVERY SOURCE ('dht' | 'tracker' | 'lsd') that came back with
+   *  nothing, rechecked every 30s. Which source is silent is worth saying. */
+  on(event: 'noPeers', cb: (source: string) => void): void
+}
+
 export interface WebTorrentClient {
-  add(locator: string, cb: (torrent: WebTorrentInstance) => void): void
+  add(locator: string, opts: { path?: string }, cb: (torrent: WebTorrentDownload) => void): WebTorrentDownload
   seed(input: Uint8Array | Buffer, opts: { name: string }, cb: (torrent: WebTorrentSeed) => void): void
   on(event: 'error', cb: (err: unknown) => void): void
   destroy(cb?: () => void): void
@@ -88,64 +115,5 @@ export async function loadWebTorrent(): Promise<WebTorrentCtor> {
     throw new TransportError(
       `webtorrent could not be loaded — ${why}. If it is not installed, run \`pnpm add webtorrent\`.`
     )
-  }
-}
-
-export class WebtorrentTransport implements Transport {
-  supports(locator: string): boolean {
-    return locator.startsWith('magnet:')
-  }
-
-  async fetch(locator: string, limits: FetchLimits): Promise<Uint8Array> {
-    const WebTorrent = await loadWebTorrent()
-    return new Promise<Uint8Array>((resolve, reject) => {
-      const client = new WebTorrent(torrentDiscoveryOptions())
-      let settled = false
-      const cleanup = (): void => {
-        clearTimeout(timer)
-        try {
-          client.destroy()
-        } catch {
-          /* already gone */
-        }
-      }
-      const fail = (msg: string): void => {
-        if (settled) return
-        settled = true
-        cleanup()
-        reject(new TransportError(msg))
-      }
-      const done = (bytes: Uint8Array): void => {
-        if (settled) return
-        settled = true
-        cleanup()
-        resolve(bytes)
-      }
-      const timer = setTimeout(() => fail('magnet fetch timed out'), limits.timeoutMs)
-
-      client.on('error', (e) => fail(`webtorrent: ${String(e)}`))
-      // The callback body is wrapped because a THROW in here has nowhere to
-      // go: webtorrent does not catch it, the promise never settles, and the
-      // only symptom is the outer timeout -- which says "timed out" and reads
-      // as "no peers", even when the peers connected and the data arrived.
-      // That is exactly how the getBuffer/arrayBuffer drift below stayed
-      // hidden. A throw must fail the fetch with its own message.
-      client.add(locator, (torrent) => {
-        try {
-          // Bound the download by total size before pulling bytes.
-          if (torrent.length > limits.maxBytes) return fail('torrent exceeds maxBytes')
-          const file = torrent.files[0]
-          if (!file) return fail('empty torrent')
-          // webtorrent 3.x exposes arrayBuffer(); the callback-style
-          // getBuffer() it replaced no longer exists.
-          file
-            .arrayBuffer()
-            .then((buf) => done(new Uint8Array(buf)))
-            .catch((e: unknown) => fail(`webtorrent read: ${String(e)}`))
-        } catch (e) {
-          fail(`webtorrent: ${(e as Error).message}`)
-        }
-      })
-    })
   }
 }
