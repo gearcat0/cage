@@ -1,0 +1,727 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>invoice</title>
+<style>
+  :root {
+    --ink: #14171a; --muted: #5b6570; --line: #d8dee4; --paper: #ffffff;
+    --accent: #1f4e79; --bg: #eef1f4;
+  }
+  body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--ink); padding: 20px; }
+  .sheet { background: var(--paper); max-width: 52em; margin: 0 auto; padding: 34px 38px;
+           box-shadow: 0 1px 3px rgba(0,0,0,.18); }
+
+  .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; }
+  .brand { display: flex; gap: 14px; align-items: flex-start; min-width: 0; }
+  .logo { max-width: 150px; max-height: 74px; object-fit: contain; }
+  .seller-name { font-size: 17px; font-weight: 700; }
+  .doc { text-align: right; white-space: nowrap; }
+  .doc h1 { margin: 0 0 6px; font-size: 30px; letter-spacing: .12em; color: var(--accent); font-weight: 600; }
+  .doc .num { font-family: ui-monospace, Menlo, monospace; font-size: 15px; }
+  .paid-stamp { display: inline-block; margin-top: 8px; border: 2px solid #1a7f4b; color: #1a7f4b;
+                padding: 2px 10px; border-radius: 3px; font-weight: 700; letter-spacing: .1em; }
+  .paid-stamp.part { border-color: #a86b00; color: #a86b00; }
+  .paid-stamp.over { border-color: #a02020; color: #a02020; }
+
+  .meta { margin-top: 4px; font-size: 13px; color: var(--muted); }
+  .meta div { margin-top: 2px; }
+
+  .parties { display: flex; gap: 26px; margin-top: 26px; flex-wrap: wrap; }
+  .party { flex: 1 1 14em; min-width: 13em; }
+  .party h2 { margin: 0 0 5px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  .party .who { font-weight: 600; }
+  .party .l { white-space: pre-wrap; }
+  .party .tax { margin-top: 3px; font-size: 13px; color: var(--muted); }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 24px; }
+  th { text-align: left; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+       color: var(--muted); border-bottom: 2px solid var(--line); padding: 0 8px 6px; }
+  td { padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .num-col { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .desc .d2 { color: var(--muted); font-size: 13px; margin-top: 2px; white-space: pre-wrap; }
+
+  .totals { margin-top: 18px; margin-left: auto; width: 22em; }
+  .totals .row { display: flex; justify-content: space-between; padding: 4px 0; }
+  .totals .row.grand { border-top: 2px solid var(--line); margin-top: 6px; padding-top: 8px;
+                       font-size: 17px; font-weight: 700; }
+  .totals .row.due { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 6px; font-weight: 700; }
+  .totals .k { color: var(--muted); }
+  .totals .v { font-variant-numeric: tabular-nums; }
+
+  .foot { margin-top: 28px; display: flex; gap: 26px; flex-wrap: wrap; }
+  .foot section { flex: 1 1 16em; min-width: 14em; }
+  .foot h2 { margin: 0 0 5px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  .foot p { margin: 0; white-space: pre-wrap; }
+  .note { margin-top: 22px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 10px; }
+  .empty { color: #93a0ad; font-style: italic; }
+
+  /* ── edit ─────────────────────────────────────────────────────────────── */
+  .e h2 { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
+          margin: 22px 0 8px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+  .e h2:first-child { margin-top: 0; }
+  label { display: block; font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+          color: var(--muted); margin-bottom: 3px; }
+  input, textarea, select { font: inherit; width: 100%; box-sizing: border-box; background: #fff;
+                            color: var(--ink); border: 1px solid #b9c2cc; border-radius: 3px; padding: 6px 8px; }
+  textarea { min-height: 4em; resize: vertical; }
+  .grid { display: grid; gap: 10px; }
+  .g2 { grid-template-columns: 1fr 1fr; }
+  .g3 { grid-template-columns: 1fr 1fr 1fr; }
+  .g4 { grid-template-columns: 2fr 1fr 1fr 1fr; }
+  .line-row { display: grid; grid-template-columns: 3fr 1fr 1fr 1.2fr 1fr auto; gap: 6px;
+              align-items: start; margin-bottom: 6px; }
+  button { font: inherit; background: #f2f5f8; border: 1px solid #b9c2cc; border-radius: 3px;
+           padding: 5px 10px; cursor: pointer; }
+  button:hover { background: #e6ebf0; }
+  .danger { color: #a02020; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .warn { color: #a02020; font-size: 12px; margin-top: 4px; }
+  .thumb { max-height: 60px; max-width: 150px; display: block; margin-bottom: 6px; }
+</style>
+</head>
+<body>
+  <div class="sheet" id="app"></div>
+  <script>
+    'use strict';
+    // An invoice: a demand for payment, signed by whoever is demanding it.
+    //
+    // That signature is the whole reason this is worth being a thing. Anyone can
+    // email a PDF claiming to be a company; a signed invoice is bound to a key,
+    // and the shell shows that key next to it. What the signature does NOT prove
+    // is that the amounts are right, that the goods arrived, or that the buyer
+    // agreed — it proves who is asking. The seller's claims are rendered as the
+    // seller's claims.
+    //
+    // ── Numbers, and why they look strange ────────────────────────────────
+    //
+    // Canonical CBOR forbids floats (format §3), so `19.99` cannot be stored and
+    // an args map containing one is REFUSED at signing time. Every number here
+    // is therefore an integer, which is also how money should have been stored
+    // in the first place:
+    //
+    //   money      minor units      1999 with minorUnits=2  ->  £19.99
+    //   quantity   thousandths      1500                    ->  1.5 hours
+    //   tax rate   basis points     2000                    ->  20%
+    //
+    // EN 16931, the European e-invoicing standard, independently requires "at
+    // most 2 fraction digits" for monetary amounts. The format's strictness and
+    // the standard agree.
+    //
+    // ── Totals are computed, never stored ─────────────────────────────────
+    //
+    // A stored total is a second claim that can disagree with the lines. This
+    // program derives every total from the line items in front of you, so the
+    // arithmetic shown is the arithmetic done. The fields follow EN 16931's
+    // shape: line nets, a VAT breakdown grouped BY RATE, then the document
+    // totals and what is actually due after anything already paid.
+
+    var a = window.bridge.getArgs() || {};
+    var args = (a && typeof a.args === 'object' && a.args !== null) ? a.args : {};
+    var atts = (a && a.attachments) || [];
+    var app = document.getElementById('app');
+
+    var viewer = (function () {
+      try { return window.bridge.viewerInfo() || {}; } catch (e) { return {}; }
+    })();
+    var LOCALE = typeof viewer.locale === 'string' && viewer.locale ? viewer.locale : 'en-GB';
+
+    var MAX_BLOB_BYTES = 8 * 1024 * 1024;
+    var LOGO = 'logo';
+
+    // ── reading untrusted args ────────────────────────────────────────────
+    function str(v) { return typeof v === 'string' ? v : ''; }
+    function int(v) { return (typeof v === 'number' && isFinite(v) && Math.floor(v) === v) ? v : 0; }
+    function arr(v) { return Array.isArray(v) ? v : []; }
+    function obj(v) { return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {}; }
+
+    function party(v) {
+      var p = obj(v);
+      return {
+        name: str(p.name), address: str(p.address), email: str(p.email), phone: str(p.phone),
+        taxId: str(p.taxId), taxLabel: str(p.taxLabel), reg: str(p.reg), country: str(p.country)
+      };
+    }
+    function partyEmpty(p) {
+      return !p.name && !p.address && !p.email && !p.phone && !p.taxId && !p.reg && !p.country;
+    }
+
+    function readLines(v) {
+      var out = [];
+      var raw = arr(v);
+      for (var i = 0; i < raw.length && out.length < 200; i++) {
+        var l = obj(raw[i]);
+        out.push({
+          description: str(l.description),
+          detail: str(l.detail),
+          quantity: int(l.quantity),      // thousandths
+          unit: str(l.unit),
+          unitPrice: int(l.unitPrice),    // minor units
+          taxRate: int(l.taxRate)         // basis points
+        });
+      }
+      return out;
+    }
+
+    var state = {
+      invoiceNumber: str(args.invoiceNumber),
+      issued: str(args.issued),
+      due: str(args.due),
+      poNumber: str(args.poNumber),
+      currency: str(args.currency) || 'GBP',
+      minorUnits: (typeof args.minorUnits === 'number' && args.minorUnits >= 0 && args.minorUnits <= 4)
+        ? int(args.minorUnits) : 2,
+      seller: party(args.seller),
+      buyer: party(args.buyer),
+      shipTo: party(args.shipTo),
+      lines: readLines(args.lines),
+      discountKind: args.discountKind === 'percent' ? 'percent' : 'amount',
+      discountValue: int(args.discountValue),   // minor units, or basis points when percent
+      shipping: int(args.shipping),
+      shippingTaxRate: int(args.shippingTaxRate),
+      amountPaid: int(args.amountPaid),
+      paymentTerms: str(args.paymentTerms),
+      paymentInstructions: str(args.paymentInstructions),
+      notes: str(args.notes),
+      terms: str(args.terms)
+    };
+
+    function hasLogo() {
+      for (var i = 0; i < atts.length; i++) if (atts[i] && atts[i].name === LOGO) return true;
+      return false;
+    }
+
+    // ── money ─────────────────────────────────────────────────────────────
+    var SCALE = Math.pow(10, state.minorUnits);
+
+    /** Minor units -> a string for a human. The float appears HERE and only
+     *  here, at the moment of display; nothing fractional is ever stored. */
+    function money(minor) {
+      var v = minor / SCALE;
+      try {
+        return new Intl.NumberFormat(LOCALE, {
+          style: 'currency', currency: state.currency,
+          minimumFractionDigits: state.minorUnits, maximumFractionDigits: state.minorUnits
+        }).format(v);
+      } catch (e) {
+        // An unknown currency code is the author's problem, not a crash.
+        return v.toFixed(state.minorUnits) + ' ' + state.currency;
+      }
+    }
+    function qty(thousandths) {
+      var v = thousandths / 1000;
+      return String(Math.round(v * 1000) / 1000);
+    }
+    function pct(bp) {
+      return String(Math.round(bp / 100 * 100) / 100) + '%';
+    }
+
+    /** Every total on this invoice, derived from the lines. */
+    function compute() {
+      var lines = [];
+      var subtotal = 0;
+      for (var i = 0; i < state.lines.length; i++) {
+        var l = state.lines[i];
+        var net = Math.round(l.quantity * l.unitPrice / 1000);
+        subtotal += net;
+        lines.push({ line: l, net: net });
+      }
+
+      // A document-level discount reduces the TAXABLE base, so it is spread
+      // across the lines pro rata rather than knocked off at the end — which
+      // would leave the tax overstated.
+      var discount = 0;
+      if (state.discountKind === 'percent') discount = Math.round(subtotal * state.discountValue / 10000);
+      else discount = Math.min(state.discountValue, subtotal);
+      if (discount < 0) discount = 0;
+
+      var taxable = subtotal - discount;
+      var groups = {};   // rate -> { rate, base, tax }
+      var allocated = 0;
+      for (var j = 0; j < lines.length; j++) {
+        var e = lines[j];
+        // The last line absorbs the rounding remainder, so the bases always sum
+        // to the taxable total rather than drifting a penny away from it.
+        var base = (j === lines.length - 1)
+          ? taxable - allocated
+          : (subtotal > 0 ? Math.round(e.net * taxable / subtotal) : 0);
+        allocated += base;
+        e.base = base;
+        var key = String(e.line.taxRate);
+        if (!groups[key]) groups[key] = { rate: e.line.taxRate, base: 0, tax: 0 };
+        groups[key].base += base;
+      }
+      var taxTotal = 0;
+      var order = [];
+      for (var k in groups) {
+        if (!Object.prototype.hasOwnProperty.call(groups, k)) continue;
+        groups[k].tax = Math.round(groups[k].base * groups[k].rate / 10000);
+        taxTotal += groups[k].tax;
+        order.push(groups[k]);
+      }
+      order.sort(function (x, y) { return x.rate - y.rate; });
+
+      var shippingTax = Math.round(state.shipping * state.shippingTaxRate / 10000);
+      var total = taxable + taxTotal + state.shipping + shippingTax;
+      var due = total - state.amountPaid;
+      return {
+        lines: lines, subtotal: subtotal, discount: discount, taxable: taxable,
+        groups: order, taxTotal: taxTotal, shippingTax: shippingTax,
+        total: total, paid: state.amountPaid, due: due
+      };
+    }
+
+    function el(tag, cls, text) {
+      var e = document.createElement(tag);
+      if (cls) e.className = cls;
+      if (text !== undefined && text !== null) e.textContent = text;
+      return e;
+    }
+
+    // ── view ──────────────────────────────────────────────────────────────
+    function partyBlock(title, p, id) {
+      var s = el('div', 'party');
+      s.id = id;
+      s.append(el('h2', '', title));
+      if (partyEmpty(p)) { s.append(el('div', 'empty', 'Not given.')); return s; }
+      if (p.name) s.append(el('div', 'who', p.name));
+      if (p.address) s.append(el('div', 'l', p.address));
+      if (p.country) s.append(el('div', 'l', p.country));
+      if (p.email) s.append(el('div', 'l', p.email));
+      if (p.phone) s.append(el('div', 'l', p.phone));
+      if (p.taxId) s.append(el('div', 'tax', (p.taxLabel || 'Tax ID') + ': ' + p.taxId));
+      if (p.reg) s.append(el('div', 'tax', p.reg));
+      return s;
+    }
+
+    function viewMode() {
+      app.replaceChildren();
+      var t = compute();
+
+      // ── header ──
+      var top = el('div', 'top');
+      var brand = el('div', 'brand');
+      if (hasLogo()) {
+        var img = el('img', 'logo');
+        img.id = 'invoice-logo';
+        img.alt = state.seller.name || 'logo';
+        var url = window.bridge.getBlob(LOGO);
+        if (url) img.src = url;
+        brand.append(img);
+      }
+      var sellerBox = el('div');
+      if (state.seller.name) sellerBox.append(el('div', 'seller-name', state.seller.name));
+      if (state.seller.address) sellerBox.append(el('div', 'l', state.seller.address));
+      brand.append(sellerBox);
+
+      var doc = el('div', 'doc');
+      var h1 = el('h1', '', 'INVOICE');
+      h1.id = 'invoice-title';
+      doc.append(h1);
+      var num = el('div', 'num', state.invoiceNumber || '—');
+      num.id = 'invoice-number';
+      doc.append(num);
+      var meta = el('div', 'meta');
+      if (state.issued) meta.append(el('div', '', 'Issued ' + state.issued));
+      if (state.due) meta.append(el('div', '', 'Due ' + state.due));
+      if (state.poNumber) meta.append(el('div', '', 'PO ' + state.poNumber));
+      doc.append(meta);
+
+      // Paid/outstanding is the seller's claim AT THE MOMENT THIS WAS SIGNED.
+      // A thing is immutable, so a payment made afterwards cannot show here --
+      // which is exactly why it says "as issued" rather than implying now.
+      if (t.paid > 0 || t.due <= 0) {
+        var cls = t.due <= 0 ? 'paid-stamp' : 'paid-stamp part';
+        if (t.due < 0) cls = 'paid-stamp over';
+        var stamp = el('div', cls, t.due <= 0 ? (t.due < 0 ? 'OVERPAID' : 'PAID') : 'PART PAID');
+        stamp.id = 'invoice-stamp';
+        doc.append(stamp);
+      }
+      top.append(brand, doc);
+      app.append(top);
+
+      // ── parties ──
+      var parties = el('div', 'parties');
+      parties.append(partyBlock('From', state.seller, 'invoice-seller'));
+      parties.append(partyBlock('Bill to', state.buyer, 'invoice-buyer'));
+      if (!partyEmpty(state.shipTo)) parties.append(partyBlock('Ship to', state.shipTo, 'invoice-shipto'));
+      app.append(parties);
+
+      // ── lines ──
+      var table = el('table');
+      table.id = 'invoice-lines';
+      table.setAttribute('data-count', String(state.lines.length));
+      var thead = el('thead');
+      var hr = el('tr');
+      ['Description', 'Qty', 'Unit', 'Unit price', 'Tax', 'Amount'].forEach(function (h, i) {
+        var th = el('th', i >= 1 ? 'num-col' : '', h);
+        hr.append(th);
+      });
+      thead.append(hr);
+      table.append(thead);
+      var tbody = el('tbody');
+      if (t.lines.length === 0) {
+        var er = el('tr');
+        var ec = el('td', 'empty', 'Nothing itemised.');
+        ec.colSpan = 6;
+        er.append(ec);
+        tbody.append(er);
+      }
+      for (var i = 0; i < t.lines.length; i++) {
+        var e = t.lines[i];
+        var tr = el('tr');
+        tr.className = 'line';
+        var d = el('td', 'desc');
+        d.append(el('div', '', e.line.description || '—'));
+        if (e.line.detail) d.append(el('div', 'd2', e.line.detail));
+        tr.append(d);
+        tr.append(el('td', 'num-col', qty(e.line.quantity)));
+        tr.append(el('td', 'num-col', e.line.unit || ''));
+        tr.append(el('td', 'num-col', money(e.line.unitPrice)));
+        tr.append(el('td', 'num-col', e.line.taxRate ? pct(e.line.taxRate) : '—'));
+        tr.append(el('td', 'num-col', money(e.net)));
+        tbody.append(tr);
+      }
+      table.append(tbody);
+      app.append(table);
+
+      // ── totals ──
+      var tot = el('div', 'totals');
+      tot.id = 'invoice-totals';
+      function row(k, v, cls) {
+        var r = el('div', 'row' + (cls ? ' ' + cls : ''));
+        r.append(el('span', 'k', k), el('span', 'v', v));
+        return r;
+      }
+      tot.append(row('Subtotal', money(t.subtotal)));
+      if (t.discount > 0) {
+        var dl = state.discountKind === 'percent' ? 'Discount (' + pct(state.discountValue) + ')' : 'Discount';
+        tot.append(row(dl, '-' + money(t.discount)));
+      }
+      for (var g = 0; g < t.groups.length; g++) {
+        var grp = t.groups[g];
+        // EN 16931 wants the breakdown BY RATE, not one lump: a reader has to be
+        // able to check each rate against its own base.
+        tot.append(row('Tax ' + pct(grp.rate) + ' on ' + money(grp.base), money(grp.tax)));
+      }
+      if (state.shipping > 0) tot.append(row('Shipping', money(state.shipping)));
+      if (t.shippingTax > 0) tot.append(row('Shipping tax ' + pct(state.shippingTaxRate), money(t.shippingTax)));
+      var grand = row('Total', money(t.total), 'grand');
+      grand.id = 'invoice-total';
+      tot.append(grand);
+      if (t.paid > 0) {
+        tot.append(row('Paid', '-' + money(t.paid)));
+        var due = row('Amount due', money(t.due), 'due');
+        due.id = 'invoice-due';
+        tot.append(due);
+      }
+      app.append(tot);
+
+      // ── payment + notes ──
+      var foot = el('div', 'foot');
+      if (state.paymentTerms || state.paymentInstructions) {
+        var pay = el('section');
+        pay.id = 'invoice-payment';
+        pay.append(el('h2', '', 'Payment'));
+        if (state.paymentTerms) pay.append(el('p', '', state.paymentTerms));
+        if (state.paymentInstructions) pay.append(el('p', '', state.paymentInstructions));
+        foot.append(pay);
+      }
+      if (state.notes) {
+        var n = el('section');
+        n.id = 'invoice-notes';
+        n.append(el('h2', '', 'Notes'), el('p', '', state.notes));
+        foot.append(n);
+      }
+      if (state.terms) {
+        var tm = el('section');
+        tm.id = 'invoice-terms';
+        tm.append(el('h2', '', 'Terms'), el('p', '', state.terms));
+        foot.append(tm);
+      }
+      if (foot.children.length > 0) app.append(foot);
+
+      var note = el('p', 'note',
+        'Signed by whoever issued it — the shell shows which key, above. That proves who is asking for this money. It does not prove the amounts are right, that anything was delivered, or that the buyer agreed.');
+      note.id = 'invoice-weight';
+      app.append(note);
+    }
+
+    // ── edit ──────────────────────────────────────────────────────────────
+    var picked = null;      // {bytes, mime} chosen this session
+    var thumbUrl = null;
+    var logoRemoved = false;
+
+    function blobsOut() {
+      var blobs = {};
+      if (picked) blobs[LOGO] = picked;
+      else if (hasLogo() && !logoRemoved) blobs[LOGO] = { carry: true };
+      return blobs;
+    }
+
+    function streamDraft() {
+      var lines = [];
+      for (var i = 0; i < state.lines.length; i++) {
+        var l = state.lines[i];
+        lines.push({
+          description: l.description, detail: l.detail, quantity: l.quantity,
+          unit: l.unit, unitPrice: l.unitPrice, taxRate: l.taxRate
+        });
+      }
+      // Whole-set replacement on EVERY emit: anything omitted here is dropped
+      // from the thing, not merged with what was there before.
+      window.bridge.emit('draft', {
+        type: 'invoice',
+        args: {
+          invoiceNumber: state.invoiceNumber, issued: state.issued, due: state.due,
+          poNumber: state.poNumber, currency: state.currency, minorUnits: state.minorUnits,
+          seller: state.seller, buyer: state.buyer, shipTo: state.shipTo,
+          lines: lines,
+          discountKind: state.discountKind, discountValue: state.discountValue,
+          shipping: state.shipping, shippingTaxRate: state.shippingTaxRate,
+          amountPaid: state.amountPaid,
+          paymentTerms: state.paymentTerms, paymentInstructions: state.paymentInstructions,
+          notes: state.notes, terms: state.terms
+        },
+        blobs: blobsOut()
+      });
+    }
+
+    /** A money input: shown in units, stored in minor units. Never round-trips
+     *  through a float that could be stored. */
+    function moneyField(id, get, set) {
+      var i = el('input');
+      i.id = id;
+      i.type = 'text';
+      i.inputMode = 'decimal';
+      i.value = get() === 0 ? '' : String(get() / SCALE);
+      i.addEventListener('input', function () {
+        var n = parseFloat(i.value.replace(/[^0-9.\-]/g, ''));
+        set(isFinite(n) ? Math.round(n * SCALE) : 0);
+        streamDraft();
+      });
+      return i;
+    }
+    function intField(id, get, set, scale, placeholder) {
+      var i = el('input');
+      i.id = id;
+      i.type = 'text';
+      i.inputMode = 'decimal';
+      if (placeholder) i.placeholder = placeholder;
+      i.value = get() === 0 ? '' : String(get() / scale);
+      i.addEventListener('input', function () {
+        var n = parseFloat(i.value.replace(/[^0-9.\-]/g, ''));
+        set(isFinite(n) ? Math.round(n * scale) : 0);
+        streamDraft();
+      });
+      return i;
+    }
+    function textField(id, get, set, placeholder, area) {
+      var i = el(area ? 'textarea' : 'input');
+      i.id = id;
+      i.value = get();
+      if (placeholder) i.placeholder = placeholder;
+      i.addEventListener('input', function () { set(i.value); streamDraft(); });
+      return i;
+    }
+    function labelled(text, control) {
+      var w = el('div');
+      w.append(el('label', '', text), control);
+      return w;
+    }
+
+    function partyEditor(title, p, prefix) {
+      var box = el('div');
+      box.append(el('h2', '', title));
+      var g = el('div', 'grid g2');
+      g.append(labelled('Name', textField(prefix + '-name', function () { return p.name; }, function (v) { p.name = v; }, 'Acme Ltd')));
+      g.append(labelled('Country', textField(prefix + '-country', function () { return p.country; }, function (v) { p.country = v; }, 'GB')));
+      box.append(g);
+      box.append(labelled('Address', textField(prefix + '-address', function () { return p.address; }, function (v) { p.address = v; }, '1 High Street\nLondon', true)));
+      var g2 = el('div', 'grid g2');
+      g2.append(labelled('Email', textField(prefix + '-email', function () { return p.email; }, function (v) { p.email = v; })));
+      g2.append(labelled('Phone', textField(prefix + '-phone', function () { return p.phone; }, function (v) { p.phone = v; })));
+      box.append(g2);
+      var g3 = el('div', 'grid g3');
+      g3.append(labelled('Tax ID label', textField(prefix + '-taxlabel', function () { return p.taxLabel; }, function (v) { p.taxLabel = v; }, 'VAT / EIN / ABN')));
+      g3.append(labelled('Tax ID', textField(prefix + '-taxid', function () { return p.taxId; }, function (v) { p.taxId = v; })));
+      g3.append(labelled('Registration', textField(prefix + '-reg', function () { return p.reg; }, function (v) { p.reg = v; }, 'Company no.')));
+      box.append(g3);
+      return box;
+    }
+
+    var linesHost = null;
+
+    function lineEditor(l, i) {
+      var row = el('div', 'line-row');
+      row.id = 'line-' + i;
+      var d = el('div');
+      d.append(textField('line-desc-' + i, function () { return l.description; }, function (v) { l.description = v; }, 'Description'));
+      d.append(textField('line-detail-' + i, function () { return l.detail; }, function (v) { l.detail = v; }, 'Extra detail (optional)'));
+      row.append(d);
+      row.append(intField('line-qty-' + i, function () { return l.quantity; }, function (v) { l.quantity = v; }, 1000, 'Qty'));
+      row.append(textField('line-unit-' + i, function () { return l.unit; }, function (v) { l.unit = v; }, 'hours / items / kg'));
+      row.append(moneyField('line-price-' + i, function () { return l.unitPrice; }, function (v) { l.unitPrice = v; }));
+      row.append(intField('line-tax-' + i, function () { return l.taxRate; }, function (v) { l.taxRate = v; }, 100, 'Tax %'));
+      var del = el('button', 'danger', '×');
+      del.id = 'line-del-' + i;
+      del.title = 'Remove this line';
+      del.addEventListener('click', function () {
+        state.lines.splice(i, 1);
+        renderLines();
+        streamDraft();
+      });
+      row.append(del);
+      return row;
+    }
+
+    function renderLines() {
+      if (!linesHost) return;
+      linesHost.replaceChildren();
+      for (var i = 0; i < state.lines.length; i++) linesHost.append(lineEditor(state.lines[i], i));
+    }
+
+    function editMode() {
+      app.replaceChildren();
+      var e = el('div', 'e');
+
+      e.append(el('h2', '', 'Invoice'));
+      var g = el('div', 'grid g4');
+      g.append(labelled('Number', textField('inv-number', function () { return state.invoiceNumber; }, function (v) { state.invoiceNumber = v; }, 'INV-2026-0042')));
+      g.append(labelled('Issued', textField('inv-issued', function () { return state.issued; }, function (v) { state.issued = v; }, 'YYYY-MM-DD')));
+      g.append(labelled('Due', textField('inv-due', function () { return state.due; }, function (v) { state.due = v; }, 'YYYY-MM-DD')));
+      g.append(labelled('PO number', textField('inv-po', function () { return state.poNumber; }, function (v) { state.poNumber = v; })));
+      e.append(g);
+
+      var g2 = el('div', 'grid g2');
+      g2.append(labelled('Currency', textField('inv-currency', function () { return state.currency; }, function (v) { state.currency = v.toUpperCase().slice(0, 3); }, 'GBP')));
+      var dec = el('select');
+      dec.id = 'inv-minor';
+      [0, 2, 3].forEach(function (n) {
+        var o = el('option', '', n === 0 ? '0 (e.g. JPY)' : String(n));
+        o.value = String(n);
+        if (n === state.minorUnits) o.selected = true;
+        dec.append(o);
+      });
+      dec.addEventListener('change', function () {
+        state.minorUnits = parseInt(dec.value, 10) || 0;
+        SCALE = Math.pow(10, state.minorUnits);
+        streamDraft();
+      });
+      g2.append(labelled('Decimal places', dec));
+      e.append(g2);
+
+      // ── logo ──
+      e.append(el('h2', '', 'Logo'));
+      if (hasLogo() && !picked && !logoRemoved) {
+        var cur = el('img', 'thumb');
+        cur.id = 'logo-current';
+        var u = window.bridge.getBlob(LOGO);
+        if (u) cur.src = u;
+        e.append(cur);
+        var rm = el('button', 'danger', 'Remove logo');
+        rm.id = 'logo-remove';
+        rm.addEventListener('click', function () { logoRemoved = true; editMode(); streamDraft(); });
+        e.append(rm);
+      } else if (picked) {
+        var pv = el('img', 'thumb');
+        pv.id = 'logo-preview';
+        if (thumbUrl) pv.src = thumbUrl;
+        e.append(pv);
+      }
+      var file = el('input');
+      file.type = 'file';
+      file.accept = 'image/*';
+      file.id = 'logo-file';
+      var warn = el('div', 'warn');
+      warn.id = 'logo-warn';
+      file.addEventListener('change', function () {
+        var f = file.files && file.files[0];
+        if (!f) return;
+        if (f.size > MAX_BLOB_BYTES) {
+          warn.textContent = 'That logo is ' + Math.round(f.size / (1024 * 1024)) + ' MB. The limit is ' +
+            Math.round(MAX_BLOB_BYTES / (1024 * 1024)) + ' MB — use a smaller one.';
+          file.value = '';
+          return;
+        }
+        warn.textContent = '';
+        f.arrayBuffer().then(function (buf) {
+          picked = { bytes: new Uint8Array(buf), mime: f.type || 'application/octet-stream' };
+          logoRemoved = false;
+          if (thumbUrl) URL.revokeObjectURL(thumbUrl);
+          thumbUrl = URL.createObjectURL(f);
+          editMode();
+          streamDraft();
+        });
+      });
+      e.append(file, warn);
+
+      // ── parties ──
+      e.append(partyEditor('From (seller)', state.seller, 'seller'));
+      e.append(partyEditor('Bill to (buyer)', state.buyer, 'buyer'));
+      e.append(partyEditor('Ship to (only if different)', state.shipTo, 'shipto'));
+
+      // ── lines ──
+      e.append(el('h2', '', 'Items and services'));
+      e.append(el('div', 'hint', 'Quantity takes fractions — 1.5 hours, 2.25 kg. Unit is free text: hours, days, items, kg, licences, whatever you are selling.'));
+      linesHost = el('div');
+      linesHost.id = 'lines-host';
+      e.append(linesHost);
+      renderLines();
+      var add = el('button', '', 'Add a line');
+      add.id = 'line-add';
+      add.addEventListener('click', function () {
+        state.lines.push({ description: '', detail: '', quantity: 1000, unit: '', unitPrice: 0, taxRate: 0 });
+        renderLines();
+        streamDraft();
+      });
+      e.append(add);
+
+      // ── adjustments ──
+      e.append(el('h2', '', 'Discount, shipping, payment'));
+      var g3 = el('div', 'grid g3');
+      var kind = el('select');
+      kind.id = 'inv-discount-kind';
+      [['amount', 'Fixed amount'], ['percent', 'Percent']].forEach(function (o) {
+        var opt = el('option', '', o[1]);
+        opt.value = o[0];
+        if (state.discountKind === o[0]) opt.selected = true;
+        kind.append(opt);
+      });
+      kind.addEventListener('change', function () {
+        state.discountKind = kind.value === 'percent' ? 'percent' : 'amount';
+        state.discountValue = 0;
+        editMode();
+        streamDraft();
+      });
+      g3.append(labelled('Discount kind', kind));
+      g3.append(labelled(
+        state.discountKind === 'percent' ? 'Discount %' : 'Discount amount',
+        state.discountKind === 'percent'
+          ? intField('inv-discount', function () { return state.discountValue; }, function (v) { state.discountValue = v; }, 100)
+          : moneyField('inv-discount', function () { return state.discountValue; }, function (v) { state.discountValue = v; })
+      ));
+      g3.append(labelled('Already paid', moneyField('inv-paid', function () { return state.amountPaid; }, function (v) { state.amountPaid = v; })));
+      e.append(g3);
+
+      var g4 = el('div', 'grid g2');
+      g4.append(labelled('Shipping', moneyField('inv-shipping', function () { return state.shipping; }, function (v) { state.shipping = v; })));
+      g4.append(labelled('Shipping tax %', intField('inv-shipping-tax', function () { return state.shippingTaxRate; }, function (v) { state.shippingTaxRate = v; }, 100)));
+      e.append(g4);
+
+      e.append(labelled('Payment terms', textField('inv-terms', function () { return state.paymentTerms; }, function (v) { state.paymentTerms = v; }, 'Net 30. Late payment charged at 2% per month.')));
+      e.append(labelled('How to pay', textField('inv-instructions', function () { return state.paymentInstructions; }, function (v) { state.paymentInstructions = v; }, 'Bank: …\nIBAN: …\nReference: the invoice number', true)));
+
+      e.append(el('h2', '', 'Notes and terms'));
+      e.append(labelled('Notes', textField('inv-notes', function () { return state.notes; }, function (v) { state.notes = v; }, 'Anything the reader should know', true)));
+      e.append(labelled('Terms', textField('inv-tc', function () { return state.terms; }, function (v) { state.terms = v; }, 'Terms and conditions', true)));
+
+      app.append(e);
+      streamDraft(); // initial state, so Publish enables immediately
+    }
+
+    if (a.mode === 'edit') editMode(); else viewMode();
+  </script>
+</body>
+</html>
