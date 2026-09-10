@@ -5,6 +5,7 @@ import { writeFile } from 'node:fs/promises'
 import { AdmissionService } from './admission/index.js'
 import { Keyring, KeyringLoadError } from './keyring/index.js'
 import { ethAddressHex, generateMnemonic12, mnemonicToAccounts, validatePrivkeyHex } from './keyring/hd.js'
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import {
   Library,
@@ -18,14 +19,8 @@ import {
 } from './library/index.js'
 import { STARTERS, starterByKey, starterBytes } from './starters/index.js'
 import { mountThing, type MountedThing } from './mount/index.js'
-import {
-  TransportService,
-  FileTransport,
-  HttpTransport,
-  SeedTransport,
-  WebtorrentTransport
-} from './transport/index.js'
-import { SeedService } from './seed/index.js'
+import { TransportService, FileTransport, HttpTransport, SeedTransport } from './transport/index.js'
+import { TorrentService, displayNameOf, infoHashOf } from './torrent/index.js'
 import { NamingService, DirectResolver, EnsResolver, NostrResolver, type EnsClient } from './naming/index.js'
 import { createMockEnsClient } from './naming/mock-ens.js'
 import { createViemEnsClient } from './naming/ens-viem.js'
@@ -334,6 +329,8 @@ interface ShellSurface {
   people?: () => unknown[]
   setPetname?: (scheme: string, key: string, name: string, note?: string) => void
   attestations?: (targetHash: string) => { count: number; rows: unknown[] }
+  transfers?: () => Record<string, unknown>
+  cancelTransfer?: (id: string) => Record<string, unknown>
   cosign?: (envelopeHash: string) => Promise<Record<string, unknown>>
   document?: (manifestHash: string) => Record<string, unknown>
   newVouch?: (scheme: string, key: string) => Record<string, unknown>
@@ -436,7 +433,8 @@ app.whenReady().then(async () => {
   // by tar-hash) so the shell can re-serve it. `bundle:<hash>` fetches from here.
   const seedStore = new CasStore(join(userDataDir, 'seeds'))
   // Serving bundles to peers. Nothing is announced until a human asks for it.
-  const seeder = new SeedService()
+  const seeder = new TorrentService()
+  seeder.setDownloadRoot(join(userDataDir, 'downloads'))
   stopAllSeeding = () => seeder.destroy()
   const fetchLimits = {
     maxBytes: numEnv('SHELL_MAX_FETCH_BYTES', 256 * 1024 * 1024),
@@ -446,7 +444,6 @@ app.whenReady().then(async () => {
     .register(new FileTransport())
     .register(new HttpTransport())
     .register(new SeedTransport(seedStore))
-    .register(new WebtorrentTransport())
 
   // ENS client: an in-memory mock for tests (deterministic, no network); a
   // viem-backed client for live use; a null client if viem is absent (ENS
@@ -477,7 +474,7 @@ app.whenReady().then(async () => {
         label: 'File',
         submenu: [
           { label: 'Account & Keys…', click: () => chrome.webContents.send('shell:open-account') },
-          { label: 'Sharing…', click: () => chrome.webContents.send('shell:open-sharing') },
+          { label: 'Transfers…', click: () => chrome.webContents.send('shell:open-sharing') },
           { label: 'People…', click: () => chrome.webContents.send('shell:open-people') },
           { type: 'separator' },
           process.platform === 'darwin' ? { role: 'close' as const } : { role: 'quit' as const }
@@ -705,6 +702,11 @@ app.whenReady().then(async () => {
    *  the admitted author is forward-verified against the name. The transport and
    *  resolver are content-untrusted; admission is the gate. */
   async function fetchNameOrLocator(input: string): Promise<Record<string, unknown>> {
+    // A magnet is not a fetch. It is a TRANSFER: it can take hours, it wants
+    // progress and a cancel, and it must survive both this call returning and
+    // the app restarting. So it never reaches the transport dispatch below,
+    // which can only express Promise<bytes>.
+    if (/^magnet:/i.test(input.trim())) return startTransfer(input.trim())
     let locator = input
     let name: string | null = null
     if (!transport.supports(input)) {
@@ -1679,6 +1681,111 @@ app.whenReady().then(async () => {
     return ingestBytes(tar)
   }
 
+  // ── Transfers ──────────────────────────────────────────────────────────────
+  // A download runs in the background, reports progress, and is remembered
+  // across restarts. What it does NOT do is decide anything: when the bytes
+  // arrive they go through the same admission gate as every other transport,
+  // which is why a transfer can be left running without being trusted.
+
+  let transfersTimer: ReturnType<typeof setInterval> | null = null
+
+  function pushTransfers(): void {
+    if (chrome.webContents.isDestroyed()) return
+    chrome.webContents.send('shell:transfers', transferState())
+    // Tick only while something is live; an idle shell should be silent.
+    const live = seeder.downloadStatus().length > 0
+    if (live && !transfersTimer) {
+      transfersTimer = setInterval(pushTransfers, 500)
+      transfersTimer.unref?.()
+    } else if (!live && transfersTimer) {
+      clearInterval(transfersTimer)
+      transfersTimer = null
+    }
+  }
+
+  function transferState(): Record<string, unknown> {
+    return { downloads: seeder.downloadStatus(), sharing: seedingStatus() }
+  }
+
+  /** Begin a download, or join one already running for the same infohash. */
+  async function startTransfer(magnet: string): Promise<Record<string, unknown>> {
+    const infoHash = infoHashOf(magnet)
+    if (!infoHash) return { status: 'invalid', reason: 'that magnet names no infohash' }
+    const id = library.rememberTransfer(randomUUID(), magnet, infoHash, displayNameOf(magnet), Date.now())
+    const started = await seeder.startDownload(id, magnet, displayNameOf(magnet))
+    if (started?.error) {
+      pushTransfers()
+      return { status: 'invalid', reason: `transport: ${started.error}`, transferId: id }
+    }
+    // Refuse an oversize torrent the moment its metadata names a size, rather
+    // than downloading a gigabyte and rejecting it at the gate. The cap is the
+    // bundle cap: a thing larger than admission will take cannot become one
+    // however patiently it is fetched.
+    const t = seeder.torrentFor(id)
+    t?.on('metadata', () => {
+      const size = typeof t.length === 'number' ? t.length : 0
+      if (size > fetchLimits.maxBytes) {
+        seeder.setDownloadState(
+          id,
+          'failed',
+          `this is ${Math.round(size / 1048576)} MB, over the ${Math.round(fetchLimits.maxBytes / 1048576)} MB limit a thing may be`
+        )
+        library.forgetTransfer(id)
+        seeder.cancelDownload(id)
+        pushTransfers()
+      }
+    })
+    void watchTransfer(id)
+    pushTransfers()
+    return { status: 'started', transferId: id, infoHash }
+  }
+
+  /** Wait for a download to finish, then put its bytes through admission.
+   *  Deliberately not awaited by the caller -- that is what makes it a
+   *  background transfer rather than a long fetch. */
+  async function watchTransfer(id: string): Promise<void> {
+    const torrent = seeder.torrentFor(id)
+    if (!torrent) return
+    const done = await new Promise<boolean>((resolve) => {
+      torrent.on('done', () => resolve(true))
+      torrent.on('error', () => resolve(false))
+    }).catch(() => false)
+    if (!done) return // the state and reason are already on the status row
+    try {
+      // Size is checked when metadata lands (below); by here it is known good.
+      seeder.setDownloadState(id, 'verifying')
+      pushTransfers()
+      const file = torrent.files[0]
+      if (!file) throw new Error('the torrent contained no file')
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      seeder.setDownloadState(id, 'admitting')
+      pushTransfers()
+      const outcome = await ingestBytes(bytes)
+      if (outcome.status !== 'valid') {
+        seeder.setDownloadState(id, 'failed', `admission refused it: ${String(outcome.reason ?? outcome.status)}`)
+        pushTransfers()
+        return
+      }
+      // It arrived and it admitted: the intent is discharged, and the partial
+      // file is redundant now the bytes are in the CAS and the seed store.
+      library.forgetTransfer(id)
+      seeder.finishDownload(id)
+      notifyFeedChanged()
+      pushTransfers()
+    } catch (e) {
+      seeder.setDownloadState(id, 'failed', (e as Error).message)
+      pushTransfers()
+    }
+  }
+
+  function cancelTransfer(id: unknown): Record<string, unknown> {
+    if (typeof id !== 'string') return { cancelled: false }
+    const forgotten = library.forgetTransfer(id)
+    const stopped = seeder.cancelDownload(id)
+    pushTransfers()
+    return { cancelled: forgotten || stopped }
+  }
+
   /** The seed store is keyed by TAR hash with no envelope index — scan and
    *  parse to find the tar hash(es) whose envelope matches. Seeds are few.
    *  If this ever gets expensive the answer is an envelope->tar index TABLE
@@ -2026,6 +2133,8 @@ app.whenReady().then(async () => {
     notifyFeedChanged() // every row showing this author is now stale
     return { ok: true }
   })
+  ipcMain.handle('shell:transfers', () => transferState())
+  ipcMain.handle('shell:transfer-cancel', (_e, id: unknown) => cancelTransfer(id))
   ipcMain.handle('shell:cosign', (_e, h: unknown) => cosignThing(h))
   ipcMain.handle('shell:document', (_e, h: unknown) =>
     typeof h === 'string' && HEX64.test(h) ? documentFacts(h) : { cosignable: false, signatures: [], namedSigners: [] }
@@ -2138,6 +2247,8 @@ app.whenReady().then(async () => {
     library.setPetname(scheme, key, name, note ?? '', Date.now())
     notifyFeedChanged()
   }
+  shell.transfers = () => transferState()
+  shell.cancelTransfer = (id) => cancelTransfer(id)
   shell.cosign = (h) => cosignThing(h)
   shell.document = (h) => documentFacts(h)
   shell.newVouch = (s, k) => newVouch(s, k)
@@ -2235,6 +2346,21 @@ app.whenReady().then(async () => {
   // AFTER ready and not awaited: loading webtorrent takes a moment, a peer
   // that cannot be reached must not delay startup, and a shell that opens
   // slowly because of a torrent is a worse shell.
+  // Resume the downloads the human asked for. webtorrent re-verifies whatever
+  // partial data is already in the profile's download directory, so a quit
+  // costs the verify pass rather than the transfer.
+  void (async () => {
+    for (const t of library.transfers()) {
+      const started = await seeder.startDownload(t.id, t.magnet, t.name)
+      if (started?.error) {
+        record({ type: 'transfer-resume-failed', id: t.id, reason: started.error })
+        continue
+      }
+      void watchTransfer(t.id)
+    }
+    pushTransfers()
+  })()
+
   void (async () => {
     for (const row of library.seeding()) {
       const r = await startSeeding(row.envelopeHash)

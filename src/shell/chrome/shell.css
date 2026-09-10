@@ -329,6 +329,41 @@ body {
 .sh-tribe-badge { font-weight: 400; }
 .sh-tribe-line { font-style: italic; }
 
+/* Transfers: downloads in flight and things being served. */
+.sh-transfers { max-width: 44em; }
+.sh-transfers-h {
+  margin: var(--evm-space-4) 0 var(--evm-space-1);
+  font-size: var(--evm-text-sm);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--evm-text-3);
+}
+.sh-transfers-h:first-child { margin-top: 0; }
+.sh-transfer {
+  border-top: 1px solid var(--evm-border);
+  padding: var(--evm-space-3) 0;
+}
+.sh-transfer--open { background: var(--evm-surface-2); padding-inline: var(--evm-space-3); border-radius: 4px; }
+.sh-transfer-head { display: flex; align-items: center; gap: var(--evm-space-2); }
+.sh-transfer-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sh-transfer-state { flex: 0 0 auto; }
+.sh-transfer-meta { margin-top: var(--evm-space-1); font-size: var(--evm-text-sm); color: var(--evm-text-3); }
+/* The diagnosis. Deliberately full-width and wrapping: when a transfer is
+   stuck this sentence is the entire value of the window. */
+.sh-transfer-why {
+  margin-top: var(--evm-space-1);
+  font-size: var(--evm-text-sm);
+  color: var(--evm-text-2);
+}
+.sh-progress {
+  margin-top: var(--evm-space-2);
+  height: 6px;
+  border-radius: 3px;
+  background: var(--evm-surface-3, #2a2a30);
+  overflow: hidden;
+}
+.sh-progress-fill { height: 100%; background: var(--evm-accent, #5f8fa8); transition: width 0.3s linear; }
+
 /* Sharing view. */
 .sh-sharing { max-width: 40em; }
 .sh-sharing-list { margin-top: var(--evm-space-3); }

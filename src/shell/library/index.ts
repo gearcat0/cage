@@ -398,6 +398,20 @@ export class Library {
         PRIMARY KEY (manifest_hash, idx)
       );
 
+      -- Downloads the human has ASKED FOR, which is a different thing from a
+      -- download that is currently running. Like the seeding table above, a row
+      -- is an INTENT: it survives a quit so the next start resumes rather than
+      -- beginning again, and a failure to resume is not a decision to stop.
+      -- Progress, speed and peer counts are deliberately NOT here -- they are
+      -- properties of a live torrent and are meaningless on disk.
+      CREATE TABLE IF NOT EXISTS transfers (
+        id        TEXT PRIMARY KEY,
+        magnet    TEXT NOT NULL,
+        info_hash TEXT NOT NULL,
+        name      TEXT NOT NULL DEFAULT '',
+        added_at  INTEGER NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
     `)
     this.backfillRefs()
@@ -713,6 +727,31 @@ export class Library {
       .prepare('SELECT scheme, key, role, name FROM doc_signers WHERE manifest_hash = ? ORDER BY idx ASC')
       .all(manifestHash) as { scheme: string; key: string; role: string; name: string }[]
     return rows.map((r) => ({ scheme: r.scheme, key: r.key, role: r.role, name: r.name }))
+  }
+
+  /** Downloads asked for, oldest first. Resumed at startup. */
+  transfers(): { id: string; magnet: string; infoHash: string; name: string; addedAt: number }[] {
+    const rows = this.db
+      .prepare('SELECT id, magnet, info_hash, name, added_at FROM transfers ORDER BY added_at ASC')
+      .all() as { id: string; magnet: string; info_hash: string; name: string; added_at: number }[]
+    return rows.map((r) => ({ id: r.id, magnet: r.magnet, infoHash: r.info_hash, name: r.name, addedAt: r.added_at }))
+  }
+
+  /** Record the intent to download. Keyed by INFOHASH, not by id: asking for
+   *  the same magnet twice is one download, not two racing for one directory. */
+  rememberTransfer(id: string, magnet: string, infoHash: string, name: string, now: number): string {
+    const existing = this.db.prepare('SELECT id FROM transfers WHERE info_hash = ?').get(infoHash) as
+      | { id: string }
+      | undefined
+    if (existing) return existing.id
+    this.db
+      .prepare('INSERT OR REPLACE INTO transfers (id, magnet, info_hash, name, added_at) VALUES (?,?,?,?,?)')
+      .run(id, magnet, infoHash, name, now)
+    return id
+  }
+
+  forgetTransfer(id: string): boolean {
+    return this.db.prepare('DELETE FROM transfers WHERE id = ?').run(id).changes > 0
   }
 
   /** Every vouch pointing at a key, newest claim per voucher.
