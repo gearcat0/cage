@@ -48,6 +48,24 @@ describe('starters', () => {
     expect(starterByKey('library:nametag')).toBeNull()
   })
 
+  // The cage paints its view #08080a before a program loads (see #39), so a
+  // program with a LIGHT body flashes white every time you switch to it. The
+  // invoice shipped with a paper-coloured body and did exactly that. This is
+  // cheaper than noticing it again by eye.
+  it('every sample has a dark body background, so switching does not flash', () => {
+    const DARK = '#1d2320'
+    for (const s of STARTERS) {
+      const body = /body\s*\{[^}]*\}/.exec(s.html)?.[0] ?? ''
+      const declared = /background:\s*([^;]+)/.exec(body)?.[1]?.trim() ?? ''
+      // A sample may go through a variable; resolve one level if so.
+      const viaVar = /^var\(\s*(--[\w-]+)\s*\)$/.exec(declared)?.[1]
+      const resolved = viaVar
+        ? (new RegExp(`${viaVar}:\\s*([^;]+)`).exec(s.html)?.[1]?.trim() ?? declared)
+        : declared
+      expect(resolved.toLowerCase(), `${s.type} has body background "${resolved}", not the dark ${DARK}`).toBe(DARK)
+    }
+  })
+
   it('every starter is a self-contained page that uses the bridge', () => {
     for (const s of STARTERS) {
       expect(s.html).toContain('window.bridge.getArgs()')

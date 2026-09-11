@@ -229,3 +229,16 @@ test('typing 19.99 into a price stores 1999, so it can actually be signed', asyn
   // And it is signable: no float anywhere in what would be stored.
   expect(() => jsToCbor(args)).not.toThrow()
 })
+
+test('the page behind the invoice is dark, so switching to it does not flash', async () => {
+  // The cage paints its view near-black before a program loads. A light body
+  // meant a white flash on every switch — the very thing #39 fixed for the
+  // shell. The sheet stays white: an invoice is a document, and reads as paper
+  // lying on a dark desk.
+  await openInvoice({ currency: 'GBP', minorUnits: 2, lines: [LINE(1000, 1000, 0)] })
+  const body = await thingEval<string>(`getComputedStyle(document.body).backgroundColor`)
+  expect(body, 'body should be the dark #1d2320 every other sample uses').toBe('rgb(29, 35, 32)')
+  // ...and the text still sits on the white sheet, so nothing became unreadable.
+  const sheet = await thingEval<string>(`getComputedStyle(document.querySelector('.sheet')).backgroundColor`)
+  expect(sheet).toBe('rgb(255, 255, 255)')
+})
