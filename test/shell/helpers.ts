@@ -14,6 +14,7 @@ import {
   sealMember,
   parseBundle,
   cosignBundle,
+  jsToCbor,
   type BundleSource,
   type Manifest,
   type Signer
@@ -181,7 +182,7 @@ export function bundleTarHash(tar: Uint8Array): string {
   return [...hash(tar)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-export { seal, secp256k1, schnorr, hash, parseBundle, cosignBundle }
+export { seal, secp256k1, schnorr, hash, parseBundle, cosignBundle, jsToCbor }
 
 // ── Shell launcher ───────────────────────────────────────────────────────────
 

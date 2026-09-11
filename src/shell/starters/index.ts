@@ -4,6 +4,7 @@ import commentHtml from '../../../samples/comment.html?raw'
 import contractHtml from '../../../samples/contract.html?raw'
 import attestationHtml from '../../../samples/attestation.html?raw'
 import inviteHtml from '../../../samples/invite.html?raw'
+import invoiceHtml from '../../../samples/invoice.html?raw'
 import memoHtml from '../../../samples/memo.html?raw'
 import nametagHtml from '../../../samples/nametag.html?raw'
 import posterHtml from '../../../samples/poster.html?raw'
@@ -59,6 +60,13 @@ export const STARTERS: readonly Starter[] = [
     label: 'Invitation',
     description: 'An event, with the date shown in the reader’s locale.',
     html: inviteHtml
+  },
+  {
+    key: 'starter:invoice',
+    type: 'invoice',
+    label: 'Invoice',
+    description: 'A demand for payment: parties, line items, tax, and what is due.',
+    html: invoiceHtml
   },
   {
     key: 'starter:todo',

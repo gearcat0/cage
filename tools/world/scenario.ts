@@ -231,6 +231,84 @@ async function articleWithAttestations(c: Cast, log: (s: string) => void): Promi
   log('  article: Harbour Yard — 5 attestations, 3 of them in Ada’s tribe')
 }
 
+/** An invoice, so there is one to look at. Money is in minor units and
+ *  quantities in thousandths because canonical CBOR forbids floats -- 2.5 hours
+ *  at £180 is quantity 2500, unitPrice 18000. */
+async function invoice(c: Cast, log: (s: string) => void): Promise<void> {
+  const readers = [c.thurgood!, c.ada!, c.sandra!, c.joan!]
+  await publish(
+    c.thurgood!,
+    {
+      type: 'invoice',
+      created: T0 + 9 * DAY,
+      args: {
+        invoiceNumber: 'HV-2026-0184',
+        issued: '2026-06-10',
+        due: '2026-07-10',
+        poNumber: 'MP-4471',
+        currency: 'GBP',
+        minorUnits: 2,
+        seller: {
+          name: 'Harbour & Vale LLP',
+          address: '12 Harbour Yard\nLondon SE16 4RT',
+          email: 'accounts@harbourvale.example',
+          taxLabel: 'VAT',
+          taxId: 'GB 418 2299 07',
+          reg: 'Registered in England, OC392214',
+          country: 'United Kingdom'
+        },
+        buyer: {
+          name: 'Meridian Press Ltd',
+          address: '4 Fleet Buildings\nLondon EC4Y 1AA',
+          email: 'ada@meridianpress.example',
+          taxLabel: 'VAT',
+          taxId: 'GB 771 4410 22',
+          country: 'United Kingdom'
+        },
+        shipTo: {},
+        lines: [
+          {
+            description: 'Pre-publication review — Harbour Yard inquiry',
+            detail: 'Two rounds, including the objectors’ submissions.',
+            quantity: 6500,
+            unit: 'hours',
+            unitPrice: 24000,
+            taxRate: 2000
+          },
+          {
+            description: 'Advice on the crane retention condition',
+            detail: '',
+            quantity: 2000,
+            unit: 'hours',
+            unitPrice: 24000,
+            taxRate: 2000
+          },
+          {
+            description: 'Filing fee (disbursement, no VAT)',
+            detail: 'Paid to the planning authority on your behalf.',
+            quantity: 1000,
+            unit: 'items',
+            unitPrice: 11500,
+            taxRate: 0
+          }
+        ],
+        discountKind: 'percent',
+        discountValue: 500,
+        discountLabel: '',
+        shipping: 0,
+        shippingTaxRate: 0,
+        amountPaid: 50000,
+        paymentTerms: 'Net 30. Interest at 2% per month on overdue sums.',
+        paymentInstructions: 'Harbour & Vale LLP\nSort 20-45-12  Account 4410 2298\nReference: HV-2026-0184',
+        notes: 'Thank you — and congratulations on the result.',
+        terms: 'Fees are as agreed in our engagement letter of 3 March 2026.'
+      }
+    },
+    readers
+  )
+  log('  invoice: Harbour & Vale bill Meridian Press — part paid, mixed VAT rates')
+}
+
 /** Everyday content, so a feed is not one contract and a void. */
 async function everyday(c: Cast, log: (s: string) => void): Promise<void> {
   let n = 0
@@ -277,5 +355,6 @@ export async function buildWorld(accounts: OpenAccount[], log: (s: string) => vo
   await pendingContract(c, log)
   await uninvitedSignature(c, log)
   await articleWithAttestations(c, log)
+  await invoice(c, log)
   await everyday(c, log)
 }
