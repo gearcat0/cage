@@ -294,7 +294,6 @@ async function invoice(c: Cast, log: (s: string) => void): Promise<void> {
         ],
         discountKind: 'percent',
         discountValue: 500,
-        discountLabel: '',
         shipping: 0,
         shippingTaxRate: 0,
         amountPaid: 50000,
