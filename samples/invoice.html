@@ -6,7 +6,12 @@
 <style>
   :root {
     --ink: #14171a; --muted: #5b6570; --line: #d8dee4; --paper: #ffffff;
-    --accent: #1f4e79; --bg: #eef1f4;
+    /* The surround matches every other sample (#1d2320). The cage paints its
+       view that colour before a program loads, so a light body here meant a
+       white flash on every switch between things -- the thing #39 fixed for
+       the shell and this program reintroduced. The sheet itself stays white:
+       an invoice is a document, and it reads as paper lying on the desk. */
+    --accent: #1f4e79; --bg: #1d2320;
   }
   body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
          background: var(--bg); color: var(--ink); padding: 20px; }
