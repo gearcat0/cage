@@ -1,0 +1,221 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>group</title>
+<style>
+  body { margin: 0; font: 15px/1.55 system-ui, sans-serif; background: #1d2320; color: #d8d4c8;
+         display: flex; justify-content: center; min-height: 100vh; padding: 24px; box-sizing: border-box; }
+  .grp { background: #262c28; border: 1px solid #39413b; border-left: 3px solid #7a9f6f; border-radius: 4px;
+         width: 38em; max-width: 100%; padding: 18px 20px; }
+  h1 { margin: 0; font-size: 21px; line-height: 1.25; }
+  h1.empty { color: #7d8a80; font-style: italic; font-weight: 400; }
+  .purpose { margin: 6px 0 0; color: #b9b2a2; white-space: pre-wrap; }
+  .count { margin: 16px 0 6px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: #8a978d; }
+  .m { display: flex; gap: 10px; align-items: baseline; padding: 6px 0; border-top: 1px solid #39413b; }
+  .m .role { min-width: 7em; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #8a978d; }
+  .m .nm { color: #dcd7cd; }
+  .m .key { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: #96a99c; }
+  .notes { margin: 16px 0 0; padding-top: 12px; border-top: 1px solid #39413b; color: #b9b2a2; white-space: pre-wrap; }
+  .weight { margin: 14px 0 0; font-size: 12px; color: #8a978d; font-style: italic; }
+  .empty-list { color: #7d8a80; font-style: italic; padding: 6px 0; }
+
+  label { display: block; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: #8a978d;
+          margin: 14px 0 6px; }
+  input, textarea { font: inherit; width: 100%; box-sizing: border-box; background: #1f2521; color: #e6e2d6;
+                    border: 1px solid #3f4a43; border-radius: 4px; padding: 8px 10px; }
+  textarea { min-height: 4em; resize: vertical; }
+  .row { display: flex; gap: 8px; margin-bottom: 8px; }
+  .row input.k { flex: 2; font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+  .row input.r { flex: 1; }
+  .row input.n { flex: 1; }
+  button { font: inherit; background: #2f3a33; color: #dcd7cd; border: 1px solid #46534a;
+           border-radius: 4px; padding: 6px 12px; cursor: pointer; }
+  button:hover { background: #384539; }
+  .drop { padding: 4px 10px; }
+  .hint { margin-top: 12px; font-size: 12px; color: #7d8a80; }
+</style>
+</head>
+<body>
+  <div class="grp"><div id="app"></div></div>
+  <script>
+    'use strict';
+    // A group: a roster of people, published by whoever keeps it.
+    //
+    // State: args {name, purpose, members:[{key, scheme, role, name}], notes}.
+    //
+    // What a roster is, and is not:
+    //
+    //   • It is the AUTHOR'S CLAIM about who belongs. Being listed is not
+    //     consent, not proof, and not something the listed person did. Anyone
+    //     can publish a roster naming anyone, exactly as anyone can attest to
+    //     anything or vouch for any key.
+    //   • It is NOT a trust input. The shell never lets membership reach your
+    //     tribe, because a roster is free to write: if it counted, anyone could
+    //     put themselves into your trust graph by publishing a group that named
+    //     them. Vouches exist precisely so that trust has to start with you.
+    //
+    // A roster changes, so this is a thing built to be AMENDED. Publishing a new
+    // version chains it to the last one through the envelope (path/seq/prev),
+    // which the shell fills in — a program cannot write itself into a version
+    // history, because those are envelope fields and this program only ever
+    // sees args. The shell's header says which version you are looking at.
+    var a = window.bridge.getArgs() || {};
+    var args = (a && typeof a.args === 'object' && a.args !== null) ? a.args : {};
+    var app = document.getElementById('app');
+
+    function str(v) { return typeof v === 'string' ? v : ''; }
+
+    function el(tag, cls, text) {
+      var e = document.createElement(tag);
+      if (cls) e.className = cls;
+      if (text !== undefined) e.textContent = text;
+      return e;
+    }
+
+    function shortKey(k) {
+      return k.length > 14 ? k.slice(0, 8) + '…' + k.slice(-6) : k;
+    }
+
+    function members() {
+      var raw = Array.isArray(args.members) ? args.members : [];
+      var out = [];
+      for (var i = 0; i < raw.length && out.length < 512; i++) {
+        var m = raw[i];
+        if (!m || typeof m !== 'object') continue;
+        out.push({
+          key: str(m.key), scheme: str(m.scheme) || 'eth-eip191',
+          role: str(m.role), name: str(m.name)
+        });
+      }
+      return out;
+    }
+
+    function viewMode() {
+      app.replaceChildren();
+      var name = str(args.name);
+      var h = el('h1', name ? '' : 'empty', name || 'Unnamed group');
+      h.id = 'group-name';
+      app.append(h);
+      if (str(args.purpose)) {
+        var p = el('p', 'purpose', str(args.purpose));
+        p.id = 'group-purpose';
+        app.append(p);
+      }
+
+      var list = members();
+      var c = el('div', 'count', list.length === 1 ? '1 member' : String(list.length) + ' members');
+      c.id = 'group-count';
+      c.setAttribute('data-count', String(list.length));
+      app.append(c);
+
+      if (list.length === 0) {
+        app.append(el('div', 'empty-list', 'Nobody is listed.'));
+      }
+      for (var i = 0; i < list.length; i++) {
+        var m = list[i];
+        var row = el('div', 'm');
+        row.setAttribute('data-key', m.key);
+        row.append(el('span', 'role', m.role || 'member'));
+        if (m.name) row.append(el('span', 'nm', m.name));
+        var k = el('span', 'key', shortKey(m.key));
+        k.title = m.scheme + ':' + m.key;
+        row.append(k);
+        app.append(row);
+      }
+
+      if (str(args.notes)) {
+        var n = el('p', 'notes', str(args.notes));
+        n.id = 'group-notes';
+        app.append(n);
+      }
+
+      var w = el('p', 'weight',
+        'This is the author’s list of who belongs. Being named here is not the same as agreeing to it, and it gives nobody any standing with you — the shell never lets a roster reach your tribe.');
+      w.id = 'group-weight';
+      app.append(w);
+    }
+
+    function editMode() {
+      app.replaceChildren();
+      var list = members();
+
+      app.append(el('label', '', 'Name'));
+      var name = el('input'); name.id = 'edit-name'; name.value = str(args.name);
+      name.placeholder = 'The newsroom';
+      app.append(name);
+
+      app.append(el('label', '', 'Purpose'));
+      var purpose = el('textarea'); purpose.id = 'edit-purpose'; purpose.value = str(args.purpose);
+      purpose.placeholder = 'What this group is for.';
+      app.append(purpose);
+
+      app.append(el('label', '', 'Members'));
+      var rows = el('div'); rows.id = 'edit-members';
+      app.append(rows);
+
+      function addRow(m) {
+        var row = el('div', 'row');
+        var k = el('input', 'k'); k.value = m ? m.key : ''; k.placeholder = 'their key (40-hex address)';
+        k.setAttribute('data-field', 'key');
+        var r = el('input', 'r'); r.value = m ? m.role : ''; r.placeholder = 'role (optional)';
+        r.setAttribute('data-field', 'role');
+        var n = el('input', 'n'); n.value = m ? m.name : ''; n.placeholder = 'name (optional)';
+        n.setAttribute('data-field', 'name');
+        var drop = el('button', 'drop', '×');
+        drop.title = 'Remove';
+        drop.addEventListener('click', function () { row.remove(); stream(); });
+        [k, r, n].forEach(function (i) { i.addEventListener('input', stream); });
+        row.append(k, r, n, drop);
+        rows.append(row);
+      }
+
+      var add = el('button', '', 'Add a member');
+      add.id = 'edit-add';
+      add.addEventListener('click', function () { addRow(null); stream(); });
+      app.append(add);
+
+      app.append(el('label', '', 'Notes'));
+      var notes = el('textarea'); notes.id = 'edit-notes'; notes.value = str(args.notes);
+      app.append(notes);
+
+      app.append(el('div', 'hint',
+        'Listing someone does not ask them and does not bind them. To change the roster later, publish a new version from the header — the shell chains it to this one.'));
+
+      function collect() {
+        var out = [];
+        rows.querySelectorAll('.row').forEach(function (row) {
+          var key = row.querySelector('[data-field=key]').value.trim().toLowerCase();
+          if (!key) return;
+          out.push({
+            key: key, scheme: 'eth-eip191',
+            role: row.querySelector('[data-field=role]').value.trim(),
+            name: row.querySelector('[data-field=name]').value.trim()
+          });
+        });
+        return out;
+      }
+
+      function stream() {
+        // Whole-set replacement on every emit, members included.
+        window.bridge.emit('draft', {
+          type: 'group',
+          args: {
+            name: name.value.trim(), purpose: purpose.value,
+            members: collect(), notes: notes.value
+          }
+        });
+      }
+
+      name.addEventListener('input', stream);
+      purpose.addEventListener('input', stream);
+      notes.addEventListener('input', stream);
+      list.forEach(function (m) { addRow(m); });
+      stream(); // initial state, so Publish enables immediately
+      name.focus();
+    }
+
+    if (a.mode === 'edit') editMode(); else viewMode();
+  </script>
+</body>
+</html>

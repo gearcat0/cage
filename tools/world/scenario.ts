@@ -231,6 +231,65 @@ async function articleWithAttestations(c: Cast, log: (s: string) => void): Promi
   log('  article: Harbour Yard — 5 attestations, 3 of them in Ada’s tribe')
 }
 
+/** A roster that has actually been amended, so version history is visible
+ *  rather than theoretical. Published twice: the second version writes one
+ *  person out, which is the case the membership query exists to get right. */
+async function group(c: Cast, log: (s: string) => void): Promise<void> {
+  const press = ['ada', 'grace', 'alan', 'katherine', 'dorothy', 'mary', 'joan', 'edith'].map((k) => c[k]!)
+  const member = (a: (typeof press)[number], role: string): Record<string, string> => ({
+    key: a.who.address,
+    scheme: 'eth-eip191',
+    role,
+    name: a.who.name
+  })
+
+  const v0 = await publish(
+    c.ada!,
+    {
+      type: 'group',
+      created: T0 + 2 * DAY,
+      args: {
+        name: 'Meridian Press — editorial',
+        purpose: 'Everyone who files or edits copy.',
+        members: [
+          member(c.ada!, 'editor'),
+          member(c.grace!, 'reporter'),
+          member(c.alan!, 'reporter'),
+          member(c.katherine!, 'fact-checker'),
+          member(c.edith!, 'archivist')
+        ],
+        notes: ''
+      }
+    },
+    press
+  )
+
+  // Edith moves to the archive and comes off the editorial roster; Dorothy and
+  // Joan join. A new version, chained to the first.
+  await deliver(
+    await author(c.ada!, {
+      type: 'group',
+      created: T0 + 9 * DAY,
+      args: {
+        name: 'Meridian Press — editorial',
+        purpose: 'Everyone who files or edits copy.',
+        members: [
+          member(c.ada!, 'editor'),
+          member(c.grace!, 'reporter'),
+          member(c.alan!, 'reporter'),
+          member(c.katherine!, 'fact-checker'),
+          member(c.dorothy!, 'fact-checker'),
+          member(c.joan!, 'sub-editor')
+        ],
+        notes: 'Edith moved to the archive in June.'
+      },
+      chain: { path: v0.envelopeHash, seq: 1, prev: v0.envelopeHash }
+    }),
+    press
+  )
+  log('  group: editorial roster, amended once — Edith written out, two added')
+}
+
 /** An invoice, so there is one to look at. Money is in minor units and
  *  quantities in thousandths because canonical CBOR forbids floats -- 2.5 hours
  *  at £180 is quantity 2500, unitPrice 18000. */
@@ -354,6 +413,7 @@ export async function buildWorld(accounts: OpenAccount[], log: (s: string) => vo
   await pendingContract(c, log)
   await uninvitedSignature(c, log)
   await articleWithAttestations(c, log)
+  await group(c, log)
   await invoice(c, log)
   await everyday(c, log)
 }

@@ -120,12 +120,12 @@ export interface DeclaredSigner {
  *  awaiting signatures. The list lives in the MANIFEST, so it is covered by
  *  every signature over that manifest -- nobody can quietly add themselves to
  *  the named parties without producing a different document. */
-export function declaredSigners(args: unknown): DeclaredSigner[] {
+export function declaredSigners(args: unknown, field = 'signers'): DeclaredSigner[] {
   const raw =
     args instanceof Map
-      ? args.get('signers')
+      ? args.get(field)
       : args && typeof args === 'object' && !Array.isArray(args)
-        ? (args as Record<string, unknown>).signers
+        ? (args as Record<string, unknown>)[field]
         : undefined
   if (!Array.isArray(raw)) return []
   const out: DeclaredSigner[] = []
@@ -412,6 +412,41 @@ export class Library {
         added_at  INTEGER NOT NULL
       );
 
+      -- What each version claims to follow. The prev field on an envelope has
+      -- never been checked by anything -- an author claim, like created. Kept
+      -- here so it CAN be checked against the chain's own order, and a version
+      -- that points somewhere else can be said to.
+      CREATE TABLE IF NOT EXISTS thing_prev (
+        envelope_hash TEXT PRIMARY KEY,
+        prev          TEXT NOT NULL
+      );
+
+      -- What a draft is AMENDING, until it is published and the envelope
+      -- carries it instead. A separate table because the drafts table cannot
+      -- gain columns (no schema versioning), and because most drafts amend
+      -- nothing. (No backticks in here: this is a JS template literal.)
+      CREATE TABLE IF NOT EXISTS draft_chain (
+        draft_id TEXT PRIMARY KEY,
+        path     TEXT NOT NULL,
+        seq      INTEGER NOT NULL,
+        prev     TEXT NOT NULL
+      );
+
+      -- Who a group LISTS. Keyed by envelope hash, so it records a particular
+      -- VERSION of a roster -- being in version 1 of a group you were removed
+      -- from in version 2 is not membership, and the query resolves to the
+      -- latest version of each chain for exactly that reason.
+      CREATE TABLE IF NOT EXISTS group_members (
+        envelope_hash TEXT NOT NULL,
+        idx           INTEGER NOT NULL,
+        scheme        TEXT NOT NULL,
+        key           TEXT NOT NULL,
+        role          TEXT NOT NULL DEFAULT '',
+        name          TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (envelope_hash, idx)
+      );
+      CREATE INDEX IF NOT EXISTS idx_group_members_key ON group_members(scheme, key);
+
       CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
     `)
     this.backfillRefs()
@@ -588,6 +623,26 @@ export class Library {
         named.forEach((sg, i) => insertSigner.run(manifestHash, i, sg.scheme, sg.key, sg.role, sg.name))
       }
 
+      // What this version claims to follow, so the claim can be checked later.
+      if (env.prev) {
+        this.db
+          .prepare('INSERT OR REPLACE INTO thing_prev (envelope_hash, prev) VALUES (?,?)')
+          .run(envelopeHash, toHex(env.prev))
+      }
+
+      // Who a group LISTS. Same shape as a contract's signers, and the same
+      // standing: the author's claim about who belongs, never their consent.
+      if (result.manifest.type === 'group') {
+        const members = declaredSigners(result.manifest.args, 'members')
+        if (members.length > 0) {
+          const insertMember = this.db.prepare(
+            `INSERT OR REPLACE INTO group_members (envelope_hash, idx, scheme, key, role, name)
+             VALUES (?,?,?,?,?,?)`
+          )
+          members.forEach((m, i) => insertMember.run(envelopeHash, i, m.scheme, m.key, m.role, m.name))
+        }
+      }
+
       // A vouch: the SIGNER is the voucher (from the envelope, so it cannot be
       // faked), the subject comes from the args (so it is their claim).
       if (result.manifest.type === 'vouch') {
@@ -651,6 +706,27 @@ export class Library {
     where.push(
       `(NOT EXISTS (SELECT 1 FROM doc_signers d WHERE d.manifest_hash = t.manifest_hash)
         OR t.rowid = (SELECT MIN(t2.rowid) FROM things t2 WHERE t2.manifest_hash = t.manifest_hash))`
+    )
+    // Collapse a version CHAIN to its current version. Two rules, because a
+    // chain has two kinds of stale member: an older version (a later seq by the
+    // same author on the same path), and the ORIGINAL the chain was rooted on,
+    // whose own hash is the path. Without the second, amending something would
+    // leave the thing you amended sitting beside its own replacement.
+    //
+    // Scoped to things that are actually IN a chain, so an ordinary standalone
+    // thing keeps its row -- the lesson the co-signing collapse above taught.
+    where.push(
+      `(t.path IS NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM things later
+           WHERE later.author_key = t.author_key AND later.path = t.path AND later.seq > t.seq
+        ))`
+    )
+    where.push(
+      `NOT EXISTS (
+        SELECT 1 FROM things v
+         WHERE v.path = t.envelope_hash AND v.author_key = t.author_key
+      )`
     )
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : ''
     const limit = query.limit ?? 200
@@ -752,6 +828,101 @@ export class Library {
 
   forgetTransfer(id: string): boolean {
     return this.db.prepare('DELETE FROM transfers WHERE id = ?').run(id).changes > 0
+  }
+
+  /** Remember what a draft is amending. */
+  setDraftChain(draftId: string, path: string, seq: number, prev: string): void {
+    this.db
+      .prepare('INSERT OR REPLACE INTO draft_chain (draft_id, path, seq, prev) VALUES (?,?,?,?)')
+      .run(draftId, path, seq, prev)
+  }
+
+  draftChain(draftId: string): { path: string; seq: number; prev: string } | null {
+    const r = this.db.prepare('SELECT path, seq, prev FROM draft_chain WHERE draft_id = ?').get(draftId) as
+      | { path: string; seq: number; prev: string }
+      | undefined
+    return r ?? null
+  }
+
+  clearDraftChain(draftId: string): void {
+    this.db.prepare('DELETE FROM draft_chain WHERE draft_id = ?').run(draftId)
+  }
+
+  // ── Version chains ─────────────────────────────────────────────────────────
+  // A chain is (author_key, path): the same author continuing their own line.
+  // Someone else amending your thing shares the path but not the author, so it
+  // is THEIR chain rooted at your thing -- never a new version of yours.
+
+  /** What a version CLAIMS to follow, or null if it claims nothing. */
+  claimedPrev(envelopeHash: string): string | null {
+    const r = this.db.prepare('SELECT prev FROM thing_prev WHERE envelope_hash = ?').get(envelopeHash) as
+      | { prev: string }
+      | undefined
+    return r ? r.prev : null
+  }
+
+  /** Every version in a chain, oldest first. */
+  chainHistory(authorKey: string, path: string): ThingRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT t.*, p.name AS petname, 1 AS signatures, 0 AS cosignable
+           FROM things t
+           LEFT JOIN petnames p ON p.author_scheme = t.author_scheme AND p.author_key = t.author_key
+          WHERE t.author_key = ? AND t.path = ?
+          ORDER BY t.seq ASC, t.rowid ASC`
+      )
+      .all(authorKey, path) as Row[]
+    return rows.map(toThingRow)
+  }
+
+  /** The highest seq in a chain, or null if there is none. */
+  chainLatest(authorKey: string, path: string): ThingRow | null {
+    const row = this.db
+      .prepare(
+        `SELECT t.*, NULL AS petname, 1 AS signatures, 0 AS cosignable
+           FROM things t WHERE t.author_key = ? AND t.path = ?
+          ORDER BY t.seq DESC, t.rowid DESC LIMIT 1`
+      )
+      .get(authorKey, path) as Row | undefined
+    return row ? toThingRow(row) : null
+  }
+
+  /** The people a group version lists. The author's claim, not consent. */
+  groupMembers(envelopeHash: string): DeclaredSigner[] {
+    const rows = this.db
+      .prepare('SELECT scheme, key, role, name FROM group_members WHERE envelope_hash = ? ORDER BY idx ASC')
+      .all(envelopeHash) as { scheme: string; key: string; role: string; name: string }[]
+    return rows.map((r) => ({ scheme: r.scheme, key: r.key, role: r.role, name: r.name }))
+  }
+
+  /** Groups whose CURRENT version lists this key.
+   *
+   *  Resolved to the latest version of each chain on purpose: a roster you were
+   *  written out of in version 2 should stop listing you, and a query that
+   *  ignored that would report memberships that have been revoked. */
+  groupsListing(scheme: string, key: string): { envelopeHash: string; authorKey: string }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT g.envelope_hash, t.author_key
+           FROM group_members g
+           JOIN things t ON t.envelope_hash = g.envelope_hash
+          WHERE g.scheme = ? AND g.key = ?
+            -- A superseded VERSION: a later seq on the same line.
+            AND NOT EXISTS (
+              SELECT 1 FROM things later
+               WHERE later.author_key = t.author_key AND t.path IS NOT NULL
+                 AND later.path = t.path AND later.seq > t.seq
+            )
+            -- A superseded ROOT: the thing a line was started on. Its own path
+            -- is NULL, so the rule above cannot see it, and without this a
+            -- roster's first version keeps reporting people written out of it.
+            AND NOT EXISTS (
+              SELECT 1 FROM things v
+               WHERE v.author_key = t.author_key AND v.path = t.envelope_hash
+            )`
+      )
+      .all(scheme, key) as { envelope_hash: string; author_key: string }[]
+    return rows.map((r) => ({ envelopeHash: r.envelope_hash, authorKey: r.author_key }))
   }
 
   /** Every vouch pointing at a key, newest claim per voucher.
@@ -1057,6 +1228,7 @@ export class Library {
     const candidates = new Set<string>([row.progHash, ...this.draftBlobs(id).map((b) => b.hash)])
     this.db.transaction(() => {
       this.db.prepare('DELETE FROM draft_blobs WHERE draft_id = ?').run(id)
+      this.db.prepare('DELETE FROM draft_chain WHERE draft_id = ?').run(id)
       this.db.prepare('DELETE FROM drafts WHERE id = ?').run(id)
     })()
     this.gc(candidates)

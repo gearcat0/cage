@@ -329,6 +329,9 @@ interface ShellSurface {
   people?: () => unknown[]
   setPetname?: (scheme: string, key: string, name: string, note?: string) => void
   attestations?: (targetHash: string) => { count: number; rows: unknown[] }
+  amend?: (envelopeHash: string) => Record<string, unknown>
+  history?: (authorKey: string, path: string) => ThingRow[]
+  groupsListing?: (scheme: string, key: string) => Record<string, unknown>[]
   transfers?: () => Record<string, unknown>
   cancelTransfer?: (id: string) => Record<string, unknown>
   cosign?: (envelopeHash: string) => Promise<Record<string, unknown>>
@@ -839,7 +842,9 @@ app.whenReady().then(async () => {
         attestsKnown: attestedNow ? library.get(attestedNow) !== null : false,
         attestCount: draft ? 0 : library.countRefsTo(envelopeHash, 'attests'),
         ...trustFacts(current.stored, draft !== null),
-        ...(draft ? {} : documentFacts(current.stored.row.manifestHash))
+        ...(draft ? {} : documentFacts(current.stored.row.manifestHash)),
+        ...(draft ? {} : versionFacts(current.stored.row)),
+        mine: draft ? true : hex(keyring.identity.address).toLowerCase() === current.stored.row.authorKey
       }
       return { ...current.header, mode: current.activeMode }
     }
@@ -948,7 +953,11 @@ app.whenReady().then(async () => {
       attestCount: draft ? 0 : library.countRefsTo(envelopeHash, 'attests'),
       ...trustFacts(stored, draft !== null),
       // A draft is signed by nobody, so it is not a document with signatures.
-      ...(draft ? {} : documentFacts(stored.row.manifestHash))
+      ...(draft ? {} : documentFacts(stored.row.manifestHash)),
+      ...(draft ? {} : versionFacts(stored.row)),
+      // Whether amending would continue YOUR line or start one rooted on
+      // somebody else's thing. The chrome must not call the second "version 2".
+      mine: draft ? true : hex(keyring.identity.address).toLowerCase() === stored.row.authorKey
     }
     if (draft) await setMode('edit') // unfinished work opens ready to edit
     notifyModeChanged(o.activeMode)
@@ -1263,6 +1272,66 @@ app.whenReady().then(async () => {
       fromTribe: rows.filter((r) => r.hops !== null).length,
       // Where the SUBJECT sits, which is the question actually being asked.
       hops: tribe.get(`${s}:${k}`)?.hops ?? null
+    }
+  }
+
+  /** Groups whose current version lists this key, with the group's own name.
+   *
+   *  Descriptive only. This never reaches tribe(): a roster is free to write,
+   *  so if membership counted as trust anyone could add themselves to your
+   *  graph by publishing a group that names them -- the precise hole vouches
+   *  were designed to avoid. */
+  function groupsListing(scheme: string, key: string): Record<string, unknown>[] {
+    return library.groupsListing(scheme, key).map((g) => {
+      const stored = library.load(g.envelopeHash)
+      const args = stored ? (cborToJs(stored.manifest.args) as { name?: unknown }) : {}
+      return {
+        envelopeHash: g.envelopeHash,
+        authorKey: g.authorKey,
+        name: typeof args.name === 'string' ? args.name : '',
+        petname: library.petname('eth-eip191', g.authorKey)?.name ?? null
+      }
+    })
+  }
+
+  /** Where a thing sits in its author's version chain, and whether the link
+   *  backwards holds up.
+   *
+   *  `prev` has never been verified by anything -- it is an author claim like
+   *  `created`. Where the predecessor is in the library it is checked; where it
+   *  is not, that is said rather than assumed, exactly as replyTo and attests
+   *  are treated. */
+  function versionFacts(row: ThingRow): Record<string, unknown> {
+    if (!row.path) {
+      // Not in a chain. It may still be the ROOT of one somebody started.
+      const versions = library.chainHistory(row.authorKey, row.envelopeHash)
+      return {
+        chainPath: null,
+        version: versions.length > 0 ? 0 : null,
+        versionCount: versions.length > 0 ? versions.length : null,
+        supersededBy: versions.length > 0 ? versions[versions.length - 1]!.envelopeHash : null,
+        prevKnown: false,
+        prevMatches: null
+      }
+    }
+    const history = library.chainHistory(row.authorKey, row.path)
+    const idx = history.findIndex((h) => h.envelopeHash === row.envelopeHash)
+    const latest = history[history.length - 1] ?? null
+    // The predecessor as the CHAIN orders it, against the one this envelope
+    // CLAIMS. They agree on an honest chain; when they do not, the version is
+    // pointing at something other than the version before it, and saying so is
+    // the only reason to record prev at all.
+    const expected = idx > 0 ? history[idx - 1]!.envelopeHash : row.path
+    const claimed = library.claimedPrev(row.envelopeHash)
+    return {
+      chainPath: row.path,
+      version: row.seq,
+      versionCount: history.length,
+      supersededBy: latest && latest.envelopeHash !== row.envelopeHash ? latest.envelopeHash : null,
+      prevClaimed: claimed,
+      // Known = we hold what it points at, so the claim is checkable at all.
+      prevKnown: claimed !== null && library.get(claimed) !== null,
+      prevMatches: claimed === null ? null : claimed === expected
     }
   }
 
@@ -1786,6 +1855,46 @@ app.whenReady().then(async () => {
     return { cancelled: forgotten || stopped }
   }
 
+  /** Start a NEW VERSION of a thing.
+   *
+   *  A chain begins the first time something is amended: the new version takes
+   *  `path` = the original's envelope hash, so chain identity is collision-free
+   *  and names where the line began. Amending a version already in a chain
+   *  continues it at seq + 1.
+   *
+   *  A chain is (author_key, path). Amending SOMEBODY ELSE'S thing therefore
+   *  produces your own chain rooted at theirs -- not a new version of theirs,
+   *  which you could not publish even if you wanted to, because you cannot
+   *  sign as them. The chrome has to say which of the two it is showing. */
+  function amendThing(envelopeHash: unknown): Record<string, unknown> {
+    if (typeof envelopeHash !== 'string' || isDraftId(envelopeHash)) {
+      return { error: 'a draft has no published version to amend — publish it first' }
+    }
+    const row = library.get(envelopeHash)
+    if (!row) return { error: 'not found' }
+    const stored = library.load(envelopeHash)
+    if (!stored) return { error: 'not loadable (sealed, undecrypted)' }
+    if (row.sealed) return { error: 'refusing to amend a sealed thing into a public one' }
+
+    // Continue the chain this thing is in, or root a new one on it.
+    const path = row.path ?? envelopeHash
+    const seq = (row.seq ?? 0) + 1
+    // Start from the thing's OWN program and args -- not from a type key. A key
+    // would have to be reverse-engineered (library keys are type + NUL + program
+    // hash) and could resolve to a different program that merely shares a type
+    // name, which would silently amend a thing into something else.
+    let seed: unknown
+    try {
+      seed = cborToJs(stored.manifest.args)
+    } catch {
+      return { error: 'that thing has args this shell cannot re-edit' }
+    }
+    const draft = library.createDraft({ type: row.type, progHash: row.progHash, args: seed })
+    library.setDraftChain(draft.id, path, seq, envelopeHash)
+    notifyFeedChanged()
+    return { id: draft.id, type: draft.type, path, seq, prev: envelopeHash }
+  }
+
   /** The seed store is keyed by TAR hash with no envelope index — scan and
    *  parse to find the tar hash(es) whose envelope matches. Seeds are few.
    *  If this ever gets expensive the answer is an envelope->tar index TABLE
@@ -1933,11 +2042,16 @@ app.whenReady().then(async () => {
     } catch (e) {
       return { status: 'invalid', reason: `publish: ${(e as Error).message}` }
     }
+    // If this draft is amending something, the chain goes on the ENVELOPE --
+    // path/seq/prev are envelope fields (§5.3), not args, so a program cannot
+    // put itself into someone's version history.
+    const chain = p.draftId ? library.draftChain(p.draftId) : null
     const tar = await buildBundle(keyring.signer, {
       program: p.program,
       type: p.draft.type,
       args,
-      attachments: p.attachments
+      attachments: p.attachments,
+      ...(chain ? { path: chain.path, seq: chain.seq, prev: fromHex(chain.prev) } : {})
     })
     return ingestBytes(tar)
   }
@@ -2133,6 +2247,13 @@ app.whenReady().then(async () => {
     notifyFeedChanged() // every row showing this author is now stale
     return { ok: true }
   })
+  ipcMain.handle('shell:amend', (_e, h: unknown) => amendThing(h))
+  ipcMain.handle('shell:history', (_e, author: unknown, path: unknown) =>
+    typeof author === 'string' && typeof path === 'string' ? library.chainHistory(author, path) : []
+  )
+  ipcMain.handle('shell:groups-listing', (_e, scheme: unknown, key: unknown) =>
+    typeof scheme === 'string' && typeof key === 'string' ? groupsListing(scheme, key) : []
+  )
   ipcMain.handle('shell:transfers', () => transferState())
   ipcMain.handle('shell:transfer-cancel', (_e, id: unknown) => cancelTransfer(id))
   ipcMain.handle('shell:cosign', (_e, h: unknown) => cosignThing(h))
@@ -2247,6 +2368,9 @@ app.whenReady().then(async () => {
     library.setPetname(scheme, key, name, note ?? '', Date.now())
     notifyFeedChanged()
   }
+  shell.amend = (h) => amendThing(h)
+  shell.history = (author, path) => library.chainHistory(author, path)
+  shell.groupsListing = (scheme, key) => groupsListing(scheme, key)
   shell.transfers = () => transferState()
   shell.cancelTransfer = (id) => cancelTransfer(id)
   shell.cosign = (h) => cosignThing(h)

@@ -104,6 +104,14 @@ const shell = {
   onOpenSharing: (cb: () => void): void => {
     ipcRenderer.on('shell:open-sharing', () => cb())
   },
+  /** Start a NEW VERSION of a thing, read a chain's history, and ask which
+   *  groups currently list a key. */
+  amend: (envelopeHash: string): Promise<{ id?: string; error?: string; seq?: number }> =>
+    ipcRenderer.invoke('shell:amend', envelopeHash),
+  history: (authorKey: string, path: string): Promise<Record<string, unknown>[]> =>
+    ipcRenderer.invoke('shell:history', authorKey, path),
+  groupsListing: (scheme: string, key: string): Promise<{ envelopeHash: string; name: string; petname: string | null }[]> =>
+    ipcRenderer.invoke('shell:groups-listing', scheme, key),
   /** Everything this shell is doing on the network: what it is fetching, and
    *  what it is serving. Pushed while anything is in flight, so a long transfer
    *  is watched rather than sampled. */

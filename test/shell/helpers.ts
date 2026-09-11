@@ -15,6 +15,8 @@ import {
   parseBundle,
   cosignBundle,
   jsToCbor,
+  fromHex,
+  asHash,
   type BundleSource,
   type Manifest,
   type Signer
@@ -105,6 +107,9 @@ export interface BuildOpts {
   created?: number
   path?: string
   seq?: number
+  /** What this version claims to follow. Deliberately settable to the WRONG
+   *  thing, so a broken chain can be built and the shell's check exercised. */
+  prev?: Uint8Array
 }
 
 /** Build a valid public bundle signed by `signer`. */
@@ -127,6 +132,7 @@ export async function buildBundle(signer: Signer, opts: BuildOpts = {}): Promise
   const env: Parameters<typeof encodeEnvelope>[0] = { man: hash(manifestBytes), created: opts.created ?? 1_700_000_000 }
   if (opts.path !== undefined) env.path = opts.path
   if (opts.seq !== undefined) env.seq = opts.seq
+  if (opts.prev !== undefined) env.prev = asHash(opts.prev)
   const envelope = await encodeEnvelope(env, signer)
   return buildTar({ 'envelope.cbor': envelope, 'manifest.cbor': manifestBytes, program, ...files })
 }
@@ -182,7 +188,7 @@ export function bundleTarHash(tar: Uint8Array): string {
   return [...hash(tar)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-export { seal, secp256k1, schnorr, hash, parseBundle, cosignBundle, jsToCbor }
+export { seal, secp256k1, schnorr, hash, parseBundle, cosignBundle, jsToCbor, fromHex }
 
 // ── Shell launcher ───────────────────────────────────────────────────────────
 
@@ -231,6 +237,10 @@ export interface ShellHandle {
   attestations(
     targetHash: string
   ): Promise<{ count: number; rows: { envelopeHash: string; authorKey: string; hops: number | null }[]; fromTribe: number }>
+  /** Versions: start a new one, and read a chain's history. */
+  amend(envelopeHash: string): Promise<{ id?: string; error?: string; seq?: number }>
+  history(authorKey: string, path: string): Promise<{ envelopeHash: string; seq: number | null; path: string | null }[]>
+  groupsListing(scheme: string, key: string): Promise<{ envelopeHash: string; name: string }[]>
   /** Transfers: downloads in flight and things being served. */
   transfers(): Promise<{ downloads: Record<string, unknown>[]; sharing: Record<string, unknown>[] }>
   cancelTransfer(id: string): Promise<{ cancelled: boolean }>
@@ -574,6 +584,28 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
         ).__shell
         return s.attestations(h) as never
       }, targetHash),
+    amend: (envelopeHash: string) =>
+      app.evaluate(async (electron, h) => {
+        const s = (electron.app as unknown as { __shell: { amend: (x: string) => Record<string, unknown> } }).__shell
+        return s.amend(h)
+      }, envelopeHash),
+    history: (authorKey: string, path: string) =>
+      app.evaluate(
+        async (electron, a) => {
+          const s = (electron.app as unknown as { __shell: { history: (x: string, y: string) => unknown } }).__shell
+          return s.history(a.authorKey, a.path) as never
+        },
+        { authorKey, path }
+      ),
+    groupsListing: (scheme: string, key: string) =>
+      app.evaluate(
+        async (electron, a) => {
+          const s = (electron.app as unknown as { __shell: { groupsListing: (x: string, y: string) => unknown } })
+            .__shell
+          return s.groupsListing(a.scheme, a.key) as never
+        },
+        { scheme, key }
+      ),
     transfers: () =>
       app.evaluate(async (electron) => {
         const s = (electron.app as unknown as { __shell: { transfers: () => unknown } }).__shell

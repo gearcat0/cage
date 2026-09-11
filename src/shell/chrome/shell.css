@@ -329,6 +329,10 @@ body {
 .sh-tribe-badge { font-weight: 400; }
 .sh-tribe-line { font-style: italic; }
 
+/* A superseded version. Muted rather than alarming: an old version is not
+   wrong, it is simply no longer current. */
+.sh-superseded { opacity: 0.75; text-decoration: line-through; }
+
 /* Transfers: downloads in flight and things being served. */
 .sh-transfers { max-width: 44em; }
 .sh-transfers-h {
