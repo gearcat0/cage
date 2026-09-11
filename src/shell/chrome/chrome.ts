@@ -53,6 +53,9 @@ interface ShellApi {
   setPetname(p: { scheme: string; key: string; name: string; note?: string }): Promise<{ ok: boolean }>
   onOpenPeople(cb: () => void): void
   attestations(targetHash: string): Promise<{ count: number; rows: (ThingRow & { hops: number | null })[]; fromTribe: number }>
+  amend(envelopeHash: string): Promise<{ id?: string; error?: string; seq?: number }>
+  history(authorKey: string, path: string): Promise<ThingRow[]>
+  groupsListing(scheme: string, key: string): Promise<{ envelopeHash: string; name: string; petname: string | null }[]>
   transfers(): Promise<TransferState>
   cancelTransfer(id: string): Promise<{ cancelled: boolean }>
   onTransfers(cb: (s: TransferState) => void): void
@@ -92,6 +95,9 @@ interface ThingRow {
   sealed: boolean
   read: boolean
   isFork: boolean
+  /** Its place in the author's version chain, when it is in one. */
+  path?: string | null
+  seq?: number | null
 }
 interface KnownTypeEntry {
   key: string
@@ -151,6 +157,17 @@ interface HeaderFacts {
   unnamedSignedCount?: number
   signedByMe?: boolean
   iAmNamed?: boolean
+  /** Where this sits in its author's version chain, and whether the link back
+   *  holds up. Null everywhere when the thing is in no chain at all. */
+  chainPath?: string | null
+  version?: number | null
+  versionCount?: number | null
+  supersededBy?: string | null
+  prevClaimed?: string | null
+  prevKnown?: boolean
+  prevMatches?: boolean | null
+  /** Whether amending continues YOUR line or starts one on someone else's. */
+  mine?: boolean
   /** When this thing IS a vouch: the key it speaks about. */
   vouchAbout?: string | null
   vouchAboutScheme?: string | null
@@ -1847,6 +1864,55 @@ async function openSignaturesModal(manifestHash: string): Promise<void> {
   document.body.append(trackOverlay(overlay))
 }
 
+/** Every version of a thing, oldest first.
+ *
+ *  A chain is one author continuing their own line. Someone else amending your
+ *  thing shares the path but not the author, so it is their chain rooted at
+ *  yours -- which is why this is always scoped to one author's key. */
+async function openHistoryModal(authorKey: string, path: string, currentHash: string): Promise<void> {
+  const rows = await shell.history(authorKey, path).catch(() => [])
+  const overlay = el('div', 'evm-modal-overlay')
+  const modal = el('div', 'evm-modal')
+  modal.setAttribute('data-testid', 'history-modal')
+  const header = el('div', 'evm-modal-header')
+  header.append(el('span', 'evm-modal-title', 'History'))
+  const body = el('div', 'evm-modal-body')
+  body.append(
+    el(
+      'p',
+      'sh-hint',
+      'Every version this author has published on this line, oldest first. Each one is its own signed thing — an earlier version is not deleted or corrected, it is simply superseded.'
+    )
+  )
+  body.setAttribute('data-count', String(rows.length))
+  for (const row of rows) {
+    const item = el('button', 'sh-feed-item')
+    item.setAttribute('data-testid', 'history-item')
+    item.setAttribute('data-seq', String(row.seq ?? 0))
+    const line = el('div', 'sh-feed-line')
+    const isCurrent = row.envelopeHash === currentHash
+    line.append(
+      el('span', 'evm-badge evm-badge--neutral', `v${row.seq ?? 0}`),
+      el('span', 'sh-feed-author evm-address evm-address--muted', short(row.envelopeHash, 8)),
+      el('span', 'sh-feed-flags', isCurrent ? 'you are here' : '')
+    )
+    item.append(line)
+    item.addEventListener('click', () => {
+      overlay.remove()
+      void openThing(row.envelopeHash)
+    })
+    body.append(item)
+  }
+  const footer = el('div', 'evm-modal-footer')
+  const close = el('button', 'evm-btn evm-btn--ghost', 'Close')
+  close.setAttribute('data-testid', 'history-close')
+  close.addEventListener('click', () => overlay.remove())
+  footer.append(close)
+  modal.append(header, body, footer)
+  overlay.append(modal)
+  document.body.append(trackOverlay(overlay))
+}
+
 /** Things in THIS library that claim to reply to `target`. */
 async function openRepliesModal(target: string): Promise<void> {
   const { rows } = await shell.replies(target)
@@ -1976,6 +2042,23 @@ function renderHeader(h: HeaderFacts | null): void {
     }
     await refreshFeed()
   })
+  // New version. On your own thing this continues your line; on someone
+  // else's it starts YOUR line rooted on theirs, because a chain is
+  // (author, path) and you cannot sign as them. The label says which, rather
+  // than letting "New version" imply you are editing their document.
+  const amendBtn = el('button', 'evm-btn evm-btn--secondary evm-btn--sm', h.mine ? 'New version…' : 'Your version…')
+  amendBtn.setAttribute('data-testid', 'header-amend')
+  if (h.draft) amendBtn.style.display = 'none' // nothing published to amend yet
+  amendBtn.title = h.mine
+    ? 'Publish a new version, chained to this one'
+    : 'Start your own version of this. It is chained to theirs, but it is your line — you cannot publish a new version of someone else’s thing.'
+  amendBtn.addEventListener('click', () => {
+    void shell.amend(h.envelopeHash).then((r) => {
+      if (!r.id) return showText(`Could not start a version: ${String(r.error ?? 'unknown')}`, 'danger')
+      void openThing(r.id)
+    })
+  })
+
   // Share: every way this thing can leave the machine, behind one control.
   // Deliberately ONE button rather than three -- this row already carries nine
   // and overflows its pane at the default window size.
@@ -2061,6 +2144,45 @@ function renderHeader(h: HeaderFacts | null): void {
     }
     replyBits.push(rt)
   }
+  // Where this sits in its author's line, when it is in one at all. A version
+  // number is only meaningful next to the count: "v2" alone does not tell you
+  // whether you are looking at the current roster or a stale one.
+  if (!h.draft && typeof h.version === 'number' && typeof h.versionCount === 'number' && h.versionCount > 0) {
+    const label = h.version === 0 ? `original of ${h.versionCount + 1}` : `version ${h.version} of ${h.versionCount}`
+    const vb = el('button', 'evm-btn evm-btn--ghost evm-btn--sm', label)
+    vb.setAttribute('data-testid', 'header-version')
+    // Tagged with the hash it describes: the header is rebuilt asynchronously,
+    // so a reader (or a test) polling for "the badge" can otherwise catch the
+    // previous thing's badge mid-swap.
+    vb.setAttribute('data-envelope-hash', h.envelopeHash)
+    vb.setAttribute('data-seq', String(h.version))
+    vb.setAttribute('data-superseded', h.supersededBy ? '1' : '0')
+    vb.title = h.supersededBy
+      ? 'A later version exists. What you are reading has been superseded.'
+      : 'The current version of this line.'
+    if (h.supersededBy) vb.classList.add('sh-superseded')
+    const chainPath = h.chainPath ?? h.envelopeHash
+    vb.addEventListener('click', () => void openHistoryModal(h.authorKey, chainPath, h.envelopeHash))
+    replyBits.push(vb)
+
+    if (h.supersededBy) {
+      const go = el('button', 'evm-btn evm-btn--ghost evm-btn--sm', 'Latest')
+      go.setAttribute('data-testid', 'header-latest')
+      go.title = 'Open the current version'
+      go.addEventListener('click', () => void openThing(h.supersededBy!))
+      replyBits.push(go)
+    }
+    // A version pointing somewhere other than the version before it is worth
+    // saying out loud: prev is an author claim, and this is the one place it
+    // can be checked.
+    if (h.prevMatches === false) {
+      const bad = el('span', 'evm-badge evm-badge--danger', 'prev does not match')
+      bad.setAttribute('data-testid', 'header-prev-mismatch')
+      bad.title = 'This version says it follows something other than the version before it.'
+      replyBits.push(bad)
+    }
+  }
+
   // A document several people sign. Only for declared documents: an ordinary
   // thing shares no manifest with anyone and is not awaiting signatures.
   if (h.cosignable && !h.draft) {
@@ -2148,6 +2270,7 @@ function renderHeader(h: HeaderFacts | null): void {
     pub,
     el('span', 'sh-spacer'),
     ...replyBits,
+    amendBtn,
     copyBtn,
     exportBtn,
     delBtn

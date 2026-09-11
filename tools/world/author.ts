@@ -10,6 +10,7 @@ import {
   cosignBundle,
   parseBundle,
   jsToCbor,
+  fromHex,
   type CborValue
 } from '../../src/format/index.js'
 import type { OpenAccount } from './account.js'
@@ -32,6 +33,8 @@ export interface AuthorOptions {
   /** Unix SECONDS. An author claim, and the field that makes two otherwise
    *  identical things distinct -- so scenario content should vary it. */
   created?: number
+  /** Publish this as a VERSION of something: path/seq/prev on the envelope. */
+  chain?: { path: string; seq: number; prev: string }
 }
 
 /** Build a signed bundle as `who`. Returns the tar bytes; delivery is separate
@@ -43,7 +46,8 @@ export async function author(who: OpenAccount, opts: AuthorOptions): Promise<Uin
     type: opts.type,
     args: opts.args === undefined ? null : args(opts.args),
     ...(opts.attachments ? { attachments: opts.attachments } : {}),
-    ...(opts.created === undefined ? {} : { created: opts.created })
+    ...(opts.created === undefined ? {} : { created: opts.created }),
+    ...(opts.chain ? { path: opts.chain.path, seq: opts.chain.seq, prev: fromHex(opts.chain.prev) } : {})
   })
 }
 

@@ -3,6 +3,7 @@ import cardHtml from '../../../samples/card.html?raw'
 import commentHtml from '../../../samples/comment.html?raw'
 import contractHtml from '../../../samples/contract.html?raw'
 import attestationHtml from '../../../samples/attestation.html?raw'
+import groupHtml from '../../../samples/group.html?raw'
 import inviteHtml from '../../../samples/invite.html?raw'
 import invoiceHtml from '../../../samples/invoice.html?raw'
 import memoHtml from '../../../samples/memo.html?raw'
@@ -60,6 +61,13 @@ export const STARTERS: readonly Starter[] = [
     label: 'Invitation',
     description: 'An event, with the date shown in the reader’s locale.',
     html: inviteHtml
+  },
+  {
+    key: 'starter:group',
+    type: 'group',
+    label: 'Group',
+    description: 'A roster of people, amended by publishing a new version.',
+    html: groupHtml
   },
   {
     key: 'starter:invoice',

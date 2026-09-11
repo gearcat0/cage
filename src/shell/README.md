@@ -210,6 +210,38 @@ manifest carries no author and no nonce, that *is* a co-signature — it would
 put your key on a contract you meant only to duplicate. The refusal points at
 Co-sign, which shows you what you are signing first.
 
+**Versions.** The envelope has carried `path`/`seq`/`prev` since the format was
+written (§5.3) and the library has indexed `(author_key, path, seq)` all along —
+none of it was ever used, because every publish set them to null. Now a chain
+starts the first time something is **amended**: the new version takes
+`path = the original's envelope hash`, so chain identity is collision-free and
+names where the line began, and every thing already in a library becomes
+amendable retroactively.
+
+A chain is `(author_key, path)`, and that is where ownership comes from without
+needing to be enforced: amending someone else's thing gives you **your** line
+rooted on theirs, never a new version of theirs — you cannot sign as them. The
+chrome says which it is offering (`New version…` vs `Your version…`), because
+the difference is the whole point.
+
+`prev` was a claim nothing checked. It is now compared against the chain's own
+order and a version pointing somewhere else is called out. The feed shows the
+current version — both the superseded versions *and* the original a line was
+rooted on collapse away — and the header says `version 2 of 4`, so opening an
+old one by hash tells you rather than quietly showing you stale content.
+
+**Groups** are the first user of that: a `group` thing is a roster, amended by
+publishing a new version of it, with members indexed so "which groups list this
+key" is a query — resolved to each chain's **latest** version, because someone
+written out in version 2 is not a member.
+
+What a roster is worth is stated in the program and enforced in the shell:
+being listed is the author's **claim**, not consent, and **never a trust
+input**. A roster is free to write, so if membership reached the tribe anyone
+could put themselves in your graph by publishing a group that named them. That
+is precisely the hole vouches were designed around, and there is a test whose
+only job is to prove a group cannot reopen it.
+
 **Vouches** are the trust graph, and the only one there is. A `vouch` thing
 carries `args {about, aboutScheme, name, relation, note}` where `about` is an
 author **key** — not a thing hash, which is why it cannot ride on `refs` (that
