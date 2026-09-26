@@ -1104,11 +1104,29 @@ app.whenReady().then(async () => {
 
   /** Switch the open thing's mode. The edit cage mounts lazily on first use
    *  and then stays alive (hidden) so its state survives further toggles. */
+  /** DIAGNOSTIC: numbers each edit mount, so two for one open are visible. */
+  let editMountSeq = 0
   async function setMode(mode: ThingMode): Promise<ThingMode> {
     const o = current
     if (!o || !o.view) return 'view'
+    if (mode === 'edit') {
+      // DIAGNOSTIC: who asked, and what state the edit cage was in. A CI run
+      // (PR #80, run 36232357567) showed TWO edit cages for one draft after a
+      // same-id reopen: main accepted drafts from one and modeState reported
+      // the other. The editMounting guard below should make that impossible,
+      // so these lines are here to show which caller got past it.
+      openLog('edit:setMode', {
+        hash: o.envelopeHash.slice(0, 12),
+        hasEdit: o.edit !== null,
+        mounting: o.editMounting !== null,
+        editWcId: o.editWcId,
+        from: new Error().stack?.split('\n')[2]?.trim().slice(0, 90)
+      })
+    }
     if (mode === 'edit' && !o.edit) {
       if (!o.editMounting) {
+        const mountSeq = ++editMountSeq
+        openLog('edit:mount-start', { hash: o.envelopeHash.slice(0, 12), mountSeq })
         o.editMounting = mountThing({
           win,
           preloadPath: CAGE_PRELOAD,
@@ -1117,6 +1135,13 @@ app.whenReady().then(async () => {
           mode: 'edit',
           zoomFactor: zoomFactor(),
           onBound: (wcId) => {
+            openLog('edit:bound', {
+              hash: o.envelopeHash.slice(0, 12),
+              mountSeq,
+              wcId,
+              prevEditWcId: o.editWcId,
+              stillCurrent: current === o
+            })
             o.wcIds.add(wcId)
             guardCageFocus(wcId)
             // Recorded BEFORE the program loads: an initial draft emitted
@@ -1127,6 +1152,13 @@ app.whenReady().then(async () => {
         })
       }
       const m = await o.editMounting
+      openLog('edit:resolved', {
+        hash: o.envelopeHash.slice(0, 12),
+        wcId: m.view.webContents.id,
+        adopting: current === o && !o.edit,
+        editWcId: o.editWcId,
+        stillCurrent: current === o
+      })
       if (current !== o) {
         // The thing was closed/replaced while mounting; destroyCurrent's
         // in-flight cleanup owns `m` — nothing more to do here.
@@ -1139,6 +1171,15 @@ app.whenReady().then(async () => {
           record({ type: 'cage-gone', role: 'edit', reason: details.reason, exitCode: details.exitCode })
         })
         watchZoomKeys(m.view.webContents)
+      }
+      // The invariant the CI failure broke: drafts are accepted from
+      // editWcId, and everything else (modeState, focus, tests) uses o.edit.
+      if (o.edit && o.edit.view.webContents.id !== o.editWcId) {
+        openLog('edit:MISMATCH', {
+          hash: o.envelopeHash.slice(0, 12),
+          editWcId: o.editWcId,
+          adoptedWcId: o.edit.view.webContents.id
+        })
       }
     }
     o.activeMode = mode
