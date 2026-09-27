@@ -1,4 +1,14 @@
-# Souspli
+<p align="center">
+  <img src=".github/assets/logo.svg" width="96" height="96" alt="">
+</p>
+
+<h1 align="center">Souspli</h1>
+
+<p align="center">
+  <a href="https://github.com/souspli/souspli/actions/workflows/test.yml"><img src="https://github.com/souspli/souspli/actions/workflows/test.yml/badge.svg?branch=master" alt="Tests"></a>
+  <a href="https://github.com/souspli/souspli/actions/workflows/site-live.yml"><img src="https://github.com/souspli/souspli/actions/workflows/site-live.yml/badge.svg?branch=master" alt="souspli.org"></a>
+  <a href="https://codecov.io/gh/souspli/souspli"><img src="https://codecov.io/gh/souspli/souspli/graph/badge.svg?branch=master" alt="Unit test coverage"></a>
+</p>
 
 **Signed, self-contained letters that people send each other and keep — instead of
 pages a server renders for them.**
@@ -62,6 +72,11 @@ pnpm world open ada     # the real app, on a populated library
 | `site/` | souspli.org, built from `docs/`. Standalone package. |
 | `test/` | The escape battery, ~270 end-to-end tests against the real app, ~190 unit tests. |
 | `docs/` | Everything above. [`docs/design-notes/`](docs/design-notes/index.md) keeps the original build briefs as decision records. |
+
+The coverage badge counts the unit tests only. They cover the format closely
+(`src/format/` is at about 95%), but the shell and the cage are tested by the escape
+battery, which runs inside Electron and isn't measured, so the overall figure
+understates what is tested.
 
 The code calls a letter a *thing*, a type a *program*, and the client the *shell* —
 [glossary](docs/glossary.md). Nothing on the wire was renamed.

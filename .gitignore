@@ -22,3 +22,6 @@ test/fixtures/
 *.swo
 *~
 .*.sw?
+
+# Unit-test coverage reports (pnpm test:coverage).
+coverage/

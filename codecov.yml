@@ -1,0 +1,10 @@
+# Coverage is reported, never enforced: a dip shows on the PR but doesn't fail
+# it. The number is the unit suite only (see vitest.config.ts).
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
