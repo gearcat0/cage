@@ -58,6 +58,11 @@ jobs:
   unit:
     name: unit + typecheck
     runs-on: ubuntu-latest
+    # id-token: the Codecov upload authenticates with GitHub's OIDC token, so
+    # there is no upload secret to store or leak.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -69,7 +74,16 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
-      - run: pnpm test:unit
+      - run: pnpm test:coverage
+      # Pinned to a commit, not a tag: this is the one third-party action here
+      # that runs with an identity token, and a tag can be moved. v7.1.1.
+      # Forks can't mint the token, so their upload fails without failing CI.
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5
+        with:
+          use_oidc: true
+          files: coverage/lcov.info
+          disable_search: true
+          fail_ci_if_error: false
 
   cage:
     name: escape suite (${{ matrix.os }})

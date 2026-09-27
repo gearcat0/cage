@@ -29,6 +29,7 @@
     "welcome:forum": "tsx tools/welcome/forum.ts",
     "world": "node scripts/run-world.mjs",
     "test:unit": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:cage": "pnpm build && node scripts/run-cage-tests.mjs",
     "test:cage:headed": "pnpm build && node scripts/run-cage-tests.mjs --headed"
   },
@@ -47,6 +48,7 @@
     "@playwright/test": "^1.61.1",
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^22.10.0",
+    "@vitest/coverage-v8": "^4.1.11",
     "cross-env": "^10.1.0",
     "electron": "^43.1.1",
     "electron-builder": "^26.15.3",
