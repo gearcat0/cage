@@ -26,7 +26,17 @@ will warn you the first time:
 - **Windows** — SmartScreen: **More info → Run anyway**.
 - **Linux** — `chmod +x Souspli-*.AppImage`, then run it; or install the `.deb`.
 
-There is no auto-update yet. Check the releases page for new versions.
+## Updates
+
+Releases up to 0.1.0 cannot update themselves: install the next release by hand,
+once. From then on Souspli asks, on first launch, whether it may check GitHub for a
+new version once a day ([what that reveals](privacy.md)). If you say no, Help →
+Check for updates… still works. A found update is shown with its notes and is only
+downloaded, then installed on restart, when you say so.
+
+The `.deb` package does not replace itself; Souspli tells you about the new version
+and opens its release page. The AppImage, the macOS app and the Windows installer
+update in place.
 
 ## First run
 

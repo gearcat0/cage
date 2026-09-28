@@ -1,4 +1,4 @@
-import { app, BaseWindow, Menu, WebContentsView, ipcMain, protocol, session, dialog, webContents } from 'electron'
+import { app, BaseWindow, Menu, WebContentsView, ipcMain, protocol, session, dialog, webContents, shell as electronShell } from 'electron'
 import { join } from 'node:path'
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
@@ -29,6 +29,7 @@ import { NOSTR_ENC_SCHEME } from './nostr/event.js'
 import { NamingService, DirectResolver, EnsResolver, NostrResolver, type EnsClient } from './naming/index.js'
 import { createMockEnsClient } from './naming/mock-ens.js'
 import { createViemEnsClient } from './naming/ens-viem.js'
+import { UpdateService, type Updater, type UpdatePref } from './update/index.js'
 import { CasStore, EphemeralStore } from '../main/store.js'
 import { installBridge, setDraftObserver, type ThingMode } from '../main/bridge.js'
 import { cage as cageGlobals, record } from '../main/events.js'
@@ -524,6 +525,63 @@ app.whenReady().then(async () => {
   })
   win.contentView.addChildView(chrome)
 
+  // ── Updates ────────────────────────────────────────────────────────────────
+  // Nothing is checked until the human agrees (see src/shell/update). The
+  // answer is kept in the library, beside the data it governs.
+  const readUpdatePref = (): UpdatePref => {
+    const v = library.getSetting('update-check')
+    return v === 'on' || v === 'off' ? v : 'ask'
+  }
+  const updates = new UpdateService({
+    createUpdater: async () => {
+      const feed = process.env.SHELL_UPDATE_FEED
+      if (feed && !app.isPackaged) {
+        // Test hook, unpackaged runs only. Electron reports its own version
+        // (or "0.0" under Playwright) when not packaged, and electron-updater
+        // compares against it. setVersion is what Electron's default app uses
+        // to apply a package.json version; it is undocumented, and this is
+        // the only place it is used.
+        ;(app as unknown as { setVersion(v: string): void }).setVersion(appVersion())
+      }
+      // Imported on first use, so the updater is not even loaded before
+      // someone asks for a check. It is CommonJS with `autoUpdater` behind a
+      // getter (which constructs it), which Node's named-export detection
+      // misses, so it is read off the module object.
+      const mod = await import('electron-updater')
+      const { autoUpdater } = (mod as unknown as { default?: typeof mod }).default ?? mod
+      if (feed) {
+        // A local feed in place of GitHub Releases, and permission for an
+        // unpackaged build to check at all.
+        autoUpdater.forceDevUpdateConfig = true
+        autoUpdater.setFeedURL({ provider: 'generic', url: feed })
+      }
+      autoUpdater.autoDownload = false
+      autoUpdater.autoInstallOnAppQuit = false
+      // Set explicitly: electron-updater turns prereleases on by itself when
+      // the running version has a prerelease tag.
+      autoUpdater.allowPrerelease = false
+      autoUpdater.allowDowngrade = false
+      return autoUpdater as unknown as Updater
+    },
+    getPref: readUpdatePref,
+    setPref: (p) => library.setSetting('update-check', p),
+    // A .deb could only be installed unauthenticated via pkexec/sudo; those
+    // users get the release page instead. An AppImage replaces itself.
+    canInstall: process.platform !== 'linux' || Boolean(process.env.APPIMAGE),
+    onState: () => {
+      if (!chrome.webContents.isDestroyed()) chrome.webContents.send('shell:update-state', updateStatus())
+    },
+    firstCheckMs: numEnv('SHELL_UPDATE_FIRST_CHECK_MS', 30_000)
+  })
+  /** What the chrome needs: the pref, the state, and whether to ask. The first-
+   *  run question is suppressed under test (SHELL_NO_UPDATE_PROMPT), like the
+   *  welcome letter, so specs don't start behind a modal. */
+  const updateStatus = (): Record<string, unknown> => {
+    const s = updates.status()
+    return { ...s, current: appVersion(), prompt: s.pref === 'ask' && process.env.SHELL_NO_UPDATE_PROMPT !== '1' }
+  }
+  updates.start()
+
   // ── Application menu ───────────────────────────────────────────────────────
   // Deliberately minimal: appMenu (macOS conventions), editMenu (clipboard
   // shortcuts in chrome inputs), Help → About. NO viewMenu — its zoom roles
@@ -548,6 +606,8 @@ app.whenReady().then(async () => {
       {
         role: 'help',
         submenu: [
+          { label: 'Check for updates…', click: () => chrome.webContents.send('shell:open-updates') },
+          { type: 'separator' },
           {
             label: 'About',
             click: () => {
@@ -3036,6 +3096,29 @@ app.whenReady().then(async () => {
 
   // ── IPC surface for the chrome ─────────────────────────────────────────────
   ipcMain.handle('shell:identity', () => shell.identity)
+  ipcMain.handle('shell:update-status', () => updateStatus())
+  ipcMain.handle('shell:update-check', async () => {
+    await updates.check({ manual: true })
+    return updateStatus()
+  })
+  ipcMain.handle('shell:update-set-pref', (_e, p: unknown) => {
+    // `ask` is the absence of an answer, not something the chrome can choose.
+    if (p === 'on' || p === 'off') updates.setPref(p)
+    return updateStatus()
+  })
+  ipcMain.handle('shell:update-download', async () => {
+    await updates.download()
+    return updateStatus()
+  })
+  ipcMain.handle('shell:update-install', () => updates.install())
+  ipcMain.handle('shell:update-open-release', async () => {
+    // The URL is built here from the version the updater found, never taken
+    // from the chrome.
+    const s = updates.status().state
+    if (s.phase !== 'available' || !/^\d+\.\d+\.\d+$/.test(s.version)) return false
+    await electronShell.openExternal(`https://github.com/souspli/souspli/releases/tag/v${s.version}`)
+    return true
+  })
   ipcMain.handle('shell:feed', (_e, query) => getFeed(query))
   ipcMain.handle('shell:ingest', (_e, base64: string) => ingestBytes(base64ToBytes(base64)))
   ipcMain.handle('shell:fetch', (_e, locator: string) => fetchNameOrLocator(locator))

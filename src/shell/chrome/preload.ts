@@ -239,6 +239,21 @@ const shell = {
   /** Main pushes the outcome of an approved publish (admission summary). */
   onPublishResult: (cb: (outcome: Record<string, unknown>) => void): void => {
     ipcRenderer.on('shell:publish-result', (_e, outcome) => cb(outcome))
+  },
+  // ── Updates: every network step is a human's yes (src/shell/update) ────────
+  updateStatus: (): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:update-status'),
+  updateCheck: (): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:update-check'),
+  updateSetPref: (p: 'on' | 'off'): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:update-set-pref', p),
+  updateDownload: (): Promise<Record<string, unknown>> => ipcRenderer.invoke('shell:update-download'),
+  updateInstall: (): Promise<boolean> => ipcRenderer.invoke('shell:update-install'),
+  updateOpenRelease: (): Promise<boolean> => ipcRenderer.invoke('shell:update-open-release'),
+  /** Main pushes the update state as it changes (found, progress, ready). */
+  onUpdateState: (cb: (s: Record<string, unknown>) => void): void => {
+    ipcRenderer.on('shell:update-state', (_e, s) => cb(s))
+  },
+  /** Help → Check for updates… */
+  onOpenUpdates: (cb: () => void): void => {
+    ipcRenderer.on('shell:open-updates', () => cb())
   }
 }
 

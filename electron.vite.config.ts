@@ -15,7 +15,8 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 const BUNDLED = ['@noble/curves', '@noble/hashes', '@noble/ciphers', 'zod', '@scure/bip39', '@scure/bip32', '@scure/base']
 // `webtorrent` is an OPTIONAL, lazily-imported transport (magnet:); keep it
 // external so the build never tries to bundle it when it is not installed.
-const EXTERNAL = ['electron', 'better-sqlite3', 'webtorrent']
+// `electron-updater` loads lazily, on the first update check, from node_modules.
+const EXTERNAL = ['electron', 'better-sqlite3', 'webtorrent', 'electron-updater']
 
 export default defineConfig({
   main: {

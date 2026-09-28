@@ -659,6 +659,16 @@ export class Library {
     this.db.prepare('INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)').run(`flag:${k}`, '1')
   }
 
+  /** A small setting that belongs to this library, like whether the human
+   *  agreed to update checks. Same table as the flags, under `setting:`. */
+  getSetting(k: string): string | null {
+    return this.metaGet(`setting:${k}`)
+  }
+
+  setSetting(k: string, v: string): void {
+    this.db.prepare('INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)').run(`setting:${k}`, v)
+  }
+
   private metaGet(k: string): string | null {
     const r = this.db.prepare('SELECT v FROM meta WHERE k = ?').get(k) as { v: string } | undefined
     return r ? r.v : null
