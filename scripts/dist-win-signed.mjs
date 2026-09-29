@@ -22,7 +22,8 @@ const fail = (msg) => {
 
 if (process.platform !== 'win32') fail('Run this on Windows, logged in to SimplySign Desktop.')
 
-const thumb = (process.env.SOUSPLI_WIN_CERT_SHA1 ?? '').replace(/\s/g, '').toUpperCase()
+// Quotes and spaces are dropped: cmd.exe keeps `set X='…'`'s quotes in the value.
+const thumb = (process.env.SOUSPLI_WIN_CERT_SHA1 ?? '').replace(/[\s'"]/g, '').toUpperCase()
 if (!/^[0-9A-F]{40}$/.test(thumb)) {
   fail(
     'Set SOUSPLI_WIN_CERT_SHA1 to the certificate thumbprint (40 hex characters).\n' +
@@ -38,20 +39,15 @@ if (!publisher || publisher.startsWith('REPLACE_WITH')) {
   fail('Set win.signtoolOptions.publisherName in electron-builder.yml to the certificate subject CN.')
 }
 
-const run = (cmd, args) => {
-  const r = spawnSync(cmd, args, { stdio: 'inherit', shell: true })
-  if (r.status !== 0) fail(`${cmd} ${args.join(' ')} failed`)
+// One command string through the shell (pnpm is pnpm.cmd on Windows, which
+// Node only runs via a shell). Everything in it is fixed or validated above.
+const run = (command) => {
+  const r = spawnSync(command, { stdio: 'inherit', shell: true })
+  if (r.status !== 0) fail(`${command} failed`)
 }
 
-run('pnpm', ['build'])
-run('pnpm', [
-  'exec',
-  'electron-builder',
-  '--win',
-  '--publish',
-  'never',
-  `-c.win.signtoolOptions.certificateSha1=${thumb}`
-])
+run('pnpm build')
+run(`pnpm exec electron-builder --win --publish never -c.win.signtoolOptions.certificateSha1=${thumb}`)
 
 // Check the installer the way NsisUpdater will: a valid, timestamped signature
 // from the configured publisher.

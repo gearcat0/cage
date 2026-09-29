@@ -86,7 +86,7 @@ win:
     # 6.x then SKIPS the check. The subject CN alone survives renewals; if the
     # name ever changes, first ship a release listing both.
     # scripts/dist-win-signed.mjs refuses to build while this is unset.
-    publisherName: REPLACE_WITH_CERTUM_SUBJECT_CN
+    publisherName: Open Source Developer Sean Comeau
     # Timestamped, so signatures stay valid after the 1-year cert expires.
     rfc3161TimeStampServer: http://time.certum.pl
     signingHashAlgorithms: [sha256]
