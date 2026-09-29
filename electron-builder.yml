@@ -13,9 +13,12 @@
 # each installer ships a module matching its own Electron — testers need no
 # toolchain. It is unpacked from the asar (a .node cannot be loaded from inside).
 #
-# Signing is OFF for this alpha (no certs). Unsigned builds warn on first launch:
-# macOS Gatekeeper (right-click → Open, or `xattr -dr com.apple.quarantine`),
-# Windows SmartScreen (More info → Run anyway). Add certs later — see README.
+# Signing: macOS is signed and notarized in CI (release.yml, from secrets).
+# Windows is signed on the maintainer's machine, because the Certum key is in
+# SimplySign's cloud HSM behind a phone OTP: `pnpm dist:win:signed` (see
+# scripts/dist-win-signed.mjs and docs/how/develop/building.md). Signing
+# happens inside electron-builder so latest.yml's hashes describe the signed
+# files; signing afterwards would break every update's integrity check.
 
 # appId is the update + signing identity. Changing it after a signed release
 # strands every installed copy, so it is settled here, before the first one.
@@ -29,9 +32,9 @@ directories:
   output: release
   buildResources: build
 
-# What goes in the app. The vite build bundles @noble/* and zod INTO out/main,
-# so the only runtime node_module is the native better-sqlite3, which
-# electron-builder includes automatically as a production dependency.
+# What goes in the app. The vite build bundles @noble/* and zod INTO out/main.
+# Runtime node_modules are the production dependencies it keeps external:
+# better-sqlite3 (native), webtorrent, and electron-updater.
 files:
   - out/**/*
   - package.json
@@ -55,13 +58,19 @@ npmRebuild: true
 
 # ── macOS ────────────────────────────────────────────────────────────────────
 mac:
+  # Both architectures in ONE job, so one latest-mac.yml lists both and each
+  # Mac is offered its own. The zip is what the updater downloads.
   target:
-    - dmg
-    - zip # zip is the auto-update-friendly artifact; handy for direct download too
+    - target: dmg
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
   category: public.app-category.social-networking
   icon: build/icon.png
-  identity: null # unsigned alpha — no notarization
-  hardenedRuntime: false
+  # Signed with the Developer ID from CSC_LINK and notarized whenever the
+  # APPLE_API_KEY* variables are set (release.yml). Hardened runtime is on by
+  # default, with electron-builder's bundled entitlements. Squirrel.Mac will
+  # only install an update signed by the same Developer ID.
   darkModeSupport: true
 
 # ── Windows ──────────────────────────────────────────────────────────────────
@@ -70,6 +79,20 @@ win:
     - target: nsis
       arch: [x64]
   icon: build/icon.png
+  signtoolOptions:
+    # The updater installs a downloaded update only if it is signed by this
+    # name. Set explicitly: when electron-builder does not sign with a
+    # certificate of its own, it cannot derive this, and electron-updater
+    # 6.x then SKIPS the check. The subject CN alone survives renewals; if the
+    # name ever changes, first ship a release listing both.
+    # scripts/dist-win-signed.mjs refuses to build while this is unset.
+    publisherName: REPLACE_WITH_CERTUM_SUBJECT_CN
+    # Timestamped, so signatures stay valid after the 1-year cert expires.
+    rfc3161TimeStampServer: http://time.certum.pl
+    signingHashAlgorithms: [sha256]
+    # certificateSha1 (the SimplySign cert's thumbprint) is passed by
+    # scripts/dist-win-signed.mjs from SOUSPLI_WIN_CERT_SHA1: it changes at
+    # every renewal and only exists on a machine logged in to SimplySign.
 
 nsis:
   oneClick: false # let the tester choose the install dir
@@ -88,5 +111,11 @@ linux:
   maintainer: gearcat0 <large.oil2707@fastmail.com>
   synopsis: Signed, self-contained letters exchanged between people, with no server in the middle
 
-# No auto-publish; the release workflow attaches artifacts to a GitHub Release.
-publish: null
+# The update feed. This makes electron-builder write app-update.yml into the
+# app and latest*.yml + blockmaps beside the installers. It publishes nothing
+# by itself: CI runs with --publish never and attaches the files to a DRAFT
+# Release, which updaters cannot see until it is published by hand.
+publish:
+  provider: github
+  owner: souspli
+  repo: souspli

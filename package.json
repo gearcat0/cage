@@ -21,6 +21,7 @@
     "dist:linux": "pnpm build && electron-builder --linux",
     "dist:mac": "pnpm build && electron-builder --mac",
     "dist:win": "pnpm build && electron-builder --win",
+    "dist:win:signed": "node scripts/dist-win-signed.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "rebuild:native": "electron-rebuild -f -o better-sqlite3",
     "postinstall": "electron-rebuild -f -o better-sqlite3 || true",
@@ -40,6 +41,7 @@
     "@scure/bip32": "^2.2.0",
     "@scure/bip39": "^2.2.0",
     "better-sqlite3": "^12.2.0",
+    "electron-updater": "6.8.9",
     "webtorrent": "^3.0.21",
     "zod": "^4.1.13"
   },

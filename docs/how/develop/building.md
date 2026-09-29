@@ -80,11 +80,71 @@ GitHub Release with the installers attached.
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-Builds are currently **unsigned**. To sign, provide an Apple Developer ID with
-notarisation credentials and a Windows code-signing certificate as CI secrets;
-electron-builder reads them from the environment.
-
 `appId` (`org.souspli.app`) is the update and signing identity. Do not change it.
+
+## Releasing, signing and updates
+
+Installed copies update from GitHub Releases through `electron-updater`
+(`src/shell/update/`), and only with the user's consent. `electron-builder.yml`'s
+`publish` block makes each build write the feed: `latest.yml`, `latest-mac.yml`,
+`latest-linux.yml` and `.blockmap` files. A copy sees a release only once it is
+**published**, never while it is a draft, so publishing is the go button.
+
+**macOS** is signed and notarized in CI. The workflow's `release` environment holds
+the secrets and must require your approval:
+
+| Secret | What |
+|---|---|
+| `MAC_CSC_LINK` | Developer ID Application certificate, `.p12`, base64 |
+| `MAC_CSC_KEY_PASSWORD` | its password |
+| `APPLE_API_KEY_P8` | App Store Connect API key, the `.p8` file's contents |
+| `APPLE_API_KEY_ID`, `APPLE_API_ISSUER` | that key's ID and issuer ID |
+
+**Windows** is signed on your own machine. The Certum certificate lives in
+SimplySign's cloud HSM behind the one-time code from the SimplySign phone app, so it
+cannot sit in CI. Signing must happen inside `electron-builder`: `latest.yml` holds
+the installer's sha512, and signing it afterwards would make every installed copy
+reject the update.
+
+One-time setup of the signing machine (a Windows VM is fine): Git, Node 22, pnpm 11,
+Visual Studio Build Tools with *Desktop development with C++* (better-sqlite3
+compiles during packaging), the GitHub CLI, and SimplySign Desktop. Use it for
+nothing else. Set `win.signtoolOptions.publisherName` in `electron-builder.yml` to
+the certificate's subject CN: installed copies accept an update only when it is signed
+by that name.
+
+### Cutting a release
+
+1. Bump `version` in `package.json` (plain `x.y.z`: a prerelease tag like `-alpha.1`
+   would switch those users onto prereleases), merge, then
+   `git tag vX.Y.Z && git push origin vX.Y.Z`.
+2. Approve the `release` environment. CI signs and notarizes macOS (arm64 and x64),
+   builds Linux, and drafts a Release with the installers and feed files. Its Windows
+   build is an unsigned check and is not attached.
+3. On the signing machine, in a fresh clone at the tag after
+   `pnpm install --frozen-lockfile`: log in to SimplySign Desktop, set
+   `$env:SOUSPLI_WIN_CERT_SHA1` to the certificate's thumbprint, and run
+   `pnpm dist:win:signed`. It refuses to build without a publisher name and
+   thumbprint, verifies the signature and timestamp, and prints the
+   `gh release upload` command for the installer, its blockmap and `latest.yml`.
+4. Download the draft's installers and smoke-test them on each OS.
+5. Publish. For a staged rollout, add `stagingPercentage: 10` (say) to the `latest*.yml`
+   files first and raise it later.
+
+To pull a bad release, unpublish it and ship a higher version. Installed copies
+never downgrade.
+
+### Certificate calendar
+
+- **Certum** (Windows): one year. Renew about a month early and keep the same subject
+  CN. If the CN has to change, first ship a release whose `publisherName` lists both
+  names, or installed copies will reject the next update. Signatures are timestamped,
+  so installers already out keep verifying after the certificate expires.
+- **Apple Developer Program**: yearly membership. If it lapses, builds already
+  notarized keep working, but new ones cannot be notarized.
+
+Releases up to 0.1.0 have no updater. Users move to the first signed release by
+hand, once, so that release must be signed on every platform.
 
 ## Environment variables
 
@@ -98,6 +158,9 @@ electron-builder reads them from the environment.
 | `SHELL_SUGGESTED_RELAY` | The relay the app suggests (default `wss://relay.souspli.org`). Tests point it at an in-process relay; a fork points it at its own. |
 | `SHELL_WELCOME_FORUM_B64` | Stand-in for the bundled welcome-forum letter (base64; empty = none). |
 | `SHELL_NO_WELCOME=1` | Do not offer the first-run welcome letter (tests and scripted launches). |
+| `SHELL_NO_UPDATE_PROMPT=1` | Do not ask about update checks on first launch; checks stay off (tests). |
+| `SHELL_UPDATE_FEED` | Check this URL (an electron-updater generic feed) instead of GitHub Releases; also lets an unpackaged build check. |
+| `SHELL_UPDATE_FIRST_CHECK_MS` | Delay before the first background check once checks are on (default 30 s). |
 | `SHELL_ENS_RPC` | Ethereum RPC endpoint for ENS (requires `viem`, which is not a dependency). |
 
 The `SHELL_` prefix is the code's name for the client; see the

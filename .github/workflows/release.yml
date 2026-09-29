@@ -6,8 +6,15 @@ name: release
 #   git tag v0.1.0 && git push origin v0.1.0
 #
 # macOS .dmg can ONLY be built on a Mac, Windows .exe is most reliable on
-# Windows, so each platform builds on its own runner (a matrix). Builds are
-# UNSIGNED (alpha) — see README "Signing" for adding certs later.
+# Windows, so each platform builds on its own runner (a matrix).
+#
+# macOS is signed and notarized here, from the `release` environment's
+# secrets, and that environment requires the maintainer's approval before any
+# job can see them. Windows is NOT signed here: the Certum key lives in
+# SimplySign's cloud HSM behind a phone OTP, so the maintainer builds and signs
+# it locally (`pnpm dist:win:signed`) and attaches it to the draft. The Windows
+# job below is an unsigned build check only; its files never reach the Release.
+# See docs/how/develop/building.md for the runbook.
 
 on:
   push:
@@ -19,21 +26,32 @@ permissions:
 
 jobs:
   build:
+    environment: release
     strategy:
       fail-fast: false
       matrix:
         include:
+          # latest*.yml and the blockmaps are the update feed: without them an
+          # installed copy cannot see the release.
           - os: macos-latest
             platform: mac
-            artifacts: 'release/*.dmg release/*.zip'
+            artifact: installers-mac
+            artifacts: |
+              release/*.dmg
+              release/*.zip
+              release/latest-mac.yml
+              release/*.blockmap
           - os: windows-latest
             platform: win
+            artifact: unsigned-check-win # not attached to the Release
             artifacts: 'release/*.exe'
           - os: ubuntu-latest
             platform: linux
+            artifact: installers-linux
             artifacts: |
               release/*.AppImage
               release/*.deb
+              release/latest-linux.yml
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -56,18 +74,40 @@ jobs:
       - name: Build (main / preload / renderer)
         run: pnpm build
 
-      - name: Package installers (${{ matrix.platform }})
+      # APPLE_API_KEY is a PATH to the App Store Connect key, not its contents.
+      - name: Apple credentials (macOS)
+        if: matrix.platform == 'mac'
+        run: |
+          if [ -z "$CSC_LINK" ] || [ -z "$APPLE_API_KEY_P8" ]; then
+            echo "::error::The release environment is missing MAC_CSC_LINK or APPLE_API_KEY_P8; an unsigned Mac build cannot update."
+            exit 1
+          fi
+          printf '%s' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+
+      - name: Package installers (macOS, signed + notarized)
+        if: matrix.platform == 'mac'
+        run: pnpm exec electron-builder --mac --publish never
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ runner.temp }}/AuthKey.p8
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+
+      - name: Package installers (${{ matrix.platform }}, unsigned)
+        if: matrix.platform != 'mac'
         run: pnpm exec electron-builder --${{ matrix.platform }} --publish never
         env:
-          # Unsigned alpha: don't let electron-builder try to auto-discover a
-          # macOS signing identity (would fail the build on a runner without one).
+          # No certificate here: don't let electron-builder go looking for one.
           CSC_IDENTITY_AUTO_DISCOVERY: false
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
-          name: installers-${{ matrix.platform }}
+          name: ${{ matrix.artifact }}
           path: ${{ matrix.artifacts }}
           if-no-files-found: error
           retention-days: 14
@@ -77,10 +117,11 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') # only tag pushes cut a Release
     steps:
-      - name: Download all installers
+      - name: Download the installers
         uses: actions/download-artifact@v4
         with:
           path: installers
+          pattern: installers-* # not the unsigned Windows check
           merge-multiple: true
 
       - name: Create / update the GitHub Release
@@ -90,11 +131,14 @@ jobs:
           draft: true # publish manually after a smoke check
           generate_release_notes: true
           body: |
-            **Experimental alpha.** Unsigned builds:
-            - **macOS** — right-click the app → Open (Gatekeeper), or
-              `xattr -dr com.apple.quarantine "/Applications/Souspli.app"`.
-            - **Windows** — SmartScreen: More info → Run anyway.
-            - **Linux** — `chmod +x Souspli-*.AppImage` then run; or install the `.deb`.
+            **Experimental alpha.**
+            - **macOS** — signed and notarized. Apple Silicon (`arm64`) and Intel (`x64`).
+            - **Windows** — signed. SmartScreen may still warn until the certificate
+              builds reputation: More info → Run anyway.
+            - **Linux** — `chmod +x Souspli-*.AppImage` then run (it updates itself);
+              or install the `.deb` (you'll be told about new versions).
+
+            Souspli asks before it checks for updates, and again before downloading one.
 
             Your identity key is stored in **software** on your device. Do not use
             it for anything valuable. See the in-app safety notice.

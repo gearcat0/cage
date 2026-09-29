@@ -33,7 +33,7 @@ macOS, Windows and Linux):
 | **Recovery phrase for an existing key** | A phrase is shown only when an identity is generated. Afterwards the only backup is the raw private key. |
 | **Hardware wallets, OS-backed signing** | Keys are held in software. |
 | **Other signature schemes for writing** | Letters are signed with an Ethereum-style key only. Nostr-key signatures verify on receipt; the SSH scheme in the specification is not implemented. |
-| **Signed installers, auto-update** | Your OS will warn on first launch, and you update by hand. |
+| **Signed installers, auto-update** | Built, not yet released: until the first signed release ships, your OS warns on first launch and you update by hand. After it, updates are offered in the app, if you agree to checks. |
 | **A busy place to go** | The app suggests the project's relay and its welcome forum, *Coffee Talk* — offered, never connected silently. It is new and small; do not expect a crowd. |
 | **Opening enclosed PDFs and documents** | They travel intact and can be exported, but the container cannot display them. |
 | **Mobile, or a web viewer** | Desktop only. |

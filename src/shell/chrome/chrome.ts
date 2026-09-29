@@ -109,6 +109,30 @@ interface ShellApi {
   onConfirmRequest(cb: (req: { id: number; kind: string; summary: Record<string, unknown> }) => void): void
   respondConfirm(id: number, approved: boolean): void
   onPublishResult(cb: (outcome: Record<string, unknown>) => void): void
+  updateStatus(): Promise<UpdateStatus>
+  updateCheck(): Promise<UpdateStatus>
+  updateSetPref(p: 'on' | 'off'): Promise<UpdateStatus>
+  updateDownload(): Promise<UpdateStatus>
+  updateInstall(): Promise<boolean>
+  updateOpenRelease(): Promise<boolean>
+  onUpdateState(cb: (s: UpdateStatus) => void): void
+  onOpenUpdates(cb: () => void): void
+}
+/** Mirrors src/shell/update's UpdateState, plus what the chrome needs. */
+type UpdateState =
+  | { phase: 'idle' }
+  | { phase: 'checking' }
+  | { phase: 'inactive' }
+  | { phase: 'current'; checkedAt: number }
+  | { phase: 'available'; version: string; notes: string; canInstall: boolean }
+  | { phase: 'downloading'; version: string; percent: number }
+  | { phase: 'ready'; version: string }
+  | { phase: 'error'; message: string }
+interface UpdateStatus {
+  pref: 'ask' | 'on' | 'off'
+  state: UpdateState
+  prompt: boolean
+  current: string
 }
 /** What the project suggests, and how much of it this install already has. */
 interface CommunityState {
@@ -948,7 +972,7 @@ function openComposeModal(): void {
 newBtn.addEventListener('click', () => void openNewMenu())
 
 // ── Safety notice (experimental alpha + real key custody) ────────────────────
-function safetyModal(keyStorage: 'os' | 'software'): void {
+function safetyModal(keyStorage: 'os' | 'software', onClose?: () => void): void {
   const overlay = el('div', 'evm-modal-overlay')
   const modal = el('div', 'evm-modal')
   const header = el('div', 'evm-modal-header')
@@ -977,12 +1001,148 @@ function safetyModal(keyStorage: 'os' | 'software'): void {
       /* private mode — show again next time, harmless */
     }
     overlay.remove()
+    onClose?.()
   })
   footer.append(ok)
   modal.append(header, body, footer)
   overlay.append(modal)
   document.body.append(trackOverlay(overlay))
 }
+
+// ── Updates ──────────────────────────────────────────────────────────────────
+// Each network step is a separate yes: checking at all (asked once, here),
+// downloading a version the human was shown, and restarting into it.
+const UPDATE_COST = 'Each check tells GitHub your IP address and which version of Souspli you run.'
+
+/** Asked once, after the safety notice. Escape leaves the question open. */
+function updateConsentModal(): void {
+  const overlay = el('div', 'evm-modal-overlay')
+  const modal = el('div', 'evm-modal')
+  const header = el('div', 'evm-modal-header')
+  header.append(el('span', 'evm-modal-title', 'Check for updates?'))
+  const body = el('div', 'evm-modal-body')
+  body.append(
+    el('p', 'sh-hint', 'Souspli can look for a new version once a day, so you hear about security fixes.'),
+    el('p', 'sh-warn', UPDATE_COST),
+    el('p', 'sh-hint', 'Nothing is downloaded without asking you. Help → Check for updates… works either way.')
+  )
+  const footer = el('div', 'evm-modal-footer')
+  const no = el('button', 'evm-btn evm-btn--ghost', "Don't check")
+  const yes = el('button', 'evm-btn evm-btn--primary', 'Check daily')
+  no.setAttribute('data-testid', 'update-consent-off')
+  yes.setAttribute('data-testid', 'update-consent-on')
+  const answer = (p: 'on' | 'off'): void => {
+    overlay.remove()
+    void shell.updateSetPref(p)
+  }
+  no.addEventListener('click', () => answer('off'))
+  yes.addEventListener('click', () => answer('on'))
+  footer.append(no, yes)
+  modal.append(header, body, footer)
+  overlay.append(modal)
+  document.body.append(trackOverlay(overlay))
+}
+
+let updatesPaint: ((s: UpdateStatus) => void) | null = null
+
+/** Help → Check for updates…, and where a background check reports a find. */
+function openUpdatesModal(initial: UpdateStatus, checkNow: boolean): void {
+  if (updatesPaint) {
+    updatesPaint(initial)
+    return
+  }
+  const overlay = el('div', 'evm-modal-overlay')
+  const modal = el('div', 'evm-modal')
+  modal.setAttribute('data-testid', 'updates-modal')
+  const header = el('div', 'evm-modal-header')
+  header.append(el('span', 'evm-modal-title', 'Updates'))
+  const body = el('div', 'evm-modal-body')
+  const statusSlot = el('div')
+  const auto = el('input') as HTMLInputElement
+  auto.type = 'checkbox'
+  auto.setAttribute('data-testid', 'update-auto')
+  auto.addEventListener('change', () => void shell.updateSetPref(auto.checked ? 'on' : 'off').then(paint))
+  const autoRow = el('label', 'sh-account-row')
+  autoRow.append(auto, el('span', undefined, 'Check once a day'))
+  body.append(statusSlot, autoRow, el('p', 'sh-hint', UPDATE_COST))
+  const footer = el('div', 'evm-modal-footer')
+  const close = el('button', 'evm-btn evm-btn--ghost', 'Close')
+  close.addEventListener('click', () => overlay.remove())
+  const action = el('button', 'evm-btn evm-btn--primary') as HTMLButtonElement
+  action.setAttribute('data-testid', 'update-action')
+  footer.append(close, action)
+
+  function paint(st: UpdateStatus): void {
+    auto.checked = st.pref === 'on'
+    const s = st.state
+    const line = (text: string, cls = 'sh-hint'): HTMLElement => {
+      const p = el('p', cls, text)
+      p.setAttribute('data-testid', 'update-status')
+      p.setAttribute('data-phase', s.phase)
+      return p
+    }
+    action.style.display = 'none'
+    action.disabled = false
+    action.onclick = null
+    const show = (label: string, fn: () => void): void => {
+      action.textContent = label
+      action.style.display = ''
+      action.onclick = () => {
+        action.disabled = true
+        fn()
+      }
+    }
+    if (s.phase === 'idle' || s.phase === 'checking') {
+      statusSlot.replaceChildren(line(s.phase === 'checking' ? 'Checking…' : `You have version ${st.current}.`))
+      if (s.phase === 'idle') show('Check now', () => void shell.updateCheck().then(paint))
+    } else if (s.phase === 'current') {
+      statusSlot.replaceChildren(line(`You have the latest version (${st.current}).`))
+      show('Check again', () => void shell.updateCheck().then(paint))
+    } else if (s.phase === 'inactive') {
+      statusSlot.replaceChildren(line("This build can't update itself. New versions are on the releases page."))
+    } else if (s.phase === 'available') {
+      const notes = el('pre', 'sh-hint')
+      notes.textContent = s.notes || '(no release notes)'
+      notes.style.whiteSpace = 'pre-wrap'
+      notes.style.maxHeight = '240px'
+      notes.style.overflow = 'auto'
+      statusSlot.replaceChildren(line(`Version ${s.version} is available. You have ${st.current}.`), notes)
+      if (s.canInstall) show('Download', () => void shell.updateDownload().then(paint))
+      else show('Open release page', () => void shell.updateOpenRelease().then(() => overlay.remove()))
+    } else if (s.phase === 'downloading') {
+      statusSlot.replaceChildren(line(`Downloading ${s.version}… ${s.percent}%`))
+    } else if (s.phase === 'ready') {
+      statusSlot.replaceChildren(line(`Version ${s.version} is ready. Souspli will close and reopen.`))
+      show('Restart to update', () => void shell.updateInstall())
+    } else {
+      statusSlot.replaceChildren(line(`Update failed: ${s.message}`, 'sh-warn'))
+      show('Try again', () => void shell.updateCheck().then(paint))
+    }
+  }
+  modal.append(header, body, footer)
+  overlay.append(modal)
+  const origRemove = overlay.remove.bind(overlay)
+  overlay.remove = () => {
+    updatesPaint = null
+    origRemove()
+  }
+  document.body.append(trackOverlay(overlay))
+  updatesPaint = paint
+  paint(initial)
+  if (checkNow) void shell.updateCheck().then(paint)
+}
+
+shell.onOpenUpdates(() => void shell.updateStatus().then((s) => openUpdatesModal(s, true)))
+let announcedVersion: string | null = null
+shell.onUpdateState((s) => {
+  if (updatesPaint) updatesPaint(s)
+  // A background check found something: say so once per version, without
+  // downloading. Dismissed, it waits in Help → Check for updates….
+  else if (s.state.phase === 'available' && s.state.version !== announcedVersion) {
+    announcedVersion = s.state.version
+    openUpdatesModal(s, false)
+  }
+})
 
 function renderSafety(keyStorage: 'os' | 'software'): void {
   keyWarn.style.display = ''
@@ -996,7 +1156,13 @@ function renderSafety(keyStorage: 'os' | 'software'): void {
   } catch {
     /* ignore */
   }
-  if (!acked) safetyModal(keyStorage)
+  // First-run questions come one at a time: the safety notice, then updates.
+  const askUpdates = (): void =>
+    void shell.updateStatus().then((s) => {
+      if (s.prompt) updateConsentModal()
+    })
+  if (!acked) safetyModal(keyStorage, askUpdates)
+  else askUpdates()
 }
 
 // ── Feed ─────────────────────────────────────────────────────────────────────

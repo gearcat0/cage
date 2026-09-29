@@ -33,6 +33,8 @@ what you clicked.
 | Give a key a petname | Nobody. It never leaves your machine. |
 | Publish a **vouch** | Everyone who receives it learns **you know that key**. It discloses your social graph, permanently. |
 | Vote, comment, attest, co-sign | Nothing until you share the resulting letter — then its readers learn your key's opinion. |
+| Say yes to **Check for updates?**, or choose Help → Check for updates… | GitHub learns **your IP address** and which version of Souspli you run, once a day (or once, for the menu item). Until you answer: nothing. |
+| Press **Download** on an update | GitHub learns your IP and that you are fetching that version. Nothing is downloaded until you press it; restarting into it is a separate click. |
 
 ## Defaults
 
@@ -42,6 +44,8 @@ what you clicked.
 - Nothing is posted because you wrote it. Posting is a separate, explicit act each
   time.
 - Nothing a stranger advertises is ever downloaded automatically.
+- Update checks are **off until you answer** the question Souspli asks on first
+  launch. A found update is shown, never fetched on its own.
 
 ## Things a signature makes permanent
 
@@ -58,5 +62,7 @@ what you clicked.
 
 ## What Souspli itself collects
 
-Nothing. There is no telemetry, no crash reporting, no update check, no analytics,
-and no server operated by the project for the app to talk to.
+Nothing. There is no telemetry, no crash reporting, no analytics, and no server
+operated by the project for the app to talk to. The one contact the app itself can
+make is the update check above, and only if you agree to it: it goes to GitHub, which
+hosts the releases, and it carries no identifier beyond what any web request does.

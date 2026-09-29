@@ -472,6 +472,9 @@ export async function launchShell(opts: ShellLaunchOptions = {}): Promise<ShellH
   // welcome letter would make every one of them start at one, so it is off
   // unless a spec asks for it (welcome.spec.ts sets SHELL_NO_WELCOME='0').
   env.SHELL_NO_WELCOME = '1'
+  // Likewise the first-run "Check for updates?" question: a real modal, so it
+  // would hide every cage. update.spec.ts turns it back on.
+  env.SHELL_NO_UPDATE_PROMPT = '1'
   // Identity changes normally restart the app; under Playwright that would
   // orphan the process, so specs relaunch explicitly instead.
   env.SHELL_NO_RELAUNCH = '1'
