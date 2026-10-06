@@ -136,7 +136,8 @@ jobs:
           generate_release_notes: true
           body: |
             **Experimental alpha.**
-            - **macOS** — signed and notarized. Apple Silicon (`arm64`) and Intel (`x64`).
+            - **macOS** — signed and notarized. An Intel (`x64`) build, which runs on
+              Apple Silicon through Rosetta 2; a native Apple Silicon build follows.
             - **Windows** — signed. SmartScreen may still warn until the certificate
               builds reputation: More info → Run anyway.
             - **Linux** — `chmod +x Souspli-*.AppImage` then run (it updates itself);

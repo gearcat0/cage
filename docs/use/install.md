@@ -19,7 +19,9 @@ is three commands.
 ## Installing
 
 - **macOS** — open the `.dmg` and drag Souspli to Applications. Builds are signed
-  and notarized by Apple: `arm64` for Apple Silicon, `x64` for Intel.
+  and notarized by Apple. For now there is one build, for Intel (`x64`); on an Apple
+  Silicon Mac it runs through Rosetta 2, which macOS offers to install the first
+  time. A native Apple Silicon build will arrive as an ordinary update.
 - **Windows** — run the installer. It is signed, but SmartScreen may still warn
   while the certificate is new: **More info → Run anyway**.
 - **Linux** — `chmod +x Souspli-*.AppImage`, then run it; or install the `.deb`.
