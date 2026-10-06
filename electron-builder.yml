@@ -67,13 +67,17 @@ npmRebuild: true
 
 # ── macOS ────────────────────────────────────────────────────────────────────
 mac:
-  # Both architectures in ONE job, so one latest-mac.yml lists both and each
-  # Mac is offered its own. The zip is what the updater downloads.
+  # Intel (x64) only, for now: it runs on Apple Silicon through Rosetta 2.
+  # Every arm64 build submitted for notarization has stalled "In Progress" at
+  # Apple (reported 2026-10-06), while x64 builds are accepted in minutes.
+  # When arm64 goes through, put it back here as [x64, arm64]: one job, so one
+  # latest-mac.yml lists both, and Apple Silicon users move to the native build
+  # in an ordinary update. The zip is what the updater downloads.
   target:
     - target: dmg
-      arch: [x64, arm64]
+      arch: [x64]
     - target: zip
-      arch: [x64, arm64]
+      arch: [x64]
   category: public.app-category.social-networking
   icon: build/icon.png
   files:
