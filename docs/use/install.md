@@ -16,21 +16,18 @@ Installers are attached to each release at
 If no release is listed yet, [build it from source](../how/develop/building.md) — it
 is three commands.
 
-## Alpha builds are unsigned
+## Installing
 
-Until the project's code-signing certificates are in place, your operating system
-will warn you the first time:
-
-- **macOS** — right-click the app → **Open**, or run
-  `xattr -dr com.apple.quarantine "/Applications/Souspli.app"`.
-- **Windows** — SmartScreen: **More info → Run anyway**.
+- **macOS** — open the `.dmg` and drag Souspli to Applications. Builds are signed
+  and notarized by Apple: `arm64` for Apple Silicon, `x64` for Intel.
+- **Windows** — run the installer. It is signed, but SmartScreen may still warn
+  while the certificate is new: **More info → Run anyway**.
 - **Linux** — `chmod +x Souspli-*.AppImage`, then run it; or install the `.deb`.
 
 ## Updates
 
-Releases up to 0.1.0 cannot update themselves: install the next release by hand,
-once. From then on Souspli asks, on first launch, whether it may check GitHub for a
-new version once a day ([what that reveals](privacy.md)). If you say no, Help →
+Souspli asks, on first launch, whether it may check GitHub for a new version once a
+day ([what that reveals](privacy.md)). If you say no, Help →
 Check for updates… still works. A found update is shown with its notes and is only
 downloaded, then installed on restart, when you say so.
 

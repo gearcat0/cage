@@ -24,8 +24,8 @@ signatures, clubs with rosters, forums with threads, votes and moderation. No
 accounts, no host, nothing to shut down.
 
 > **Experimental alpha.** It works and it is tested hard. It has not been
-> independently reviewed, builds are unsigned, and private (sealed) letters cannot
-> yet be written from the app. [The plain list](docs/use/status.md).
+> independently reviewed, and private (sealed) letters cannot yet be written from
+> the app. [The plain list](docs/use/status.md).
 
 *sous pli* — French, "under sealed cover".
 

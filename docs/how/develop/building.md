@@ -143,9 +143,6 @@ never downgrade.
 - **Apple Developer Program**: yearly membership. If it lapses, builds already
   notarized keep working, but new ones cannot be notarized.
 
-Releases up to 0.1.0 have no updater. Users move to the first signed release by
-hand, once, so that release must be signed on every platform.
-
 ## Environment variables
 
 | Variable | Effect |
