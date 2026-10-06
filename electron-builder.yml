@@ -40,6 +40,15 @@ files:
   - package.json
   - '!**/*.map'
   - '!**/*.ts'
+  # Native packages end up unpacked from the asar whole, and on macOS every
+  # unpacked file is signed and timestamped one by one. These are not needed at
+  # runtime: C/C++ sources and build files, the Bare-runtime builds, READMEs,
+  # better-sqlite3's test extension, and prebuilt binaries for other operating
+  # systems (filtered per platform below).
+  - '!**/node_modules/**/*.{c,cc,cpp,cxx,h,hh,hpp,gyp,gypi,props,vcxproj,filters,patch,py,sh,bare,md}'
+  - '!**/node_modules/**/{Makefile,.gitmodules,.editorconfig,.eslintignore,.prettierrc,.prettierignore}'
+  - '!**/node_modules/better-sqlite3/build/Release/test_extension.node'
+  - '!**/node_modules/**/prebuilds/{android,ios}-*/**'
 
 # Double-clicking a .thing opens it in the shell (it still goes through the
 # same admission gate — arriving by double-click grants a bundle nothing).
@@ -67,6 +76,8 @@ mac:
       arch: [x64, arm64]
   category: public.app-category.social-networking
   icon: build/icon.png
+  files:
+    - '!**/node_modules/**/prebuilds/{linux,win32}-*/**'
   # Signed with the Developer ID from CSC_LINK and notarized whenever the
   # APPLE_API_KEY* variables are set (release.yml). Hardened runtime is on by
   # default, with electron-builder's bundled entitlements. Squirrel.Mac will
@@ -79,6 +90,8 @@ win:
     - target: nsis
       arch: [x64]
   icon: build/icon.png
+  files:
+    - '!**/node_modules/**/prebuilds/{linux,darwin}-*/**'
   signtoolOptions:
     # The updater installs a downloaded update only if it is signed by this
     # name. Set explicitly: when electron-builder does not sign with a
@@ -108,6 +121,8 @@ linux:
     - deb
   category: Network
   icon: build/icon.png
+  files:
+    - '!**/node_modules/**/prebuilds/{darwin,win32}-*/**'
   maintainer: gearcat0 <large.oil2707@fastmail.com>
   synopsis: Signed, self-contained letters exchanged between people, with no server in the middle
 
