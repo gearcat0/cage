@@ -27,6 +27,10 @@ permissions:
 jobs:
   build:
     environment: release
+    # A build takes 10–30 minutes. Apple's notarization can occasionally sit for
+    # hours (a new account's first submissions did); fail clearly instead of
+    # waiting out GitHub's 6-hour limit.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:

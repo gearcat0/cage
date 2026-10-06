@@ -128,4 +128,9 @@ Stated in the [specification §10](../protocol/spec.md) and on the
   where it would break.
 - **Ranking can fall back to forgeable raw counts** when you have vouched for nobody.
   The interface says so; any path where it does not is a bug.
-- **Unsigned installers** until code-signing is in place.
+- **Updates trust the release, not a second signature.** An update installs only if
+  its hash matches the release's feed file and, on macOS and Windows, it is signed
+  by the project's certificate. The Linux AppImage has the hash check alone, so
+  whoever can publish a GitHub Release can ship a Linux update. The macOS signing
+  key lives in the repository's protected `release` environment; the Windows key
+  never leaves the maintainer's SimplySign login.
