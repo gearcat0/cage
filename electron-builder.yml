@@ -79,7 +79,9 @@ mac:
     - target: zip
       arch: [x64]
   category: public.app-category.social-networking
-  icon: build/icon.png
+  # On Apple's icon grid (inset, with margin); build/icon.png is edge to edge.
+  # Both come from .github/assets/logo.svg via `pnpm gen:icon`.
+  icon: build/icon-mac.png
   files:
     - '!**/node_modules/**/prebuilds/{linux,win32}-*/**'
   # Signed with the Developer ID from CSC_LINK and notarized whenever the

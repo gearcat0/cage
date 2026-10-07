@@ -1,6 +1,6 @@
 {
   "name": "souspli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Signed, self-contained letters exchanged between people instead of pages rendered by a server. A desktop client with a sealed container for untrusted content.",
   "license": "Apache-2.0",
@@ -15,7 +15,7 @@
     "build": "electron-vite build",
     "start": "electron out/main/shell/main.js",
     "preview": "electron-vite preview",
-    "gen:icon": "node scripts/make-icon.mjs",
+    "gen:icon": "electron scripts/make-icon.mjs",
     "pack:dir": "pnpm build && electron-builder --dir",
     "dist": "pnpm build && electron-builder",
     "dist:linux": "pnpm build && electron-builder --linux",
