@@ -7,8 +7,8 @@ import { deflateSync, crc32 } from 'node:zlib'
 //
 // Generated rather than committed. A binary blob in the repo is a thing nobody
 // can review and everybody has to carry, and the samples only need something
-// that decodes and has recognisable shapes in it. The encoder below is the one
-// from scripts/make-icon.mjs, which already writes the app icon this way.
+// that decodes and has recognisable shapes in it. The encoder below is a minimal
+// one, written for exactly that.
 
 type RGB = [number, number, number]
 

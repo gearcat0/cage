@@ -1,107 +1,86 @@
-// Generate a placeholder app icon (build/icon.png, 1024×1024 RGBA) with no
-// external image tooling — a tiny hand-rolled PNG encoder over zlib. The motif:
-// a dark field with a teal rounded-square "cage" frame (evm-ui accent). Replace
-// with real artwork before a public release; this just gives the installers a
-// non-default icon.
-import { deflateSync } from 'node:zlib'
-import { writeFileSync, mkdirSync } from 'node:fs'
-import { crc32 } from 'node:zlib'
+// Render the app icons from the logo (.github/assets/logo.svg), the envelope
+// used on souspli.org, the README and the GitHub org.
+//
+//   pnpm gen:icon          (Linux without a display: xvfb-run -a pnpm gen:icon)
+//
+// It runs under Electron, already a dependency, and draws the SVG in a hidden
+// transparent window, so the PNGs are exactly what a browser renders.
+//
+//   build/icon.png      1024², the logo edge to edge. Windows and Linux.
+//   build/icon-mac.png  1024², on Apple's icon grid: the body 824² and centred,
+//                       with transparent margin around it and corners at
+//                       Apple's ~22% radius, so it sits at the same size as
+//                       other apps in the Dock.
+import { app, BrowserWindow } from 'electron'
+import { readFileSync, writeFileSync } from 'node:fs'
 
 const S = 1024
-const buf = Buffer.alloc(S * S * 4)
+const logo = readFileSync('.github/assets/logo.svg', 'utf8')
+// The logo's own markup, without its outer <svg> element.
+const inner = logo.replace(/^[\s\S]*?<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '').replace(/<title>.*?<\/title>/, '')
 
-// evm-ui-ish palette.
-const BG = [8, 8, 10] // near-black field
-const TEAL = [45, 212, 191] // accent frame
-const TEAL_DIM = [17, 94, 89] // inner glow
+const full = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="${S}" height="${S}">${inner}</svg>`
+const MAC_BODY = 824
+const macInner = inner.replace('<rect width="64" height="64" rx="12"', '<rect width="64" height="64" rx="14.3"')
+const mac =
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${S} ${S}" width="${S}" height="${S}">` +
+  `<g transform="translate(${(S - MAC_BODY) / 2} ${(S - MAC_BODY) / 2}) scale(${MAC_BODY / 64})">${macInner}</g></svg>`
 
-const px = (x, y, [r, g, b], a = 255) => {
-  const i = (y * S + x) * 4
-  buf[i] = r
-  buf[i + 1] = g
-  buf[i + 2] = b
-  buf[i + 3] = a
-}
+// One CSS pixel per image pixel, whatever the screen.
+app.commandLine.appendSwitch('force-device-scale-factor', '1')
+// Each icon closes its window; that must not quit the app between icons.
+app.on('window-all-closed', () => {})
 
-// Rounded-square frame: draw the field, then a ring between outer and inner
-// rounded rects.
-const margin = 150
-const thick = 90
-const radius = 170
-const inOuter = (x, y, m, rad) => {
-  const lo = m
-  const hi = S - 1 - m
-  if (x < lo || x > hi || y < lo || y > hi) return false
-  // rounded corners
-  const cx = x < lo + rad ? lo + rad : x > hi - rad ? hi - rad : x
-  const cy = y < lo + rad ? lo + rad : y > hi - rad ? hi - rad : y
-  const dx = x - cx
-  const dy = y - cy
-  return dx * dx + dy * dy <= rad * rad
-}
-
-for (let y = 0; y < S; y++) {
-  for (let x = 0; x < S; x++) {
-    const outer = inOuter(x, y, margin, radius)
-    const inner = inOuter(x, y, margin + thick, radius - thick / 2)
-    if (outer && !inner) {
-      // frame ring — brighten toward the outer edge for a subtle bevel
-      px(x, y, TEAL)
-    } else if (inner) {
-      // interior: dim teal wash
-      px(x, y, TEAL_DIM, 40)
-      // re-lay the field under the wash so it isn't transparent
-      const i = (y * S + x) * 4
-      buf[i] = Math.round(BG[0] * 0.8 + TEAL_DIM[0] * 0.2)
-      buf[i + 1] = Math.round(BG[1] * 0.8 + TEAL_DIM[1] * 0.2)
-      buf[i + 2] = Math.round(BG[2] * 0.8 + TEAL_DIM[2] * 0.2)
-      buf[i + 3] = 255
-    } else {
-      px(x, y, BG)
-    }
+// One fresh offscreen window per icon: a reused one can hand back a frame of
+// the previous page. Offscreen windows deliver frames through 'paint'
+// (capturePage is not reliable for them without a GPU), so the listener goes
+// on once the page has loaded, and a repaint is asked for.
+async function render(svg) {
+  const win = new BrowserWindow({
+    width: S,
+    height: S,
+    useContentSize: true,
+    show: false,
+    frame: false,
+    transparent: true,
+    webPreferences: { offscreen: true }
+  })
+  try {
+    const html = `<!doctype html><html><body style="margin:0;background:transparent;overflow:hidden">${svg}</body></html>`
+    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+    const image = await new Promise((resolve) => {
+      const onPaint = (_e, _dirty, img) => {
+        const { width, height } = img.getSize()
+        if (width !== S || height !== S) return // wait for a full-size frame
+        // ...and one with the drawing in it: early frames can be blank. The
+        // centre is the envelope in every icon, so it must be opaque.
+        const centre = ((S / 2) * S + S / 2) * 4
+        if (img.toBitmap()[centre + 3] !== 255) return
+        win.webContents.off('paint', onPaint)
+        resolve(img)
+      }
+      win.webContents.on('paint', onPaint)
+      win.webContents.invalidate()
+    })
+    return image.toPNG()
+  } finally {
+    win.destroy()
   }
 }
 
-// Two horizontal "bars" across the interior — the cage.
-const barColor = TEAL
-for (const fy of [0.42, 0.58]) {
-  const y0 = Math.round(S * fy) - 14
-  for (let y = y0; y < y0 + 28; y++) {
-    for (let x = margin + thick + 10; x < S - margin - thick - 10; x++) {
-      if (inOuter(x, y, margin + thick, radius - thick / 2)) px(x, y, barColor)
+app.whenReady().then(async () => {
+  try {
+    for (const [path, svg] of [
+      ['build/icon.png', full],
+      ['build/icon-mac.png', mac]
+    ]) {
+      const png = await render(svg)
+      writeFileSync(path, png)
+      console.log(`wrote ${path} (${S}×${S}, ${png.length} bytes)`)
     }
+    app.exit(0)
+  } catch (e) {
+    console.error(e)
+    app.exit(1)
   }
-}
-
-// ── minimal PNG writer ───────────────────────────────────────────────────────
-const chunk = (type, data) => {
-  const len = Buffer.alloc(4)
-  len.writeUInt32BE(data.length, 0)
-  const typeBuf = Buffer.from(type, 'ascii')
-  const body = Buffer.concat([typeBuf, data])
-  const crc = Buffer.alloc(4)
-  crc.writeUInt32BE(crc32(body) >>> 0, 0)
-  return Buffer.concat([len, body, crc])
-}
-
-const ihdr = Buffer.alloc(13)
-ihdr.writeUInt32BE(S, 0)
-ihdr.writeUInt32BE(S, 4)
-ihdr[8] = 8 // bit depth
-ihdr[9] = 6 // color type RGBA
-// filter type 0 per scanline
-const raw = Buffer.alloc(S * (S * 4 + 1))
-for (let y = 0; y < S; y++) {
-  raw[y * (S * 4 + 1)] = 0
-  buf.copy(raw, y * (S * 4 + 1) + 1, y * S * 4, (y + 1) * S * 4)
-}
-const png = Buffer.concat([
-  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-  chunk('IHDR', ihdr),
-  chunk('IDAT', deflateSync(raw, { level: 9 })),
-  chunk('IEND', Buffer.alloc(0))
-])
-
-mkdirSync('build', { recursive: true })
-writeFileSync('build/icon.png', png)
-console.log(`wrote build/icon.png (${S}×${S}, ${png.length} bytes)`)
+})
