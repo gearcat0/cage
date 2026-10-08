@@ -13,7 +13,7 @@
 // This refuses to run unless the build can be verified the way the updater
 // verifies it, and checks the result before you upload anything.
 import { spawnSync } from 'node:child_process'
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 
 const fail = (msg) => {
   console.error(`\n✗ ${msg}\n`)
@@ -44,6 +44,16 @@ if (!publisher || publisher.startsWith('REPLACE_WITH')) {
 const run = (command) => {
   const r = spawnSync(command, { stdio: 'inherit', shell: true })
   if (r.status !== 0) fail(`${command} failed`)
+}
+
+// electron-builder never clears release/, so an older version's installer would
+// sit beside the new one and could be uploaded by mistake (v0.1.1 once shipped
+// with 0.1.0's .exe next to 0.1.1's latest.yml, and updates 404ed). Clear the
+// previous build's upload candidates first.
+if (existsSync('release')) {
+  for (const f of readdirSync('release')) {
+    if (/\.(exe|blockmap)$/.test(f) || f === 'latest.yml') rmSync(`release/${f}`)
+  }
 }
 
 run('pnpm build')
