@@ -118,9 +118,10 @@ by that name.
 1. Bump `version` in `package.json` (plain `x.y.z`: a prerelease tag like `-alpha.1`
    would switch those users onto prereleases), merge, then
    `git tag vX.Y.Z && git push origin vX.Y.Z`.
-2. Approve the `release` environment. CI signs and notarizes macOS (x64 for now; see
-   `electron-builder.yml`), builds Linux, and drafts a Release with the installers and
-   feed files. Its Windows build is an unsigned check and is not attached.
+2. Approve the `release` environment. CI signs and notarizes macOS (arm64 and x64;
+   notarizing arm64 can take hours), builds Linux, and drafts a Release with the
+   installers and feed files. Its Windows build is an unsigned check and is not
+   attached.
 3. On the signing machine, in a fresh clone at the tag after
    `pnpm install --frozen-lockfile`: log in to SimplySign Desktop, set
    `$env:SOUSPLI_WIN_CERT_SHA1` to the certificate's thumbprint, and run

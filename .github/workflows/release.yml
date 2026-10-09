@@ -27,10 +27,10 @@ permissions:
 jobs:
   build:
     environment: release
-    # A build takes 10–30 minutes. Apple's notarization can occasionally sit for
-    # hours (a new account's first submissions did); fail clearly instead of
-    # waiting out GitHub's 6-hour limit.
-    timeout-minutes: 120
+    # A build takes 10–30 minutes, but Apple's notarization of arm64 builds has
+    # sat for hours (see electron-builder.yml). 360 is GitHub's maximum for a
+    # hosted job; past it the run fails rather than hangs.
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
@@ -136,8 +136,7 @@ jobs:
           generate_release_notes: true
           body: |
             **Experimental alpha.**
-            - **macOS** — signed and notarized. An Intel (`x64`) build, which runs on
-              Apple Silicon through Rosetta 2; a native Apple Silicon build follows.
+            - **macOS** — signed and notarized. Apple Silicon (`arm64`) and Intel (`x64`).
             - **Windows** — signed. SmartScreen may still warn until the certificate
               builds reputation: More info → Run anyway.
             - **Linux** — `chmod +x Souspli-*.AppImage` then run (it updates itself);

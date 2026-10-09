@@ -67,17 +67,20 @@ npmRebuild: true
 
 # ── macOS ────────────────────────────────────────────────────────────────────
 mac:
-  # Intel (x64) only, for now: it runs on Apple Silicon through Rosetta 2.
-  # Every arm64 build submitted for notarization has stalled "In Progress" at
-  # Apple (reported 2026-10-06), while x64 builds are accepted in minutes.
-  # When arm64 goes through, put it back here as [x64, arm64]: one job, so one
-  # latest-mac.yml lists both, and Apple Silicon users move to the native build
-  # in an ordinary update. The zip is what the updater downloads.
+  # Both architectures in ONE job, so one latest-mac.yml lists both. On an Apple
+  # Silicon Mac, electron-updater prefers the arm64 files even when the running
+  # copy is x64 under Rosetta, so those users move to the native build in an
+  # ordinary update. The zip is what the updater downloads.
+  #
+  # Apple's notarization of arm64 builds has been slow: the first ones sat "In
+  # Progress" for hours to days before being accepted (2026-10), while x64 took
+  # minutes. release.yml allows the full 6 hours for that. If arm64 stalls
+  # again, [x64] alone still serves Apple Silicon through Rosetta 2.
   target:
     - target: dmg
-      arch: [x64]
+      arch: [x64, arm64]
     - target: zip
-      arch: [x64]
+      arch: [x64, arm64]
   category: public.app-category.social-networking
   # On Apple's icon grid (inset, with margin); build/icon.png is edge to edge.
   # Both come from .github/assets/logo.svg via `pnpm gen:icon`.
